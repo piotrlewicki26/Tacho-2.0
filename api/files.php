@@ -566,5 +566,178 @@ if ($action === 'download' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     exit;
 }
 
+// ══════════════════════════════════════════════════════════════
+// Preview (parse in-memory, do NOT save – returns compliance info)
+// ══════════════════════════════════════════════════════════════
+if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!validateCsrf($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['error' => 'Nieprawidłowy token CSRF.']); exit;
+    }
+    if (!hasRole('manager')) {
+        echo json_encode(['error' => 'Brak uprawnień.']); exit;
+    }
+
+    $fileType = $_POST['file_type'] ?? '';
+    if (!in_array($fileType, ['driver', 'vehicle'], true)) {
+        echo json_encode(['error' => 'Nieprawidłowy typ pliku.']); exit;
+    }
+
+    if (empty($_FILES['ddd_file']) || $_FILES['ddd_file']['error'] !== UPLOAD_ERR_OK) {
+        $uploadErrors = [
+            UPLOAD_ERR_INI_SIZE  => 'Plik przekracza limit rozmiaru serwera.',
+            UPLOAD_ERR_FORM_SIZE => 'Plik przekracza dozwolony rozmiar.',
+            UPLOAD_ERR_PARTIAL   => 'Plik został przesłany częściowo.',
+            UPLOAD_ERR_NO_FILE   => 'Nie wybrano pliku.',
+        ];
+        $errCode = $_FILES['ddd_file']['error'] ?? -1;
+        echo json_encode(['error' => $uploadErrors[$errCode] ?? 'Błąd przesyłania pliku.']);
+        exit;
+    }
+
+    $file = $_FILES['ddd_file'];
+    if ($file['size'] > 10 * 1024 * 1024) {
+        echo json_encode(['error' => 'Plik jest za duży (maks. 10 MB).']); exit;
+    }
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    if (!in_array($ext, ['ddd', 'c1b', 'tgd'], true)) {
+        echo json_encode(['error' => 'Nieobsługiwany format pliku (.ddd, .c1b, .tgd).']); exit;
+    }
+    if (!is_uploaded_file($file['tmp_name'])) {
+        echo json_encode(['error' => 'Błąd bezpieczeństwa – plik nie został prawidłowo przesłany.']); exit;
+    }
+
+    try {
+        $binaryData = file_get_contents($file['tmp_name']);
+        if ($binaryData === false || strlen($binaryData) < 100) {
+            echo json_encode(['ok' => false, 'issues' => ['Plik jest zbyt mały lub nie można go odczytać.'], 'file_size' => $file['size']]); exit;
+        }
+
+        $issues   = [];   // compliance problems – non-empty means invalid
+        $warnings = [];   // advisory notices that do not block upload
+        $info     = [];   // extracted data fields for display
+
+        $info['file_name'] = $file['name'];
+        $info['file_size'] = $file['size'];
+        $info['file_type'] = $fileType;
+
+        if ($fileType === 'driver') {
+            // ── Parse driver name + card number ────────────────────
+            $parsed = dddParseDriverInfo($binaryData);
+
+            if ($parsed) {
+                $info['last_name']   = $parsed['last_name'];
+                $info['first_name']  = $parsed['first_name'];
+                $info['card_number'] = $parsed['card_number'];
+
+                // Validate name characters (A-Z, a-z, Polish diacritics, hyphen, space)
+                $namePattern = '/^[\p{L}\s\-]+$/u';
+                if (!preg_match($namePattern, $parsed['last_name'])) {
+                    $warnings[] = 'Nazwisko zawiera nieoczekiwane znaki: "' . $parsed['last_name'] . '"';
+                }
+                if (!preg_match($namePattern, $parsed['first_name'])) {
+                    $warnings[] = 'Imię zawiera nieoczekiwane znaki: "' . $parsed['first_name'] . '"';
+                }
+                if (!empty($parsed['card_number'])) {
+                    if (!preg_match('/^[A-Z0-9]{8,16}$/i', $parsed['card_number'])) {
+                        $warnings[] = 'Numer karty ma nieoczekiwany format: "' . $parsed['card_number'] . '"';
+                    }
+                } else {
+                    $warnings[] = 'Nie znaleziono numeru karty kierowcy w pliku.';
+                }
+
+                // Check if driver already exists in this company
+                $stmt = $db->prepare(
+                    'SELECT id, first_name, last_name, card_number FROM drivers
+                     WHERE company_id=? AND is_active=1
+                       AND (
+                         (? <> \'\' AND card_number=?)
+                         OR (LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?))
+                       )
+                     LIMIT 1'
+                );
+                $stmt->execute([$companyId, $parsed['card_number'], $parsed['card_number'],
+                                $parsed['last_name'], $parsed['first_name']]);
+                $existing = $stmt->fetch();
+                if ($existing) {
+                    $info['existing_driver_id']   = (int)$existing['id'];
+                    $info['existing_driver_name'] = $existing['first_name'] . ' ' . $existing['last_name'];
+                    $info['action_hint']          = 'linked';
+                } else {
+                    $info['action_hint'] = 'auto_create';
+                }
+            } else {
+                $issues[] = 'Nie udało się odczytać danych kierowcy z pliku. Plik może nie być prawidłową kartą kierowcy EU (DDD).';
+            }
+
+            // ── Parse activity data ────────────────────────────────
+            $actResult = parseDddFile($file['tmp_name']);
+            if (!empty($actResult['days'])) {
+                $dates = array_column($actResult['days'], 'date');
+                sort($dates);
+                $info['period_start']  = $dates[0];
+                $info['period_end']    = end($dates);
+                $info['day_count']     = count($actResult['days']);
+                $info['drive_total_h'] = round($actResult['summary']['drive'] / 60, 1);
+                $info['violations']    = count($actResult['summary']['violations']);
+                if ($info['violations'] > 0) {
+                    $warnings[] = 'Plik zawiera ' . $info['violations'] . ' naruszeń przepisów UE dotyczących czasu jazdy.';
+                }
+            } else {
+                $warnings[] = 'Nie znaleziono rekordów aktywności w pliku (plik może być pusty lub mieć inny format).';
+            }
+
+        } else {
+            // ── Parse vehicle registration ─────────────────────────
+            $reg = dddParseVehicleReg($binaryData);
+
+            if ($reg) {
+                $info['registration'] = $reg;
+
+                // Check if vehicle already exists
+                $stmt = $db->prepare(
+                    'SELECT id, registration FROM vehicles
+                     WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
+                     LIMIT 1'
+                );
+                $stmt->execute([$companyId, $reg]);
+                $existing = $stmt->fetch();
+                if ($existing) {
+                    $info['existing_vehicle_id']  = (int)$existing['id'];
+                    $info['existing_vehicle_reg'] = $existing['registration'];
+                    $info['action_hint']          = 'linked';
+                } else {
+                    $info['action_hint'] = 'auto_create';
+                }
+            } else {
+                $issues[] = 'Nie udało się odczytać numeru rejestracyjnego pojazdu z pliku. Plik może nie być prawidłowym plikiem DDD pojazdu.';
+            }
+
+            // ── Parse vehicle activity data ────────────────────────
+            $actResult = parseVehicleDdd($file['tmp_name']);
+            if (!empty($actResult['days'])) {
+                $dates = array_column($actResult['days'], 'date');
+                sort($dates);
+                $info['period_start'] = $dates[0];
+                $info['period_end']   = end($dates);
+                $info['day_count']    = count($actResult['days']);
+                $info['total_km']     = $actResult['summary']['total_km'] ?? 0;
+            } else {
+                $warnings[] = 'Nie znaleziono rekordów aktywności pojazdu w pliku.';
+            }
+        }
+
+        echo json_encode([
+            'ok'       => empty($issues),
+            'issues'   => $issues,
+            'warnings' => $warnings,
+            'info'     => $info,
+        ]);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Błąd podczas analizy pliku: ' . $e->getMessage()]);
+    }
+    exit;
+}
+
 http_response_code(400);
 echo json_encode(['error' => 'Nieznana akcja.']);
