@@ -331,8 +331,7 @@ function getSystemSetting(string $key): ?string {
 function setSystemSetting(string $key, string $value): void {
     $db = getDB();
     $db->prepare(
-        'INSERT INTO system_settings (setting_key, setting_value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) AS new_val
+         ON DUPLICATE KEY UPDATE setting_value = new_val.setting_value'
     )->execute([$key, $value]);
 }

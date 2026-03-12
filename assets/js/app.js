@@ -42,7 +42,19 @@
     try {
       const fd   = new FormData(form);
       const resp = await fetch(form.action, { method: 'POST', body: fd });
-      const data = await resp.json();
+
+      // Read as text first; then try to parse as JSON.
+      // A stray PHP notice or HTML redirect would cause resp.json() to throw,
+      // producing a false "network error" even though the request succeeded.
+      const text = await resp.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        // Server returned non-JSON (e.g. PHP warning or login redirect)
+        msgBox.innerHTML = `<div class="alert alert-danger py-2">Nieoczekiwana odpowiedź serwera (kod ${resp.status}). Odśwież stronę i spróbuj ponownie.</div>`;
+        return;
+      }
 
       if (data.success) {
         msgBox.innerHTML = `<div class="alert alert-success py-2">${escHtml(data.message)}</div>`;
@@ -55,7 +67,7 @@
         msgBox.innerHTML = `<div class="alert alert-danger py-2">${escHtml(data.error || 'Błąd wgrywania pliku.')}</div>`;
       }
     } catch (err) {
-      msgBox.innerHTML = `<div class="alert alert-danger py-2">Błąd sieci. Spróbuj ponownie.</div>`;
+      msgBox.innerHTML = `<div class="alert alert-danger py-2">Błąd połączenia z serwerem. Sprawdź połączenie i spróbuj ponownie.</div>`;
     } finally {
       btn.disabled = false;
       spinner.classList.add('d-none');
@@ -79,14 +91,19 @@ document.addEventListener('click', async function (e) {
     fd.append('file_id', fileId);
     fd.append('csrf_token', csrf);
     const resp = await fetch('/api/files.php', { method: 'POST', body: fd });
-    const data = await resp.json();
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) {
+      alert('Nieoczekiwana odpowiedź serwera. Odśwież stronę i spróbuj ponownie.');
+      return;
+    }
     if (data.success) {
       row?.remove();
     } else {
       alert(data.error || 'Nie można usunąć pliku.');
     }
   } catch {
-    alert('Błąd sieci. Spróbuj ponownie.');
+    alert('Błąd połączenia z serwerem. Spróbuj ponownie.');
   }
 });
 
