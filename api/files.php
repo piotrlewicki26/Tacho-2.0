@@ -151,7 +151,7 @@ function dddParseDriverInfo(string $data): ?array
             }
             $sn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k, 36)));
             $fn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36)));
-            if (strlen($sn) >= 3 && preg_match('/^[A-Z][a-z]{2}/', $sn) && strlen($fn) >= 2) {
+            if (strlen($sn) >= 3 && preg_match('/^[A-Z][A-Za-z]{2}/u', $sn) && strlen($fn) >= 2) {
                 $driverName = ['last_name' => $sn, 'first_name' => $fn];
                 break;
             }
@@ -666,12 +666,12 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $info['action_hint'] = 'auto_create';
                 }
             } else {
-                $issues[] = 'Nie udało się odczytać danych kierowcy z pliku. Plik może nie być prawidłową kartą kierowcy EU (DDD).';
+                $warnings[] = 'Nie można automatycznie odczytać danych kierowcy z pliku. Plik zostanie wgrany do archiwum, ale nie zostanie automatycznie przypisany do kierowcy.';
             }
 
             // ── Parse activity data ────────────────────────────────
             $actResult = parseDddFile($file['tmp_name']);
-            if (!empty($actResult['days'])) {
+            if (empty($actResult['error']) && !empty($actResult['days'])) {
                 $dates = array_column($actResult['days'], 'date');
                 sort($dates);
                 $info['period_start']  = $dates[0];
@@ -709,12 +709,12 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $info['action_hint'] = 'auto_create';
                 }
             } else {
-                $issues[] = 'Nie udało się odczytać numeru rejestracyjnego pojazdu z pliku. Plik może nie być prawidłowym plikiem DDD pojazdu.';
+                $warnings[] = 'Nie można automatycznie odczytać numeru rejestracyjnego pojazdu. Plik zostanie wgrany do archiwum, ale nie zostanie automatycznie przypisany do pojazdu.';
             }
 
             // ── Parse vehicle activity data ────────────────────────
             $actResult = parseVehicleDdd($file['tmp_name']);
-            if (!empty($actResult['days'])) {
+            if (empty($actResult['error']) && !empty($actResult['days'])) {
                 $dates = array_column($actResult['days'], 'date');
                 sort($dates);
                 $info['period_start'] = $dates[0];
