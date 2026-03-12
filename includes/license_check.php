@@ -2,24 +2,42 @@
 /**
  * TachoPro 2.0 – Access checker
  *
- * The module licensing system has been removed.
- * All modules are available to any company that has an active account
- * (plan='pro', or plan='demo' with a non-expired trial).
+ * Two paid tiers:
  *
- * `hasModule()` / `requireModule()` are kept as thin wrappers so that
- * existing call-sites do not need to change.
+ *   PRO        – core features: drivers, vehicles, DDD archive,
+ *                driver analysis, vehicle analysis.
+ *                One company per account. No delegation / violations / vacation reports.
+ *
+ *   PRO Module+ – everything in PRO plus: delegation management (per diems,
+ *                 mobility package), driver violation reports with penalties,
+ *                 vacation reports, and multi-company management.
+ *
+ * During an active demo trial ALL modules are accessible.
+ * After trial expiry the user is redirected to billing.php.
  */
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/subscription.php';
 
 /**
- * Returns true when the current company has access.
- * All modules are granted equally – no per-module restrictions.
+ * Modules available on the PRO plan (and above).
+ * These are also accessible during an active demo trial.
+ */
+const PRO_MODULES = ['core', 'driver_analysis', 'vehicle_analysis'];
+
+/**
+ * Modules that require the PRO Module+ plan.
+ * They are accessible during an active demo trial, but NOT on the PRO plan.
+ */
+const PRO_PLUS_MODULES = ['delegation', 'violations', 'reports', 'multi_company'];
+
+/**
+ * Returns true when the current company has access to the given module.
  *
- * Access is granted when:
- *  - company plan = 'pro', OR
- *  - company plan = 'demo' AND trial has not expired
+ *  PRO Module+ : full access to all modules.
+ *  PRO         : access to PRO_MODULES only.
+ *  Demo (active) : access to all modules (same as PRO Module+ during trial).
+ *  Demo (expired): no access.
  */
 function hasModule(string $module): bool {
     $companyId = (int)($_SESSION['company_id'] ?? 0);
@@ -28,10 +46,16 @@ function hasModule(string $module): bool {
     $co = getCompanyPlan($companyId);
     if (!$co) return false;
 
-    if ($co['plan'] === 'pro') return true;
+    // PRO Module+ plan: full access to everything
+    if ($co['plan'] === PLAN_PRO_PLUS) return true;
 
-    // Demo: all modules accessible while trial is still valid
-    if ($co['plan'] === 'demo') {
+    // PRO plan: access to PRO_MODULES only
+    if ($co['plan'] === PLAN_PRO) {
+        return in_array($module, PRO_MODULES, true);
+    }
+
+    // Demo: all modules accessible while the trial is still valid
+    if ($co['plan'] === PLAN_DEMO) {
         return !isTrialExpired($companyId);
     }
 
@@ -39,15 +63,24 @@ function hasModule(string $module): bool {
 }
 
 /**
- * Require access or redirect to dashboard with a message.
- * No longer shows the "module unavailable" page.
+ * Require access or redirect with an appropriate upgrade message.
  */
 function requireModule(string $module): void {
-    requireLogin();   // Must be logged in first
+    requireLogin();
 
     if (!hasModule($module)) {
-        // Trial has expired – send to billing page so they can upgrade
-        flashSet('warning', 'Twój okres próbny wygasł. Przejdź na plan Pro, aby kontynuować.');
+        $co   = getCompanyPlan((int)($_SESSION['company_id'] ?? 0));
+        $plan = $co['plan'] ?? PLAN_DEMO;
+
+        // PRO user trying to access a PRO Module+-only feature
+        if ($plan === PLAN_PRO && in_array($module, PRO_PLUS_MODULES, true)) {
+            flashSet('warning', 'Ta funkcja jest dostępna wyłącznie w pakiecie PRO Module+. Przejdź na wyższy plan.');
+            header('Location: /billing.php#upgrade-section');
+            exit;
+        }
+
+        // Demo expired (or unknown plan)
+        flashSet('warning', 'Twój okres próbny wygasł. Wybierz plan PRO lub PRO Module+, aby kontynuować.');
         header('Location: /billing.php');
         exit;
     }
@@ -55,7 +88,7 @@ function requireModule(string $module): void {
 
 /**
  * Check whether adding one more entity of $type is within the plan limits.
- * Demo: max 2 drivers, 2 vehicles. Pro: unlimited.
+ * Demo: max 2 drivers, 2 vehicles. Paid plans: unlimited.
  */
 function licenseAllowsMore(string $type): bool {
     return subscriptionAllowsMore($type);
@@ -63,12 +96,12 @@ function licenseAllowsMore(string $type): bool {
 
 /**
  * Return the numeric limit for a given type.
- * Returns 0 for unlimited (Pro), demo limits for demo.
+ * Returns 0 for unlimited (paid plans), demo limits for demo.
  */
 function licenseLimit(string $type): int {
     $companyId = (int)($_SESSION['company_id'] ?? 0);
     $co = getCompanyPlan($companyId);
-    if ($co && $co['plan'] === 'pro') return 0; // unlimited
+    if ($co && ($co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS)) return 0; // unlimited
 
     return match($type) {
         'drivers'  => DEMO_MAX_DRIVERS,

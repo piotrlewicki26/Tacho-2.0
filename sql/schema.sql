@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `companies` (
   `email`                VARCHAR(255) DEFAULT NULL,
   `phone`                VARCHAR(50)  DEFAULT NULL,
   `unique_code`          CHAR(64)     NOT NULL UNIQUE COMMENT 'SHA-256 hex, generated once at creation',
-  `plan`                 ENUM('demo','pro') NOT NULL DEFAULT 'demo' COMMENT 'demo=14-day trial; pro=paid subscription',
+  `plan`                 ENUM('demo','pro','pro_plus') NOT NULL DEFAULT 'demo' COMMENT 'demo=14-day trial; pro=PRO package (1 company); pro_plus=PRO Module+ (multi-company)',
   `trial_ends_at`        DATE         DEFAULT NULL COMMENT 'When the 14-day demo expires',
   `stripe_customer_id`   VARCHAR(100) DEFAULT NULL COMMENT 'Stripe Customer ID',
   `created_at`           TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP

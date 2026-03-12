@@ -20,6 +20,10 @@ $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 $action    = $_GET['action'] ?? 'view';
 
+// Determine whether this user can add additional companies:
+// superadmin always can; admin only if on PRO Module+ plan.
+$canAddCompany = hasRole('superadmin') || hasModule('multi_company');
+
 // ── Handle POST ───────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
@@ -29,8 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $postAction = $_POST['action'] ?? '';
 
-    // Add new company (superadmin only)
-    if ($postAction === 'add' && hasRole('superadmin')) {
+    // Add new company (superadmin or PRO Module+ admin)
+    if ($postAction === 'add' && $canAddCompany) {
         $name  = trim($_POST['name']    ?? '');
         $addr  = trim($_POST['address'] ?? '');
         $nip   = trim($_POST['nip']     ?? '');
@@ -107,7 +111,7 @@ $company = $stmt->fetch();
 
 // All companies for superadmin
 $allCompanies = [];
-if (hasRole('superadmin')) {
+if ($canAddCompany) {
     $allCompanies = $db->query('SELECT * FROM companies ORDER BY name')->fetchAll();
 }
 
@@ -116,16 +120,24 @@ $activePage = 'company';
 include __DIR__ . '/templates/header.php';
 ?>
 
-<?php if (hasRole('superadmin')): ?>
+<?php if ($canAddCompany): ?>
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div></div>
   <a href="/company.php?action=add" class="btn btn-primary">
     <i class="bi bi-plus-circle me-1"></i>Dodaj nową firmę
   </a>
 </div>
+<?php elseif (hasRole('admin')): ?>
+<div class="alert alert-info d-flex align-items-center gap-2 mb-4">
+  <i class="bi bi-lock-fill"></i>
+  <span>
+    Możliwość dodawania kolejnych firm jest dostępna w pakiecie
+    <a href="/billing.php#upgrade-section" class="alert-link fw-bold">PRO Module+</a>.
+  </span>
+</div>
 <?php endif; ?>
 
-<?php if ($action === 'add' && hasRole('superadmin')): ?>
+<?php if ($action === 'add' && $canAddCompany): ?>
 <!-- ── Add company form ───────────────────────────────────────── -->
 <div class="tp-card mb-4">
   <div class="tp-card-header">
@@ -266,7 +278,7 @@ include __DIR__ . '/templates/header.php';
   </div>
 </div>
 
-<?php if ($allCompanies && hasRole('superadmin')): ?>
+<?php if ($allCompanies && $canAddCompany): ?>
 <!-- ── All companies (superadmin) ────────────────────────────── -->
 <div class="tp-card mt-4">
   <div class="tp-card-header">

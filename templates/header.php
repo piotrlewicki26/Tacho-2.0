@@ -21,10 +21,14 @@
 if (!function_exists('isDemo')) {
     require_once __DIR__ . '/../includes/subscription.php';
 }
+if (!function_exists('hasModule')) {
+    require_once __DIR__ . '/../includes/license_check.php';
+}
 $_tpCompanyId  = (int)($_SESSION['company_id'] ?? 0);
 $_tpIsDemo     = $_tpCompanyId ? isDemo($_tpCompanyId) : false;
 $_tpTrialExpired = $_tpCompanyId ? isTrialExpired($_tpCompanyId) : false;
 $_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
+$_tpIsProPlus  = $_tpCompanyId ? isProPlus($_tpCompanyId) : false;
 ?>
 
 <!-- ═══ DEMO TOP BANNER ════════════════════════════════════════ -->
@@ -40,7 +44,7 @@ $_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
     (maks. <?= DEMO_MAX_DRIVERS ?> kierowców, <?= DEMO_MAX_VEHICLES ?> pojazdów).
   <?php endif; ?>
   <a href="/billing.php#upgrade-section" class="tp-demo-upgrade-link">
-    Upgrade do Pro &rarr;
+    Wybierz pakiet PRO &rarr;
   </a>
 </div>
 <?php endif; ?>
@@ -141,19 +145,52 @@ $_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
       </a>
     </li>
 
+    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?>">
       <a href="/modules/delegation/" class="tp-nav-link">
         <i class="bi bi-map"></i><span>Delegacje</span>
       </a>
     </li>
+    <?php else: ?>
+    <li class="tp-nav-item">
+      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
+        <i class="bi bi-map"></i><span>Delegacje</span>
+        <i class="bi bi-lock-fill ms-auto small"></i>
+      </a>
+    </li>
+    <?php endif; ?>
+
+    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
+    <li class="tp-nav-item<?= ($activePage??'')==='violations' ? ' active':'' ?>">
+      <a href="/modules/violations/" class="tp-nav-link">
+        <i class="bi bi-exclamation-triangle"></i><span>Naruszenia</span>
+      </a>
+    </li>
+    <?php else: ?>
+    <li class="tp-nav-item">
+      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
+        <i class="bi bi-exclamation-triangle"></i><span>Naruszenia</span>
+        <i class="bi bi-lock-fill ms-auto small"></i>
+      </a>
+    </li>
+    <?php endif; ?>
 
     <li class="tp-nav-separator"><small>Raporty & Firma</small></li>
 
+    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='reports' ? ' active':'' ?>">
       <a href="/reports.php" class="tp-nav-link">
         <i class="bi bi-file-earmark-bar-graph"></i><span>Raporty</span>
       </a>
     </li>
+    <?php else: ?>
+    <li class="tp-nav-item">
+      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
+        <i class="bi bi-file-earmark-bar-graph"></i><span>Raporty</span>
+        <i class="bi bi-lock-fill ms-auto small"></i>
+      </a>
+    </li>
+    <?php endif; ?>
 
     <?php if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin','superadmin'])): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='company' ? ' active':'' ?>">

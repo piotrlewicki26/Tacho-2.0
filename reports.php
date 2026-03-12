@@ -9,7 +9,7 @@ require_once __DIR__ . '/includes/license_check.php';
 require_once __DIR__ . '/includes/subscription.php';
 
 requireLogin();
-requireModule('core');
+requireModule('reports');
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];

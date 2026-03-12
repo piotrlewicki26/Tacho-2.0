@@ -3,12 +3,21 @@
  * TachoPro 2.0 – Subscription & billing helpers
  *
  * Business rules:
- *  - Demo plan: 14 days, max 2 drivers, max 2 vehicles, watermark on printouts
- *  - Pro plan : paid monthly – PLN 15 net / active driver + PLN 10 net / active vehicle
+ *  - Demo plan     : 14 days, max 2 drivers, max 2 vehicles, watermark on printouts
+ *  - PRO plan      : paid monthly – PLN 15 net/active driver + PLN 10 net/active vehicle
+ *                    Full DDD analysis, DDD archive, driver & vehicle analysis.
+ *                    ONE company per account; no delegation/violations/vacation-reports.
+ *  - PRO Module+   : everything in PRO plus delegation management, driver violation
+ *                    reports with penalties, vacation reports, and multi-company support.
  *  - VAT rate : 23 %
  */
 
 require_once __DIR__ . '/db.php';
+
+// Plan identifier constants
+define('PLAN_DEMO',     'demo');
+define('PLAN_PRO',      'pro');
+define('PLAN_PRO_PLUS', 'pro_plus');
 
 define('BILLING_PRICE_DRIVER',  15.00);  // PLN net / month
 define('BILLING_PRICE_VEHICLE', 10.00);  // PLN net / month
@@ -40,47 +49,46 @@ function getCompanyPlan(?int $companyId = null): ?array {
 }
 
 /**
- * Is the current company on the demo plan (and trial not expired)?
+ * Is the current company on the demo plan?
+ * Returns true for demo companies regardless of whether the trial is active.
  */
 function isDemo(?int $companyId = null): bool {
     $co = getCompanyPlan($companyId);
     if (!$co) return true;  // no company = restrict
-    if ($co['plan'] === 'pro') return false;
-    // Demo: check if trial has expired
-    if ($co['trial_ends_at'] && strtotime($co['trial_ends_at']) < strtotime('today')) {
-        return true;  // expired demo still shows demo restrictions
-    }
-    return true;  // plan is 'demo'
+    if ($co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS) return false;
+    return true;  // plan is 'demo' (active or expired)
 }
 
 /**
  * Is the demo trial still valid (not expired)?
+ * Always returns true for paid plans.
  */
 function isTrialActive(?int $companyId = null): bool {
     $co = getCompanyPlan($companyId);
     if (!$co) return false;
-    if ($co['plan'] === 'pro') return true;
+    if ($co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS) return true;
     if (!$co['trial_ends_at']) return false;
     return strtotime($co['trial_ends_at']) >= strtotime('today');
 }
 
 /**
  * Is the demo trial expired?
+ * Always returns false for paid plans.
  */
 function isTrialExpired(?int $companyId = null): bool {
     $co = getCompanyPlan($companyId);
     if (!$co) return true;
-    if ($co['plan'] === 'pro') return false;
+    if ($co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS) return false;
     if (!$co['trial_ends_at']) return true;
     return strtotime($co['trial_ends_at']) < strtotime('today');
 }
 
 /**
- * Days remaining in trial (0 if expired or pro).
+ * Days remaining in trial (0 if expired or on a paid plan).
  */
 function trialDaysRemaining(?int $companyId = null): int {
     $co = getCompanyPlan($companyId);
-    if (!$co || $co['plan'] === 'pro') return 0;
+    if (!$co || $co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS) return 0;
     if (!$co['trial_ends_at']) return 0;
     $diff = (int)(strtotime($co['trial_ends_at']) - strtotime('today')) / 86400;
     return max(0, $diff);
@@ -95,8 +103,8 @@ function subscriptionAllowsMore(string $type, ?int $companyId = null): bool {
     $co  = getCompanyPlan($cid);
     if (!$co) return false;
 
-    // Pro plan: always allowed (no hard limits)
-    if ($co['plan'] === 'pro') return true;
+    // Paid plans (PRO and PRO Module+): always allowed (no hard limits)
+    if ($co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS) return true;
 
     // Demo plan: 2 drivers, 2 vehicles max
     $limit = match($type) {
@@ -227,7 +235,7 @@ function createInvoice(int $companyId, ?int $subscriptionId = null): ?int {
 // ── Upgrade company to Pro ────────────────────────────────────
 
 /**
- * Upgrade a company from demo to pro.
+ * Upgrade a company from demo to PRO.
  */
 function upgradeCompanyToPro(int $companyId, ?string $stripeCustomerId = null): void {
     $db = getDB();
@@ -236,4 +244,34 @@ function upgradeCompanyToPro(int $companyId, ?string $stripeCustomerId = null): 
     )->execute([$stripeCustomerId, $companyId]);
     // Note: static cache in getCompanyPlan() persists within the same request,
     // but upgrade is followed by a redirect so no stale data is served.
+}
+
+/**
+ * Upgrade a company to PRO Module+ (from demo or from PRO).
+ */
+function upgradeCompanyToProPlus(int $companyId, ?string $stripeCustomerId = null): void {
+    $db = getDB();
+    $db->prepare(
+        'UPDATE companies SET plan="pro_plus", stripe_customer_id=COALESCE(?, stripe_customer_id) WHERE id=?'
+    )->execute([$stripeCustomerId, $companyId]);
+}
+
+// ── Plan check helpers ────────────────────────────────────────
+
+/**
+ * Is the company on any paid plan (PRO or PRO Module+)?
+ */
+function isPaidPlan(?int $companyId = null): bool {
+    $co = getCompanyPlan($companyId);
+    if (!$co) return false;
+    return $co['plan'] === PLAN_PRO || $co['plan'] === PLAN_PRO_PLUS;
+}
+
+/**
+ * Is the company on the PRO Module+ plan?
+ */
+function isProPlus(?int $companyId = null): bool {
+    $co = getCompanyPlan($companyId);
+    if (!$co) return false;
+    return $co['plan'] === PLAN_PRO_PLUS;
 }

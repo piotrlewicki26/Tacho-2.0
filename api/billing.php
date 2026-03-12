@@ -69,6 +69,12 @@ function handleCreateCheckout(int $companyId): void {
         return;
     }
 
+    // Validate requested target plan
+    $targetPlan = $_POST['plan'] ?? PLAN_PRO;
+    if (!in_array($targetPlan, [PLAN_PRO, PLAN_PRO_PLUS], true)) {
+        $targetPlan = PLAN_PRO;
+    }
+
     $company = getCompanyPlan($companyId);
     $billing = calculateMonthlyBilling($companyId);
 
@@ -108,7 +114,7 @@ function handleCreateCheckout(int $companyId): void {
         'line_items'  => $lineItems,
         'success_url' => $baseUrl . '/billing.php?stripe_success=1&session_id={CHECKOUT_SESSION_ID}',
         'cancel_url'  => $baseUrl . '/billing.php?stripe_cancel=1',
-        'metadata'    => ['company_id' => $companyId],
+        'metadata'    => ['company_id' => $companyId, 'target_plan' => $targetPlan],
     ];
 
     // Attach existing Stripe customer if available
@@ -212,7 +218,13 @@ function handleStripeWebhook(): void {
             $companyId = (int)($session['metadata']['company_id'] ?? 0);
             if ($companyId) {
                 $customerId = $session['customer'] ?? null;
-                upgradeCompanyToPro($companyId, $customerId);
+                $targetPlan = $session['metadata']['target_plan'] ?? PLAN_PRO;
+
+                if ($targetPlan === PLAN_PRO_PLUS) {
+                    upgradeCompanyToProPlus($companyId, $customerId);
+                } else {
+                    upgradeCompanyToPro($companyId, $customerId);
+                }
 
                 // Create invoice record
                 $invoiceId = createInvoice($companyId);
