@@ -108,6 +108,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <small class="text-muted">
       &copy; <?= date('Y') ?> TachoPro 2.0 &mdash; Wszelkie prawa zastrzeżone
     </small>
+    <div class="mt-2">
+      <small>
+        Nowa firma?
+        <a href="/register.php" class="text-decoration-none fw-600">
+          Zarejestruj się – 14 dni bezpłatnie
+        </a>
+      </small>
+    </div>
   </div>
 </div>
 

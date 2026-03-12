@@ -6,12 +6,14 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/license_check.php';
+require_once __DIR__ . '/includes/subscription.php';
 
 requireLogin();
 requireModule('core');
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
+$_isDemoReport = isDemo($companyId);
 
 // ── Summary stats ─────────────────────────────────────────────
 $drivers = (function() use ($db, $companyId) {
@@ -79,10 +81,18 @@ $chartLabels = array_column($monthlyUploads, 'month');
 $chartData   = array_column($monthlyUploads, 'cnt');
 
 $pageTitle    = 'Raporty';
-$pageSubtitle = 'Przegląd statystyk systemu';
+$pageSubtitle = 'Przegląd statystyk systemu' . ($_isDemoReport ? ' – WERSJA DEMONSTRACYJNA' : '');
 $activePage   = 'reports';
 include __DIR__ . '/templates/header.php';
-?>
+
+if ($_isDemoReport): ?>
+<div class="alert alert-warning d-print-none mb-4">
+  <i class="bi bi-exclamation-triangle me-2"></i>
+  <strong>Wersja demonstracyjna</strong> – wydruki zawierają znak wodny "DEMO".
+  <a href="/billing.php#upgrade-section" class="alert-link ms-2">Upgrade do Pro &rarr;</a>
+</div>
+<script>document.body.classList.add("tp-demo");</script>
+<?php endif; ?>
 
 <!-- ── Stats row ─────────────────────────────────────────────── -->
 <div class="row g-3 mb-4">

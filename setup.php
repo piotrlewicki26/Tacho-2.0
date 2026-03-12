@@ -44,12 +44,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($count > 0) {
                     $error = 'System jest już skonfigurowany. Usuń plik setup.php ze serwera.';
                 } else {
-                    // Create company
+                    // Create company (superadmin company = pro plan)
                     $uniqueCode = generateCompanyCode();
                     $stmt = $db->prepare(
-                        'INSERT INTO companies (name, unique_code) VALUES (?, ?)'
+                        'INSERT INTO companies (name, unique_code, plan, trial_ends_at) VALUES (?, ?, ?, NULL)'
                     );
-                    $stmt->execute([$companyName, $uniqueCode]);
+                    $stmt->execute([$companyName, $uniqueCode, 'pro']);
                     $companyId = (int)$db->lastInsertId();
 
                     // Create admin user

@@ -1,18 +1,22 @@
 <?php
 /**
  * TachoPro 2.0 – License checker
- * Verifies that the company has a valid license for the requested module.
- * Enforces per-company limits on users, vehicles, and drivers.
+ * Verifies that the company has a valid subscription / plan.
+ * Works with the new subscription-based billing model.
+ *
+ * For backward-compatibility the legacy `licenses` table check is kept as a
+ * fallback – a company that has a valid legacy license record still gets access.
  */
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/subscription.php';
 
 /**
- * Load the active license for the current company.
+ * Load the active license for the current company (legacy table).
  * Returns the license row or null.
  */
 function getActiveLicense(): ?array {
-    static $license = false;   // false = not yet loaded
+    static $license = false;
     if ($license !== false) return $license ?: null;
 
     $companyId = $_SESSION['company_id'] ?? null;
@@ -34,9 +38,27 @@ function getActiveLicense(): ?array {
 
 /**
  * Check whether the current company has access to a given module.
- * Modules: core, delegation, driver_analysis, vehicle_analysis
+ *
+ * Access is granted when EITHER:
+ *  1. The company has plan='pro' (subscription model), OR
+ *  2. The company has a valid legacy license row with the module enabled, OR
+ *  3. The company has plan='demo' with an active trial (core module only).
  */
 function hasModule(string $module): bool {
+    $companyId = (int)($_SESSION['company_id'] ?? 0);
+    if (!$companyId) return false;
+
+    // Subscription model: pro plan grants all modules
+    $co = getCompanyPlan($companyId);
+    if ($co && $co['plan'] === 'pro') return true;
+
+    // Demo plan: only 'core' is accessible while trial is active
+    if ($co && $co['plan'] === 'demo') {
+        if (isTrialExpired($companyId)) return false;
+        return $module === 'core';
+    }
+
+    // Legacy license fallback
     $license = getActiveLicense();
     if (!$license) return false;
     $col = 'mod_' . $module;
@@ -54,57 +76,27 @@ function requireModule(string $module): void {
 }
 
 /**
- * Check whether adding one more entity of $type is within the license limit.
- * $type: 'users' | 'vehicles' | 'drivers'
- * Returns true if allowed, false if limit would be exceeded.
- * A limit of 0 means unlimited.
+ * Check whether adding one more entity of $type is within the plan limits.
+ * Demo: max 2 drivers, 2 vehicles. Pro: unlimited.
  */
 function licenseAllowsMore(string $type): bool {
-    $license = getActiveLicense();
-    if (!$license) return false;
-
-    $limitCol = match($type) {
-        'users'    => 'max_users',
-        'vehicles' => 'max_vehicles',
-        'drivers'  => 'max_drivers',
-        default    => null,
-    };
-    if (!$limitCol) return true;
-
-    $limit = (int)($license[$limitCol] ?? 0);
-    if ($limit === 0) return true;   // unlimited
-
-    $companyId = (int)($_SESSION['company_id'] ?? 0);
-    $db  = getDB();
-
-    $countSql = match($type) {
-        'users'    => 'SELECT COUNT(*) FROM users    WHERE company_id=? AND is_active=1 AND role != "superadmin"',
-        'vehicles' => 'SELECT COUNT(*) FROM vehicles WHERE company_id=? AND is_active=1',
-        'drivers'  => 'SELECT COUNT(*) FROM drivers  WHERE company_id=? AND is_active=1',
-        default    => null,
-    };
-    if (!$countSql) return true;
-
-    $stmt = $db->prepare($countSql);
-    $stmt->execute([$companyId]);
-    $current = (int)$stmt->fetchColumn();
-
-    return $current < $limit;
+    return subscriptionAllowsMore($type);
 }
 
 /**
- * Return the numeric limit for a given type from the active license.
- * Returns 0 for unlimited.
+ * Return the numeric limit for a given type.
+ * Returns 0 for unlimited (Pro), demo limits for demo.
  */
 function licenseLimit(string $type): int {
-    $license = getActiveLicense();
-    if (!$license) return 0;
-    $col = match($type) {
-        'users'    => 'max_users',
-        'vehicles' => 'max_vehicles',
-        'drivers'  => 'max_drivers',
-        default    => null,
+    $companyId = (int)($_SESSION['company_id'] ?? 0);
+    $co = getCompanyPlan($companyId);
+    if ($co && $co['plan'] === 'pro') return 0; // unlimited
+
+    return match($type) {
+        'drivers'  => DEMO_MAX_DRIVERS,
+        'vehicles' => DEMO_MAX_VEHICLES,
+        'users'    => 0,
+        default    => 0,
     };
-    return $col ? (int)($license[$col] ?? 0) : 0;
 }
 

@@ -139,6 +139,11 @@ function attemptLogin(string $username, string $password): array|false {
     $_SESSION['company_code'] = $user['company_code'];
     $_SESSION['last_active']  = time();
 
+    // Audit log (load audit helper lazily to avoid circular require issues)
+    if (function_exists('auditLog')) {
+        auditLog('login', 'user', $user['id'], 'Zalogowano: ' . $user['username']);
+    }
+
     return $user;
 }
 

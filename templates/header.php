@@ -16,6 +16,35 @@
 </head>
 <body class="tp-layout">
 
+<?php
+// Load subscription helper if not already loaded (some pages include it explicitly)
+if (!function_exists('isDemo')) {
+    require_once __DIR__ . '/../includes/subscription.php';
+}
+$_tpCompanyId  = (int)($_SESSION['company_id'] ?? 0);
+$_tpIsDemo     = $_tpCompanyId ? isDemo($_tpCompanyId) : false;
+$_tpTrialExpired = $_tpCompanyId ? isTrialExpired($_tpCompanyId) : false;
+$_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
+?>
+
+<!-- ═══ DEMO TOP BANNER ════════════════════════════════════════ -->
+<?php if ($_tpIsDemo): ?>
+<div class="tp-demo-banner <?= $_tpTrialExpired ? 'expired' : '' ?>">
+  <i class="bi bi-<?= $_tpTrialExpired ? 'x-circle-fill' : 'hourglass-split' ?> me-2"></i>
+  <?php if ($_tpTrialExpired): ?>
+    <strong>Okres próbny wygasł.</strong>
+    Twoje konto jest ograniczone do trybu demo.
+  <?php else: ?>
+    <strong>Wersja DEMO</strong> – pozostało
+    <strong><?= $_tpDaysLeft ?> <?= $_tpDaysLeft === 1 ? 'dzień' : 'dni' ?></strong>
+    (maks. <?= DEMO_MAX_DRIVERS ?> kierowców, <?= DEMO_MAX_VEHICLES ?> pojazdów).
+  <?php endif; ?>
+  <a href="/billing.php#upgrade-section" class="tp-demo-upgrade-link">
+    Upgrade do Pro &rarr;
+  </a>
+</div>
+<?php endif; ?>
+
 <!-- ═══ TOP BAR ═══════════════════════════════════════════════ -->
 <header class="tp-topbar d-flex align-items-center px-3 gap-3">
   <!-- Hamburger (mobile) -->
@@ -55,7 +84,21 @@
     </button>
     <ul class="dropdown-menu dropdown-menu-end shadow">
       <li><h6 class="dropdown-header"><?= e($_SESSION['username'] ?? '') ?></h6></li>
+      <li><small class="dropdown-header text-muted">
+        <?= ($_SESSION['role'] ?? '') === 'superadmin' ? '👑 Superadmin' :
+           (($_SESSION['role'] ?? '') === 'admin'   ? '🔑 Admin firmy' :
+           (($_SESSION['role'] ?? '') === 'manager' ? '✏️ Użytkownik' : '👁 Podgląd')) ?>
+      </small></li>
+      <li><hr class="dropdown-divider"></li>
       <li><a class="dropdown-item" href="/settings.php"><i class="bi bi-gear me-2"></i>Ustawienia</a></li>
+      <li><a class="dropdown-item" href="/billing.php"><i class="bi bi-credit-card me-2"></i>Abonament</a></li>
+      <li><a class="dropdown-item" href="/audit.php"><i class="bi bi-clock-history me-2"></i>Historia zmian</a></li>
+      <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
+      <li><hr class="dropdown-divider"></li>
+      <li><a class="dropdown-item text-danger" href="/admin.php">
+        <i class="bi bi-shield-lock-fill me-2"></i>Panel Superadmin
+      </a></li>
+      <?php endif; ?>
       <li><hr class="dropdown-divider"></li>
       <li><a class="dropdown-item text-danger" href="/logout.php"><i class="bi bi-box-arrow-right me-2"></i>Wyloguj</a></li>
     </ul>
@@ -146,12 +189,6 @@
       </a>
     </li>
 
-    <li class="tp-nav-item<?= ($activePage??'')==='license' ? ' active':'' ?>">
-      <a href="/license.php" class="tp-nav-link">
-        <i class="bi bi-shield-check"></i><span>Licencja</span>
-      </a>
-    </li>
-
     <li class="tp-nav-item<?= ($activePage??'')==='settings' ? ' active':'' ?>">
       <a href="/settings.php" class="tp-nav-link">
         <i class="bi bi-gear"></i><span>Ustawienia</span>
@@ -159,10 +196,42 @@
     </li>
     <?php endif; ?>
 
+    <li class="tp-nav-separator"><small>Rozliczenia</small></li>
+
+    <li class="tp-nav-item<?= ($activePage??'')==='billing' ? ' active':'' ?>">
+      <a href="/billing.php" class="tp-nav-link">
+        <i class="bi bi-credit-card"></i><span>Abonament</span>
+        <?php if ($_tpIsDemo && !$_tpTrialExpired && $_tpDaysLeft <= 3): ?>
+        <span class="badge bg-danger ms-auto"><?= $_tpDaysLeft ?>d</span>
+        <?php endif; ?>
+      </a>
+    </li>
+
+    <li class="tp-nav-item<?= ($activePage??'')==='billing' ? '' : '' ?>">
+      <a href="/invoices.php" class="tp-nav-link">
+        <i class="bi bi-receipt"></i><span>Faktury</span>
+      </a>
+    </li>
+
+    <li class="tp-nav-item<?= ($activePage??'')==='audit' ? ' active':'' ?>">
+      <a href="/audit.php" class="tp-nav-link">
+        <i class="bi bi-clock-history"></i><span>Historia zmian</span>
+      </a>
+    </li>
+
+    <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
+    <li class="tp-nav-separator"><small>Superadmin</small></li>
+    <li class="tp-nav-item<?= ($activePage??'')==='admin' ? ' active':'' ?>">
+      <a href="/admin.php" class="tp-nav-link" style="color:#ef4444">
+        <i class="bi bi-shield-lock-fill"></i><span>Panel zarządzania</span>
+      </a>
+    </li>
+    <?php endif; ?>
+
   </ul>
 
   <div class="tp-sidebar-footer">
-    <small class="text-muted">v2.0 · 2025-01-01<br>&copy; TachoPro</small>
+    <small class="text-muted">v2.0 · <?= date('Y') ?><br>&copy; TachoPro</small>
   </div>
 </nav>
 

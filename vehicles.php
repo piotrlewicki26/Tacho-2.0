@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/license_check.php';
+require_once __DIR__ . '/includes/audit.php';
 
 requireLogin();
 requireModule('core');
@@ -30,8 +31,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($postAction === 'delete') {
         $id = (int)($_POST['vehicle_id'] ?? 0);
+        $delStmt = $db->prepare('SELECT registration FROM vehicles WHERE id=? AND company_id=?');
+        $delStmt->execute([$id, $companyId]);
+        $delVeh = $delStmt->fetch();
         $db->prepare('UPDATE vehicles SET is_active=0 WHERE id=? AND company_id=?')
            ->execute([$id, $companyId]);
+        auditLog('delete', 'vehicle', $id, 'Dezaktywowano pojazd: ' . ($delVeh ? $delVeh['registration'] : "ID $id"));
         flashSet('success', 'Pojazd został dezaktywowany.');
         redirect('/vehicles.php');
     }
@@ -64,20 +69,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($postAction === 'add') {
         if (!licenseAllowsMore('vehicles')) {
             $limit = licenseLimit('vehicles');
-            flashSet('danger', "Limit pojazdów licencji ($limit) został osiągnięty. Skontaktuj się z dostawcą w celu rozszerzenia licencji.");
+            $limitMsg = $limit > 0 ? " (limit: $limit)" : '';
+            flashSet('danger', "Limit pojazdów planu Demo$limitMsg został osiągnięty. Przejdź na plan Pro, aby dodać więcej pojazdów.");
             redirect('/vehicles.php');
         }
         $fields['company_id'] = $companyId;
         $cols = implode(', ', array_keys($fields));
         $phs  = implode(', ', array_fill(0, count($fields), '?'));
         $db->prepare("INSERT INTO vehicles ($cols) VALUES ($phs)")->execute(array_values($fields));
+        $newId = (int)$db->lastInsertId();
+        auditLog('create', 'vehicle', $newId, "Dodano pojazd: " . strtoupper($reg), null, $fields);
         flashSet('success', 'Pojazd został dodany.');
     } elseif ($postAction === 'edit') {
         $id   = (int)($_POST['vehicle_id'] ?? 0);
+        $oldStmt = $db->prepare('SELECT * FROM vehicles WHERE id=? AND company_id=?');
+        $oldStmt->execute([$id, $companyId]);
+        $oldVeh = $oldStmt->fetch() ?: [];
         $sets = implode(', ', array_map(fn($k) => "$k = ?", array_keys($fields)));
         $vals = array_values($fields);
         $vals[] = $id; $vals[] = $companyId;
         $db->prepare("UPDATE vehicles SET $sets WHERE id = ? AND company_id = ?")->execute($vals);
+        auditLog('update', 'vehicle', $id, "Zaktualizowano pojazd: " . strtoupper($reg), $oldVeh, $fields);
         flashSet('success', 'Dane pojazdu zaktualizowane.');
     }
     redirect('/vehicles.php');
