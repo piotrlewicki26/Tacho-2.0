@@ -9,6 +9,7 @@
  *                    ONE company per account; no delegation/violations/vacation-reports.
  *  - PRO Module+   : everything in PRO plus delegation management, driver violation
  *                    reports with penalties, vacation reports, and multi-company support.
+ *                    Higher per-seat pricing: PLN 25 net/driver + PLN 15 net/vehicle.
  *  - VAT rate : 23 %
  */
 
@@ -19,12 +20,18 @@ define('PLAN_DEMO',     'demo');
 define('PLAN_PRO',      'pro');
 define('PLAN_PRO_PLUS', 'pro_plus');
 
-define('BILLING_PRICE_DRIVER',  15.00);  // PLN net / month
-define('BILLING_PRICE_VEHICLE', 10.00);  // PLN net / month
-define('BILLING_VAT_RATE',      0.23);   // 23 %
-define('DEMO_MAX_DRIVERS',      2);
-define('DEMO_MAX_VEHICLES',     2);
-define('DEMO_DAYS',             14);
+// PRO plan pricing (PLN net / month)
+define('BILLING_PRICE_DRIVER',  15.00);
+define('BILLING_PRICE_VEHICLE', 10.00);
+
+// PRO Module+ plan pricing (PLN net / month)
+define('BILLING_PRICE_PLUS_DRIVER',  25.00);
+define('BILLING_PRICE_PLUS_VEHICLE', 15.00);
+
+define('BILLING_VAT_RATE',  0.23);   // 23 %
+define('DEMO_MAX_DRIVERS',  2);
+define('DEMO_MAX_VEHICLES', 2);
+define('DEMO_DAYS',         14);
 
 // ── Company plan helpers ──────────────────────────────────────
 
@@ -144,9 +151,25 @@ function demoLimit(string $type): int {
 
 /**
  * Calculate monthly invoice amounts for a company.
+ *
+ * @param int         $companyId  Target company.
+ * @param string|null $forcePlan  When set, use prices for this plan instead of
+ *                                the company's current plan.  Used by the Stripe
+ *                                checkout to quote the TARGET plan price.
  */
-function calculateMonthlyBilling(int $companyId): array {
+function calculateMonthlyBilling(int $companyId, ?string $forcePlan = null): array {
     $db = getDB();
+
+    // Determine which pricing tier to apply
+    if ($forcePlan === null) {
+        $co          = getCompanyPlan($companyId);
+        $effectivePlan = $co['plan'] ?? PLAN_DEMO;
+    } else {
+        $effectivePlan = $forcePlan;
+    }
+
+    $priceDriver  = ($effectivePlan === PLAN_PRO_PLUS) ? BILLING_PRICE_PLUS_DRIVER  : BILLING_PRICE_DRIVER;
+    $priceVehicle = ($effectivePlan === PLAN_PRO_PLUS) ? BILLING_PRICE_PLUS_VEHICLE : BILLING_PRICE_VEHICLE;
 
     $sD = $db->prepare('SELECT COUNT(*) FROM drivers  WHERE company_id=? AND is_active=1');
     $sD->execute([$companyId]);
@@ -156,15 +179,15 @@ function calculateMonthlyBilling(int $companyId): array {
     $sV->execute([$companyId]);
     $vehicles = (int)$sV->fetchColumn();
 
-    $net   = ($drivers * BILLING_PRICE_DRIVER) + ($vehicles * BILLING_PRICE_VEHICLE);
+    $net   = ($drivers * $priceDriver) + ($vehicles * $priceVehicle);
     $vat   = round($net * BILLING_VAT_RATE, 2);
     $gross = $net + $vat;
 
     return [
         'drivers'        => $drivers,
         'vehicles'       => $vehicles,
-        'price_driver'   => BILLING_PRICE_DRIVER,
-        'price_vehicle'  => BILLING_PRICE_VEHICLE,
+        'price_driver'   => $priceDriver,
+        'price_vehicle'  => $priceVehicle,
         'amount_net'     => round($net, 2),
         'amount_vat'     => round($vat, 2),
         'amount_gross'   => round($gross, 2),
@@ -274,4 +297,42 @@ function isProPlus(?int $companyId = null): bool {
     $co = getCompanyPlan($companyId);
     if (!$co) return false;
     return $co['plan'] === PLAN_PRO_PLUS;
+}
+
+// ── System (global) settings ──────────────────────────────────
+
+/**
+ * Read a global system setting from the `system_settings` table.
+ * Falls back to null when the table does not exist yet (before migration).
+ * Result is cached per request.
+ */
+function getSystemSetting(string $key): ?string {
+    static $cache = [];
+    if (array_key_exists($key, $cache)) return $cache[$key];
+
+    try {
+        $db   = getDB();
+        $stmt = $db->prepare(
+            'SELECT setting_value FROM system_settings WHERE setting_key=? LIMIT 1'
+        );
+        $stmt->execute([$key]);
+        $row  = $stmt->fetch();
+        $cache[$key] = $row ? (string)$row['setting_value'] : null;
+    } catch (PDOException $e) {
+        // Table may not exist yet (migration pending) – silently fall back
+        $cache[$key] = null;
+    }
+    return $cache[$key];
+}
+
+/**
+ * Write (upsert) a global system setting.
+ */
+function setSystemSetting(string $key, string $value): void {
+    $db = getDB();
+    $db->prepare(
+        'INSERT INTO system_settings (setting_key, setting_value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+    )->execute([$key, $value]);
 }

@@ -62,7 +62,9 @@ switch ($action) {
 // ════════════════════════════════════════════════════════════════
 
 function handleCreateCheckout(int $companyId): void {
-    $stripeSecretKey = defined('CFG_STRIPE_SECRET_KEY') ? CFG_STRIPE_SECRET_KEY : '';
+    // Load Stripe secret key: DB system settings take priority over config file
+    $stripeSecretKey = getSystemSetting('stripe_secret_key')
+        ?: (defined('CFG_STRIPE_SECRET_KEY') ? CFG_STRIPE_SECRET_KEY : '');
 
     if (empty($stripeSecretKey) || !str_starts_with($stripeSecretKey, 'sk_')) {
         echo json_encode(['error' => 'Stripe is not configured. Contact the administrator.']);
@@ -76,7 +78,8 @@ function handleCreateCheckout(int $companyId): void {
     }
 
     $company = getCompanyPlan($companyId);
-    $billing = calculateMonthlyBilling($companyId);
+    // Use target-plan pricing so the Stripe line items reflect the chosen tier
+    $billing = calculateMonthlyBilling($companyId, $targetPlan);
 
     if ($billing['amount_gross'] <= 0) {
         echo json_encode(['error' => 'No billable resources. Add at least one driver or vehicle.']);
@@ -168,7 +171,8 @@ function flattenStripeParams(array $params, string $prefix = ''): array {
 // ── Webhook ──────────────────────────────────────────────────
 
 function handleStripeWebhook(): void {
-    $webhookSecret = defined('CFG_STRIPE_WEBHOOK_SECRET') ? CFG_STRIPE_WEBHOOK_SECRET : '';
+    $webhookSecret = getSystemSetting('stripe_webhook_secret')
+        ?: (defined('CFG_STRIPE_WEBHOOK_SECRET') ? CFG_STRIPE_WEBHOOK_SECRET : '');
     $payload       = file_get_contents('php://input');
     $sigHeader     = $_SERVER['HTTP_STRIPE_SIGNATURE'] ?? '';
 

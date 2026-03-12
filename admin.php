@@ -36,6 +36,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             auditLog('upgrade', 'company', $targetCid, 'Superadmin ręcznie aktywował plan Pro');
             flashSet('success', 'Firma przełączona na plan Pro.');
         }
+    } elseif ($postAction === 'upgrade_company_plus') {
+        $targetCid = (int)($_POST['company_id'] ?? 0);
+        if ($targetCid) {
+            upgradeCompanyToProPlus($targetCid);
+            auditLog('upgrade', 'company', $targetCid, 'Superadmin ręcznie aktywował plan PRO Module+');
+            flashSet('success', 'Firma przełączona na plan PRO Module+.');
+        }
     } elseif ($postAction === 'downgrade_company') {
         $targetCid = (int)($_POST['company_id'] ?? 0);
         if ($targetCid) {
@@ -52,6 +59,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             auditLog('reset_trial', 'company', $targetCid, 'Superadmin zresetował okres próbny do ' . $newTrialEnd);
             flashSet('success', 'Okres próbny zresetowany.');
         }
+    } elseif ($postAction === 'save_config') {
+        // Save system settings (Stripe + email)
+        $settingsToSave = [
+            'stripe_publishable_key' => trim($_POST['stripe_publishable_key'] ?? ''),
+            'stripe_secret_key'      => trim($_POST['stripe_secret_key']      ?? ''),
+            'stripe_webhook_secret'  => trim($_POST['stripe_webhook_secret']  ?? ''),
+            'smtp_host'              => trim($_POST['smtp_host']              ?? ''),
+            'smtp_port'              => trim($_POST['smtp_port']              ?? ''),
+            'smtp_user'              => trim($_POST['smtp_user']              ?? ''),
+            'smtp_from_email'        => trim($_POST['smtp_from_email']        ?? ''),
+            'smtp_from_name'         => trim($_POST['smtp_from_name']         ?? ''),
+        ];
+        // Only update password if a new one was supplied
+        $smtpPass = $_POST['smtp_password'] ?? '';
+        if ($smtpPass !== '') {
+            $settingsToSave['smtp_password'] = $smtpPass;
+        }
+        foreach ($settingsToSave as $key => $value) {
+            setSystemSetting($key, $value);
+        }
+        auditLog('update', 'system_settings', 0, 'Superadmin zaktualizował konfigurację systemu');
+        flashSet('success', 'Konfiguracja systemu została zapisana.');
     }
 
     redirect('/admin.php' . (isset($_GET['section']) ? '?section=' . e($_GET['section']) : ''));
@@ -63,6 +92,7 @@ $section = $_GET['section'] ?? 'companies';
 $companies = [];
 $allUsers  = [];
 $auditRows = [];
+$sysConfig = [];
 
 if ($section === 'companies' || $section === '') {
     $companies = $db->query(
@@ -96,11 +126,23 @@ if ($section === 'audit') {
     )->fetchAll();
 }
 
+if ($section === 'config') {
+    $configKeys = [
+        'stripe_publishable_key', 'stripe_secret_key', 'stripe_webhook_secret',
+        'smtp_host', 'smtp_port', 'smtp_user', 'smtp_password',
+        'smtp_from_email', 'smtp_from_name',
+    ];
+    foreach ($configKeys as $k) {
+        $sysConfig[$k] = getSystemSetting($k) ?? '';
+    }
+}
+
 // Summary stats
 $statStmt = $db->query(
     "SELECT
        (SELECT COUNT(*) FROM companies) AS total_companies,
        (SELECT COUNT(*) FROM companies WHERE plan='pro') AS pro_companies,
+       (SELECT COUNT(*) FROM companies WHERE plan='pro_plus') AS pro_plus_companies,
        (SELECT COUNT(*) FROM companies WHERE plan='demo') AS demo_companies,
        (SELECT COUNT(*) FROM users WHERE is_active=1 AND role != 'superadmin') AS total_users,
        (SELECT COUNT(*) FROM drivers WHERE is_active=1) AS total_drivers,
@@ -130,7 +172,12 @@ include __DIR__ . '/templates/header.php';
   </div>
   <div class="col-6 col-md-2">
     <div class="tp-stat"><div class="tp-stat-icon success"><i class="bi bi-crown"></i></div>
-      <div><div class="tp-stat-value"><?= (int)$stats['pro_companies'] ?></div><div class="tp-stat-label">Pro</div></div>
+      <div><div class="tp-stat-value"><?= (int)$stats['pro_companies'] ?></div><div class="tp-stat-label">PRO</div></div>
+    </div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="tp-stat"><div class="tp-stat-icon primary"><i class="bi bi-crown-fill"></i></div>
+      <div><div class="tp-stat-value"><?= (int)$stats['pro_plus_companies'] ?></div><div class="tp-stat-label">PRO Module+</div></div>
     </div>
   </div>
   <div class="col-6 col-md-2">
@@ -141,11 +188,6 @@ include __DIR__ . '/templates/header.php';
   <div class="col-6 col-md-2">
     <div class="tp-stat"><div class="tp-stat-icon secondary"><i class="bi bi-people"></i></div>
       <div><div class="tp-stat-value"><?= (int)$stats['total_users'] ?></div><div class="tp-stat-label">Użytkowników</div></div>
-    </div>
-  </div>
-  <div class="col-6 col-md-2">
-    <div class="tp-stat"><div class="tp-stat-icon primary"><i class="bi bi-person-badge"></i></div>
-      <div><div class="tp-stat-value"><?= (int)$stats['total_drivers'] ?></div><div class="tp-stat-label">Kierowców</div></div>
     </div>
   </div>
   <div class="col-6 col-md-2">
@@ -173,6 +215,12 @@ include __DIR__ . '/templates/header.php';
     <a class="nav-link <?= $section === 'audit' ? 'active' : '' ?>"
        href="/admin.php?section=audit">
       <i class="bi bi-clock-history me-1"></i>Historia zmian
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link <?= $section === 'config' ? 'active' : '' ?>"
+       href="/admin.php?section=config">
+      <i class="bi bi-gear-wide-connected me-1"></i>Konfiguracja
     </a>
   </li>
 </ul>
@@ -212,7 +260,9 @@ include __DIR__ . '/templates/header.php';
           </td>
           <td><?= e($co['nip'] ?? '—') ?></td>
           <td>
-            <?php if ($co['plan'] === 'pro'): ?>
+            <?php if ($co['plan'] === 'pro_plus'): ?>
+            <span class="badge" style="background:linear-gradient(135deg,#1a56db,#9333ea);color:#fff"><i class="bi bi-crown-fill me-1"></i>PRO Module+</span>
+            <?php elseif ($co['plan'] === 'pro'): ?>
             <span class="badge bg-success"><i class="bi bi-crown me-1"></i>Pro</span>
             <?php elseif ($trialExpired): ?>
             <span class="badge bg-danger">Demo (wygasł)</span>
@@ -233,8 +283,17 @@ include __DIR__ . '/templates/header.php';
                 <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
                 <input type="hidden" name="action"     value="upgrade_company">
                 <input type="hidden" name="company_id" value="<?= $co['id'] ?>">
-                <button type="submit" class="btn btn-xs btn-success" title="Aktywuj Pro">
+                <button type="submit" class="btn btn-xs btn-success" title="Aktywuj PRO">
                   <i class="bi bi-crown"></i>
+                </button>
+              </form>
+              <form method="POST" class="d-inline">
+                <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
+                <input type="hidden" name="action"     value="upgrade_company_plus">
+                <input type="hidden" name="company_id" value="<?= $co['id'] ?>">
+                <button type="submit" class="btn btn-xs btn-primary" title="Aktywuj PRO Module+"
+                        style="background:linear-gradient(135deg,#1a56db,#9333ea);border:none">
+                  <i class="bi bi-crown-fill"></i>
                 </button>
               </form>
               <form method="POST" class="d-inline">
@@ -243,6 +302,25 @@ include __DIR__ . '/templates/header.php';
                 <input type="hidden" name="company_id" value="<?= $co['id'] ?>">
                 <button type="submit" class="btn btn-xs btn-outline-warning" title="Resetuj demo">
                   <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </form>
+              <?php elseif ($co['plan'] === 'pro'): ?>
+              <form method="POST" class="d-inline">
+                <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
+                <input type="hidden" name="action"     value="upgrade_company_plus">
+                <input type="hidden" name="company_id" value="<?= $co['id'] ?>">
+                <button type="submit" class="btn btn-xs btn-primary" title="Upgrade do PRO Module+"
+                        style="background:linear-gradient(135deg,#1a56db,#9333ea);border:none">
+                  <i class="bi bi-crown-fill"></i> Module+
+                </button>
+              </form>
+              <form method="POST" class="d-inline"
+                    onsubmit="return confirm('Przełączyć na Demo?')">
+                <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
+                <input type="hidden" name="action"     value="downgrade_company">
+                <input type="hidden" name="company_id" value="<?= $co['id'] ?>">
+                <button type="submit" class="btn btn-xs btn-outline-secondary" title="Downgrade do Demo">
+                  <i class="bi bi-arrow-down-circle"></i>
                 </button>
               </form>
               <?php else: ?>
@@ -372,6 +450,128 @@ include __DIR__ . '/templates/header.php';
     </table>
   </div>
 </div>
+<?php endif; ?>
+
+<?php if ($section === 'config'): ?>
+<!-- ── System configuration ───────────────────────────────────── -->
+<div class="row g-4">
+
+  <!-- Stripe -->
+  <div class="col-lg-6">
+    <div class="tp-card">
+      <div class="tp-card-header">
+        <i class="bi bi-credit-card-2-front text-primary"></i>
+        <span class="tp-card-title">Konfiguracja Stripe</span>
+      </div>
+      <div class="tp-card-body">
+        <form method="POST" action="/admin.php?section=config" novalidate>
+          <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
+          <input type="hidden" name="action"     value="save_config">
+          <div class="mb-3">
+            <label class="form-label fw-600">Stripe Publishable Key <small class="text-muted">(pk_live_… lub pk_test_…)</small></label>
+            <input type="text" name="stripe_publishable_key" class="form-control font-monospace"
+                   value="<?= e($sysConfig['stripe_publishable_key'] ?? '') ?>"
+                   placeholder="pk_live_..." autocomplete="off">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-600">Stripe Secret Key <small class="text-muted">(sk_live_… lub sk_test_…)</small></label>
+            <input type="password" name="stripe_secret_key" class="form-control font-monospace"
+                   value="<?= e($sysConfig['stripe_secret_key'] ?? '') ?>"
+                   placeholder="sk_live_..." autocomplete="new-password">
+            <div class="form-text">Klucz tajny. Nie udostępniaj nikomu.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-600">Stripe Webhook Secret <small class="text-muted">(whsec_…)</small></label>
+            <input type="password" name="stripe_webhook_secret" class="form-control font-monospace"
+                   value="<?= e($sysConfig['stripe_webhook_secret'] ?? '') ?>"
+                   placeholder="whsec_..." autocomplete="new-password">
+            <div class="form-text">Dostępny w Stripe Dashboard → Webhooks.</div>
+          </div>
+          <?php
+          $spk = $sysConfig['stripe_publishable_key'] ?? '';
+          $ssk = $sysConfig['stripe_secret_key'] ?? '';
+          $stripeOk = !empty($spk) && str_starts_with($spk, 'pk_')
+                   && !empty($ssk) && str_starts_with($ssk, 'sk_');
+          ?>
+          <?php if ($stripeOk): ?>
+          <div class="alert alert-success py-2 small">
+            <i class="bi bi-check-circle-fill me-1"></i>Stripe jest skonfigurowany i aktywny.
+          </div>
+          <?php else: ?>
+          <div class="alert alert-warning py-2 small">
+            <i class="bi bi-exclamation-triangle me-1"></i>Stripe nie jest jeszcze skonfigurowany.
+            Płatności online będą niedostępne.
+          </div>
+          <?php endif; ?>
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-check2 me-1"></i>Zapisz konfigurację Stripe
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- SMTP / Email -->
+  <div class="col-lg-6">
+    <div class="tp-card">
+      <div class="tp-card-header">
+        <i class="bi bi-envelope text-info"></i>
+        <span class="tp-card-title">Konfiguracja e-mail (SMTP)</span>
+      </div>
+      <div class="tp-card-body">
+        <form method="POST" action="/admin.php?section=config" novalidate>
+          <input type="hidden" name="csrf_token" value="<?= e(getCsrfToken()) ?>">
+          <input type="hidden" name="action"     value="save_config">
+          <!-- Carry over Stripe values so they are not wiped -->
+          <input type="hidden" name="stripe_publishable_key" value="<?= e($sysConfig['stripe_publishable_key'] ?? '') ?>">
+          <input type="hidden" name="stripe_secret_key"      value="<?= e($sysConfig['stripe_secret_key']      ?? '') ?>">
+          <input type="hidden" name="stripe_webhook_secret"  value="<?= e($sysConfig['stripe_webhook_secret']  ?? '') ?>">
+          <div class="row g-3 mb-3">
+            <div class="col-8">
+              <label class="form-label fw-600">Host SMTP</label>
+              <input type="text" name="smtp_host" class="form-control"
+                     value="<?= e($sysConfig['smtp_host'] ?? '') ?>" placeholder="smtp.example.com">
+            </div>
+            <div class="col-4">
+              <label class="form-label fw-600">Port</label>
+              <input type="number" name="smtp_port" class="form-control"
+                     value="<?= e($sysConfig['smtp_port'] ?? '587') ?>" placeholder="587">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-600">Użytkownik SMTP</label>
+            <input type="text" name="smtp_user" class="form-control"
+                   value="<?= e($sysConfig['smtp_user'] ?? '') ?>" autocomplete="username">
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-600">Hasło SMTP</label>
+            <input type="password" name="smtp_password" class="form-control"
+                   placeholder="Zostaw puste, aby nie zmieniać" autocomplete="new-password">
+            <div class="form-text">
+              <?= !empty($sysConfig['smtp_password']) ? '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Hasło jest zapisane.</span>' : 'Brak zapisanego hasła.' ?>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-7">
+              <label class="form-label fw-600">Adres nadawcy</label>
+              <input type="email" name="smtp_from_email" class="form-control"
+                     value="<?= e($sysConfig['smtp_from_email'] ?? '') ?>" placeholder="noreply@example.com">
+            </div>
+            <div class="col-5">
+              <label class="form-label fw-600">Nazwa nadawcy</label>
+              <input type="text" name="smtp_from_name" class="form-control"
+                     value="<?= e($sysConfig['smtp_from_name'] ?? 'TachoPro') ?>">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-info text-white">
+            <i class="bi bi-check2 me-1"></i>Zapisz konfigurację e-mail
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /row -->
 <?php endif; ?>
 
 <style>

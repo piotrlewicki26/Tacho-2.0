@@ -2,18 +2,49 @@
 /**
  * TachoPro 2.0 – DDD Files API
  * Handles: upload (with auto driver/vehicle creation), delete, download
+ *
+ * NOTE: This is a JSON API endpoint.  All auth/module failures must return
+ * JSON (not HTML redirects), otherwise the JS fetch handler would see an
+ * un-parseable response and display a false "network error".
  */
+
+// Buffer any stray PHP warnings/notices so they never corrupt the JSON body
+ob_start();
+
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/license_check.php';
 
-requireLogin();
-requireModule('core');
+$action = $_REQUEST['action'] ?? '';
 
-header('Content-Type: application/json');
+// Download streams binary data – skip JSON header for that action
+if ($action !== 'download') {
+    header('Content-Type: application/json');
+}
 
-$action    = $_REQUEST['action'] ?? '';
+// ── Auth check (return JSON 401 instead of HTML redirect) ─────
+startSession();
+if (empty($_SESSION['user_id'])) {
+    ob_end_clean();
+    http_response_code(401);
+    if ($action !== 'download') {
+        echo json_encode(['error' => 'Sesja wygasła. Zaloguj się ponownie.']);
+    }
+    exit;
+}
+
+// ── Module check (return JSON 403 instead of HTML redirect) ───
+if (!hasModule('core')) {
+    ob_end_clean();
+    http_response_code(403);
+    echo json_encode(['error' => 'Brak dostępu. Wymagany aktywny abonament PRO lub PRO Module+.']);
+    exit;
+}
+
+// Discard any stray output that may have accumulated
+ob_end_clean();
+
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 $userId    = (int)$_SESSION['user_id'];

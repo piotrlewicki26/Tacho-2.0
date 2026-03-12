@@ -69,7 +69,6 @@ include __DIR__ . '/templates/header.php';
 
 <!-- ── Current plan card ─────────────────────────────────────── -->
 <div class="row g-4 mb-4">
-<div class="row g-4 mb-4">
   <div class="col-md-4">
     <div class="tp-card h-100">
       <div class="tp-card-header">
@@ -131,12 +130,12 @@ include __DIR__ . '/templates/header.php';
         <table class="tp-table">
           <tbody>
             <tr>
-              <td><?= $billing['drivers'] ?> kierowców × <?= number_format(BILLING_PRICE_DRIVER, 2, ',', ' ') ?> zł</td>
-              <td class="text-end fw-600"><?= number_format($billing['drivers'] * BILLING_PRICE_DRIVER, 2, ',', ' ') ?> zł</td>
+              <td><?= $billing['drivers'] ?> kierowców × <?= number_format($billing['price_driver'], 2, ',', ' ') ?> zł</td>
+              <td class="text-end fw-600"><?= number_format($billing['drivers'] * $billing['price_driver'], 2, ',', ' ') ?> zł</td>
             </tr>
             <tr>
-              <td><?= $billing['vehicles'] ?> pojazdów × <?= number_format(BILLING_PRICE_VEHICLE, 2, ',', ' ') ?> zł</td>
-              <td class="text-end fw-600"><?= number_format($billing['vehicles'] * BILLING_PRICE_VEHICLE, 2, ',', ' ') ?> zł</td>
+              <td><?= $billing['vehicles'] ?> pojazdów × <?= number_format($billing['price_vehicle'], 2, ',', ' ') ?> zł</td>
+              <td class="text-end fw-600"><?= number_format($billing['vehicles'] * $billing['price_vehicle'], 2, ',', ' ') ?> zł</td>
             </tr>
             <tr class="table-light">
               <td><strong>Netto</strong></td>
@@ -167,24 +166,30 @@ include __DIR__ . '/templates/header.php';
         <i class="bi bi-tags text-info"></i>
         <span class="tp-card-title">Cennik</span>
       </div>
-      <div class="tp-card-body">
-        <div class="d-flex align-items-center gap-3 mb-3 p-3 rounded" style="background:#dbeafe">
-          <i class="bi bi-person-badge fs-2 text-primary"></i>
-          <div>
-            <div class="fw-bold fs-5"><?= number_format(BILLING_PRICE_DRIVER, 2, ',', ' ') ?> zł netto</div>
-            <div class="small text-muted">za kierowcę / miesiąc</div>
-          </div>
-        </div>
-        <div class="d-flex align-items-center gap-3 p-3 rounded" style="background:#d1fae5">
-          <i class="bi bi-truck fs-2 text-success"></i>
-          <div>
-            <div class="fw-bold fs-5"><?= number_format(BILLING_PRICE_VEHICLE, 2, ',', ' ') ?> zł netto</div>
-            <div class="small text-muted">za pojazd / miesiąc</div>
-          </div>
-        </div>
-        <p class="small text-muted mt-3 mb-0">
-          Stawka jednakowa dla obu pakietów (PRO i PRO Module+).
-          Płacisz tylko za aktywnych kierowców i pojazdy.
+      <div class="tp-card-body p-0">
+        <table class="tp-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th class="text-center">PRO</th>
+              <th class="text-center">PRO Module+</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><i class="bi bi-person-badge text-primary me-1"></i>Kierowca / miesiąc</td>
+              <td class="text-center fw-600"><?= number_format(BILLING_PRICE_DRIVER, 2, ',', ' ') ?> zł</td>
+              <td class="text-center fw-600"><?= number_format(BILLING_PRICE_PLUS_DRIVER, 2, ',', ' ') ?> zł</td>
+            </tr>
+            <tr>
+              <td><i class="bi bi-truck text-success me-1"></i>Pojazd / miesiąc</td>
+              <td class="text-center fw-600"><?= number_format(BILLING_PRICE_VEHICLE, 2, ',', ' ') ?> zł</td>
+              <td class="text-center fw-600"><?= number_format(BILLING_PRICE_PLUS_VEHICLE, 2, ',', ' ') ?> zł</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small text-muted px-3 pt-2 mb-2">
+          Ceny netto. Płacisz tylko za aktywnych kierowców i pojazdy.
         </p>
       </div>
     </div>
@@ -232,7 +237,8 @@ include __DIR__ . '/templates/header.php';
           </button>
           <?php else: ?>
           <?php
-          $stripeKey = defined('CFG_STRIPE_PUBLISHABLE_KEY') ? CFG_STRIPE_PUBLISHABLE_KEY : '';
+          $stripeKey = getSystemSetting('stripe_publishable_key')
+              ?: (defined('CFG_STRIPE_PUBLISHABLE_KEY') ? CFG_STRIPE_PUBLISHABLE_KEY : '');
           $stripeConfigured = !empty($stripeKey) && str_starts_with($stripeKey, 'pk_');
           ?>
           <?php if ($stripeConfigured): ?>
@@ -279,11 +285,12 @@ include __DIR__ . '/templates/header.php';
             <li class="mb-2"><i class="bi bi-check-circle-fill text-success me-2"></i>Faktury VAT co miesiąc</li>
           </ul>
           <div class="fw-bold mb-3">
-            <?= number_format(BILLING_PRICE_DRIVER, 2, ',', ' ') ?> zł netto/kierowca
-            + <?= number_format(BILLING_PRICE_VEHICLE, 2, ',', ' ') ?> zł netto/pojazd
+            <?= number_format(BILLING_PRICE_PLUS_DRIVER, 2, ',', ' ') ?> zł netto/kierowca
+            + <?= number_format(BILLING_PRICE_PLUS_VEHICLE, 2, ',', ' ') ?> zł netto/pojazd
           </div>
           <?php
-          $stripeKey = defined('CFG_STRIPE_PUBLISHABLE_KEY') ? CFG_STRIPE_PUBLISHABLE_KEY : '';
+          $stripeKey = getSystemSetting('stripe_publishable_key')
+              ?: (defined('CFG_STRIPE_PUBLISHABLE_KEY') ? CFG_STRIPE_PUBLISHABLE_KEY : '');
           $stripeConfigured = !empty($stripeKey) && str_starts_with($stripeKey, 'pk_');
           ?>
           <?php if ($stripeConfigured): ?>
