@@ -165,6 +165,10 @@ CREATE TABLE IF NOT EXISTS `ddd_files` (
   `file_type`     ENUM('driver','vehicle') NOT NULL,
   `original_name` VARCHAR(255) NOT NULL,
   `stored_name`   VARCHAR(255) NOT NULL,
+  `stored_subdir` VARCHAR(200) DEFAULT NULL
+    COMMENT 'Relative path inside uploads/ddd/ to the folder; NULL = legacy {company_id}/ root',
+  `card_number`   VARCHAR(50)  DEFAULT NULL
+    COMMENT 'Driver card number extracted from EF_Identification (driver card files only)',
   `file_size`     INT UNSIGNED DEFAULT NULL,
   `file_hash`     CHAR(64)     DEFAULT NULL,
   `download_date` DATE         DEFAULT NULL,

@@ -107,6 +107,7 @@ include __DIR__ . '/templates/header.php';
             <th>Plik</th>
             <th>Typ</th>
             <th>Kierowca / Pojazd</th>
+            <th>Nr karty</th>
             <th>Data pobrania</th>
             <th>Rozmiar</th>
             <th>Wgrano przez</th>
@@ -135,6 +136,13 @@ include __DIR__ . '/templates/header.php';
                 <?= e($f['registration'] ?? '—') ?>
               <?php endif; ?>
             </td>
+            <td>
+              <?php if ($f['file_type']==='driver' && !empty($f['card_number'])): ?>
+                <code class="small"><?= e($f['card_number']) ?></code>
+              <?php else: ?>
+                <span class="text-muted">—</span>
+              <?php endif; ?>
+            </td>
             <td><?= fmtDate($f['download_date']) ?></td>
             <td><?= $f['file_size'] ? formatBytes((int)$f['file_size']) : '—' ?></td>
             <td><?= e($f['uploader'] ?? '—') ?></td>
@@ -161,7 +169,7 @@ include __DIR__ . '/templates/header.php';
           <?php endforeach; ?>
           <?php if (!$files): ?>
           <tr>
-            <td colspan="8">
+            <td colspan="9">
               <div class="tp-empty-state">
                 <i class="bi bi-archive"></i>
                 Brak plików DDD. Wgraj pierwszy plik klikając "Wgraj DDD".

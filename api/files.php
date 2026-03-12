@@ -87,49 +87,97 @@ $companyId = (int)$_SESSION['company_id'];
 $userId    = (int)$_SESSION['user_id'];
 
 // ══════════════════════════════════════════════════════════════
-// DDD binary helpers (ported from truck-delegate-pro.jsx)
+// DDD binary helpers
 // ══════════════════════════════════════════════════════════════
 
 /**
- * Read a printable-ASCII string of up to $n bytes from binary $data at $offset.
- * Non-printable bytes become null characters (later trimmed).
+ * Trim a raw 35-byte EU tachograph name field to a clean UTF-8 string.
+ * Handles ASCII (NameCodeType 0x00) and Latin-1 (NameCodeType 0x02), which
+ * are the two most common encodings found in Polish/EU driver cards.
  */
-function dddReadStr(string $data, int $offset, int $n): string {
-    $len = strlen($data);
-    $out = '';
-    for ($k = 0; $k < $n && $offset + $k < $len; $k++) {
-        $b = ord($data[$offset + $k]);
-        $out .= ($b >= 32 && $b < 127) ? chr($b) : "\0";
+function dddNameTrim(string $raw): string
+{
+    $result = '';
+    foreach (str_split($raw) as $ch) {
+        $b = ord($ch);
+        if ($b >= 0x20 && $b <= 0x7e) {
+            $result .= $ch;                                         // printable ASCII
+        } elseif ($b >= 0xa0) {
+            $result .= mb_convert_encoding($ch, 'UTF-8', 'ISO-8859-1');  // Latin-1 supplement
+        }
+        // 0x00–0x1f and 0x7f–0x9f (control bytes) are silently dropped
     }
-    return $out;
+    return trim($result);
 }
 
 /**
- * Parse driver surname + first name from a driver DDD file.
- * Returns ['last_name'=>…,'first_name'=>…] or null on failure.
+ * Parse driver name AND card number from an EU tachograph driver-card DDD file.
+ *
+ * Locates the EF_Identification block (tag 0x01 0x05) using a 6-byte block
+ * header and reads the fixed-layout fields per EU Regulation 165/2014
+ * Annex 1B / 1C:
+ *   base+0   : country code          (1 byte)
+ *   base+1   : card number           (16 bytes, ASCII)
+ *   base+17  : issuing authority     (36 bytes = encoding(1) + name(35))
+ *   base+53  : issue date            (4 bytes, TimeReal)
+ *   base+57  : validity begin        (4 bytes, TimeReal)
+ *   base+61  : expiry date           (4 bytes, TimeReal)
+ *   base+65  : holder surname        (36 bytes = encoding(1) + text(35))
+ *   base+101 : holder first names    (36 bytes = encoding(1) + text(35))
+ *
+ * @return array{last_name:string, first_name:string, card_number:string}|null
  */
-function dddParseDriverName(string $data): ?array {
+function dddParseDriverInfo(string $data): ?array
+{
     $len = strlen($data);
-    for ($i = 0; $i < $len - 4; $i++) {
-        // Look for tag 0x05 0x20 (EF_Identification-like marker)
-        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x20) continue;
-        // Block length (big-endian uint16)
-        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-        if ($bl < 40 || $bl > 3000 || $i + 4 + $bl > $len) continue;
-        for ($k = 0; $k < $bl - 72; $k++) {
-            $b = ord($data[$i + 4 + $k]);
-            if ($b < 65 || $b > 90) continue;         // must start with A-Z
-            $sn = str_replace("\0", '', dddReadStr($data, $i + 4 + $k,      36));
-            $fn = str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36));
-            $sn = trim($sn);
-            $fn = trim($fn);
-            // Surname: ≥3 chars, starts with uppercase then lowercase
-            if (strlen($sn) >= 3 && preg_match('/^[A-Z][a-z]{2}/', $sn) && strlen($fn) >= 2) {
-                return ['last_name' => $sn, 'first_name' => $fn];
+    for ($i = 0; $i < $len - 144; $i++) {
+        // EF_Identification tag: 0x01 0x05
+        if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
+            continue;
+        }
+
+        // 6-byte block header: tag(2) + unknown(2) + data-length(2, big-endian)
+        if ($i + 6 >= $len) {
+            continue;
+        }
+        $bl = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
+        // EF_Identification needs at least 137 bytes (country+cardnum+authority+dates+names)
+        if ($bl < 130 || $bl > 500 || $i + 6 + $bl > $len) {
+            continue;
+        }
+
+        $base = $i + 6;   // start of EF_Identification data
+
+        // ── Validate card number: 16 ASCII alphanumeric bytes at base+1 ──────
+        $cardRaw = substr($data, $base + 1, 16);
+        $valid   = true;
+        for ($k = 0; $k < 16; $k++) {
+            $b = ord($cardRaw[$k]);
+            if (($b < 0x30 || $b > 0x39) && ($b < 0x41 || $b > 0x5a) && ($b < 0x61 || $b > 0x7a)) {
+                $valid = false;
+                break;
             }
         }
-        if (isset($sn) && $sn) break;  // found block, no point continuing
+        if (!$valid) {
+            continue;
+        }
+        $cardNumber = rtrim($cardRaw);
+
+        // ── Surname: 35 bytes at base+66 (encoding byte skipped at base+65) ──
+        $sn = dddNameTrim(substr($data, $base + 66, 35));
+
+        // ── First name: 35 bytes at base+102 (encoding byte at base+101) ─────
+        $fn = dddNameTrim(substr($data, $base + 102, 35));
+
+        if (strlen($sn) >= 2 && strlen($fn) >= 1) {
+            return [
+                'last_name'   => $sn,
+                'first_name'  => $fn,
+                'card_number' => $cardNumber,
+            ];
+        }
     }
+
     return null;
 }
 
@@ -237,31 +285,42 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $binaryData      = file_get_contents($destPath);
         $linkedDriverId  = null;
         $linkedVehicleId = null;
+        $parsedCardNumber = null;
         $autoCreated     = null;   // info message back to UI
 
         if ($fileType === 'driver') {
-            $parsed = dddParseDriverName($binaryData);
+            $parsed = dddParseDriverInfo($binaryData);
             if ($parsed) {
-                $lastName  = $parsed['last_name'];
-                $firstName = $parsed['first_name'];
+                $lastName         = $parsed['last_name'];
+                $firstName        = $parsed['first_name'];
+                $parsedCardNumber = $parsed['card_number'];
 
-                // Try to find existing driver by name (exact, case-insensitive)
+                // Try to find existing driver by card number first, then by name
                 $stmt = $db->prepare(
                     'SELECT id FROM drivers
                      WHERE company_id=? AND is_active=1
-                       AND LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?)
+                       AND (
+                         (? <> \'\' AND card_number=?)
+                         OR (LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?))
+                       )
                      LIMIT 1'
                 );
-                $stmt->execute([$companyId, $lastName, $firstName]);
+                $stmt->execute([$companyId, $parsedCardNumber, $parsedCardNumber, $lastName, $firstName]);
                 $existing = $stmt->fetchColumn();
 
                 if ($existing) {
                     $linkedDriverId = (int)$existing;
+                    // Update card number on existing driver if not yet set
+                    if ($parsedCardNumber) {
+                        $db->prepare(
+                            'UPDATE drivers SET card_number=? WHERE id=? AND (card_number IS NULL OR card_number=\'\')'
+                        )->execute([$parsedCardNumber, $linkedDriverId]);
+                    }
                 } else {
-                    // Auto-create driver
+                    // Auto-create driver with card number
                     $db->prepare(
-                        'INSERT INTO drivers (company_id, first_name, last_name) VALUES (?,?,?)'
-                    )->execute([$companyId, $firstName, $lastName]);
+                        'INSERT INTO drivers (company_id, first_name, last_name, card_number) VALUES (?,?,?,?)'
+                    )->execute([$companyId, $firstName, $lastName, $parsedCardNumber ?: null]);
                     $linkedDriverId = (int)$db->lastInsertId();
                     $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
                 }
@@ -294,8 +353,8 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare(
             'INSERT INTO ddd_files
              (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
-              stored_subdir, file_size, file_hash, download_date, uploaded_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+              stored_subdir, file_size, file_hash, download_date, uploaded_by, card_number)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $companyId,
@@ -309,6 +368,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileHash,
             $downloadDate ?: date('Y-m-d'),
             $userId,
+            $parsedCardNumber ?: null,
         ]);
 
         $msg = 'Plik został wgrany do archiwum.';
@@ -319,6 +379,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'message'      => $msg,
             'driver_id'    => $linkedDriverId,
             'vehicle_id'   => $linkedVehicleId,
+            'card_number'  => $parsedCardNumber,
             'auto_created' => $autoCreated,
         ]);
     } catch (Throwable $e) {
