@@ -46,28 +46,61 @@ function parseVehicleDdd(string $path): array {
     $len = strlen($data);
     if ($len < 200) return ['error' => 'Plik jest zbyt mały.'];
 
-    $days = [];
-    $summary = ['total_km' => 0, 'days_active' => 0, 'drivers' => []];
+    // Dynamic 5-year window, matching the driver-analysis parser
+    $curYear = (int)gmdate('Y');
+    $yrMin   = $curYear - 3;
+    $yrMax   = $curYear + 1;
 
+    $cands = [];
     for ($i = 0; $i < $len - 8; $i += 2) {
-        if ($i + 8 > $len) break;
-        $ts  = unpack('N', substr($data, $i, 4))[1];
-        $yr  = (int)gmdate('Y', $ts);
-        if ($yr < 2015 || $yr > 2030) continue;
+        $ts   = unpack('N', substr($data, $i, 4))[1];
+        $yr   = (int)gmdate('Y', $ts);
+        if ($yr < $yrMin || $yr > $yrMax) continue;
 
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        if ($pres < 100 || $pres > 10000 || $dist > 1500) continue;
+        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
 
-        $dateKey = gmdate('Y-m-d', $ts);
-        if (isset($days[$dateKey])) continue;
+        $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
+    }
 
-        $days[$dateKey] = [
-            'date' => $dateKey,
-            'km'   => $dist,
-        ];
-        $summary['total_km']    += $dist;
-        $summary['days_active'] += ($dist > 0 ? 1 : 0);
+    if (!$cands) return ['days' => [], 'summary' => ['total_km' => 0, 'days_active' => 0, 'drivers' => []]];
+
+    // Deduplicate by date (median presenceCounter per date, same as driver parser)
+    $byDate = [];
+    foreach ($cands as $c) {
+        $byDate[gmdate('Y-m-d', $c['ts'])][] = $c;
+    }
+    $deduped = [];
+    foreach ($byDate as $arr) {
+        usort($arr, fn($a,$b) => $a['pres'] - $b['pres']);
+        $deduped[] = $arr[(int)(count($arr) / 2)];
+    }
+    usort($deduped, fn($a,$b) => $a['pres'] - $b['pres']);
+
+    // IQR outlier filtering
+    $presVals = array_column($deduped, 'pres');
+    sort($presVals);
+    $n = count($presVals);
+    if ($n >= 4) {
+        $p25 = $presVals[(int)($n * 0.25)];
+        $p75 = $presVals[(int)($n * 0.75)];
+        $iqr = $p75 - $p25;
+        $pMin = $p25 - 3 * $iqr;
+        $pMax = $p75 + 3 * $iqr;
+        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin && $c['pres'] <= $pMax));
+    } else {
+        $filtered = $deduped;
+    }
+
+    $days = [];
+    $summary = ['total_km' => 0, 'days_active' => 0, 'drivers' => []];
+    foreach ($filtered as $r) {
+        $dk = gmdate('Y-m-d', $r['ts']);
+        if (isset($days[$dk])) continue;
+        $days[$dk] = ['date' => $dk, 'km' => $r['dist']];
+        $summary['total_km']    += $r['dist'];
+        $summary['days_active'] += ($r['dist'] > 0 ? 1 : 0);
     }
 
     ksort($days);
