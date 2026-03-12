@@ -28,7 +28,8 @@ require_once __DIR__ . '/../includes/subscription.php';
 require_once __DIR__ . '/../includes/audit.php';
 
 requireLogin();
-requireModule('core');
+// api/billing.php handles Stripe callbacks and upgrade actions; must remain
+// reachable for expired-trial users, so do NOT call requireModule() here.
 
 header('Content-Type: application/json');
 
