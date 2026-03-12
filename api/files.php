@@ -8,6 +8,27 @@
  * un-parseable response and display a false "network error".
  */
 
+// ── Global safety net: any uncaught exception or fatal error → JSON ──────
+// Registered BEFORE ob_start so the handler can safely emit headers.
+set_exception_handler(function (Throwable $e): void {
+    // Clean every output buffer level that may be open
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Błąd serwera. Spróbuj ponownie.']);
+});
+
+// PHP fatal errors (E_ERROR etc.) are converted to ErrorException so the
+// exception handler above can catch them.
+set_error_handler(function (int $errno, string $errstr, string $errfile = '', int $errline = 0): bool {
+    if (error_reporting() === 0) {
+        return false;   // silenced with @
+    }
+    throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+}, E_ERROR | E_PARSE | E_USER_ERROR);
+
 // Buffer any stray PHP warnings/notices so they never corrupt the JSON body
 ob_start();
 
@@ -26,7 +47,7 @@ if ($action !== 'download') {
 // ── Auth check (return JSON 401 instead of HTML redirect) ─────
 startSession();
 if (empty($_SESSION['user_id'])) {
-    ob_end_clean();
+    while (ob_get_level() > 0) ob_end_clean();
     http_response_code(401);
     if ($action !== 'download') {
         echo json_encode(['error' => 'Sesja wygasła. Zaloguj się ponownie.']);
@@ -36,14 +57,14 @@ if (empty($_SESSION['user_id'])) {
 
 // ── Module check (return JSON 403 instead of HTML redirect) ───
 if (!hasModule('core')) {
-    ob_end_clean();
+    while (ob_get_level() > 0) ob_end_clean();
     http_response_code(403);
     echo json_encode(['error' => 'Brak dostępu. Wymagany aktywny abonament PRO lub PRO Module+.']);
     exit;
 }
 
 // Discard any stray output that may have accumulated
-ob_end_clean();
+while (ob_get_level() > 0) ob_end_clean();
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
@@ -155,109 +176,118 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Błąd bezpieczeństwa – plik nie został prawidłowo przesłany.']); exit;
     }
 
-    // ── Store physical file ───────────────────────────────────
-    $uploadDir = __DIR__ . '/../uploads/ddd/' . $companyId . '/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0750, true);
-    }
+    try {
+        // ── Store physical file ───────────────────────────────────
+        $uploadDir = __DIR__ . '/../uploads/ddd/' . $companyId . '/';
+        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0750, true) && !is_dir($uploadDir)) {
+            echo json_encode(['error' => 'Nie można utworzyć katalogu na serwerze.']); exit;
+        }
 
-    $storedName = date('Ymd_His_') . bin2hex(random_bytes(6)) . '.' . $ext;
-    $destPath   = $uploadDir . $storedName;
+        $storedName = date('Ymd_His_') . bin2hex(random_bytes(6)) . '.' . $ext;
+        $destPath   = $uploadDir . $storedName;
 
-    if (!move_uploaded_file($file['tmp_name'], $destPath)) {
-        echo json_encode(['error' => 'Nie można zapisać pliku na serwerze.']); exit;
-    }
+        if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+            echo json_encode(['error' => 'Nie można zapisać pliku na serwerze.']); exit;
+        }
 
-    $fileHash = hash_file('sha256', $destPath);
-    $fileSize = filesize($destPath);
+        $fileHash = hash_file('sha256', $destPath);
+        $fileSize = filesize($destPath);
 
-    // ── Parse binary content for auto-create ─────────────────
-    $binaryData    = file_get_contents($destPath);
-    $linkedDriverId  = null;
-    $linkedVehicleId = null;
-    $autoCreated     = null;   // info message back to UI
+        // ── Parse binary content for auto-create ─────────────────
+        $binaryData      = file_get_contents($destPath);
+        $linkedDriverId  = null;
+        $linkedVehicleId = null;
+        $autoCreated     = null;   // info message back to UI
 
-    if ($fileType === 'driver') {
-        $parsed = dddParseDriverName($binaryData);
-        if ($parsed) {
-            $lastName  = $parsed['last_name'];
-            $firstName = $parsed['first_name'];
+        if ($fileType === 'driver') {
+            $parsed = dddParseDriverName($binaryData);
+            if ($parsed) {
+                $lastName  = $parsed['last_name'];
+                $firstName = $parsed['first_name'];
 
-            // Try to find existing driver by name (exact, case-insensitive)
-            $stmt = $db->prepare(
-                'SELECT id FROM drivers
-                 WHERE company_id=? AND is_active=1
-                   AND LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?)
-                 LIMIT 1'
-            );
-            $stmt->execute([$companyId, $lastName, $firstName]);
-            $existing = $stmt->fetchColumn();
+                // Try to find existing driver by name (exact, case-insensitive)
+                $stmt = $db->prepare(
+                    'SELECT id FROM drivers
+                     WHERE company_id=? AND is_active=1
+                       AND LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?)
+                     LIMIT 1'
+                );
+                $stmt->execute([$companyId, $lastName, $firstName]);
+                $existing = $stmt->fetchColumn();
 
-            if ($existing) {
-                $linkedDriverId = (int)$existing;
-            } else {
-                // Auto-create driver
-                $db->prepare(
-                    'INSERT INTO drivers (company_id, first_name, last_name) VALUES (?,?,?)'
-                )->execute([$companyId, $firstName, $lastName]);
-                $linkedDriverId = (int)$db->lastInsertId();
-                $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
+                if ($existing) {
+                    $linkedDriverId = (int)$existing;
+                } else {
+                    // Auto-create driver
+                    $db->prepare(
+                        'INSERT INTO drivers (company_id, first_name, last_name) VALUES (?,?,?)'
+                    )->execute([$companyId, $firstName, $lastName]);
+                    $linkedDriverId = (int)$db->lastInsertId();
+                    $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
+                }
+            }
+        } elseif ($fileType === 'vehicle') {
+            $reg = dddParseVehicleReg($binaryData);
+            if ($reg) {
+                $stmt = $db->prepare(
+                    'SELECT id FROM vehicles
+                     WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
+                     LIMIT 1'
+                );
+                $stmt->execute([$companyId, $reg]);
+                $existing = $stmt->fetchColumn();
+
+                if ($existing) {
+                    $linkedVehicleId = (int)$existing;
+                } else {
+                    // Auto-create vehicle
+                    $db->prepare(
+                        'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
+                    )->execute([$companyId, strtoupper($reg)]);
+                    $linkedVehicleId = (int)$db->lastInsertId();
+                    $autoCreated = "Automatycznie utworzono pojazd: {$reg}";
+                }
             }
         }
-    } elseif ($fileType === 'vehicle') {
-        $reg = dddParseVehicleReg($binaryData);
-        if ($reg) {
-            $stmt = $db->prepare(
-                'SELECT id FROM vehicles
-                 WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
-                 LIMIT 1'
-            );
-            $stmt->execute([$companyId, $reg]);
-            $existing = $stmt->fetchColumn();
 
-            if ($existing) {
-                $linkedVehicleId = (int)$existing;
-            } else {
-                // Auto-create vehicle
-                $db->prepare(
-                    'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
-                )->execute([$companyId, strtoupper($reg)]);
-                $linkedVehicleId = (int)$db->lastInsertId();
-                $autoCreated = "Automatycznie utworzono pojazd: {$reg}";
-            }
+        // ── Save record to DB ─────────────────────────────────────
+        $stmt = $db->prepare(
+            'INSERT INTO ddd_files
+             (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
+              file_size, file_hash, download_date, uploaded_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $companyId,
+            $linkedDriverId,
+            $linkedVehicleId,
+            $fileType,
+            $file['name'],
+            $storedName,
+            $fileSize,
+            $fileHash,
+            $downloadDate ?: date('Y-m-d'),
+            $userId,
+        ]);
+
+        $msg = 'Plik został wgrany do archiwum.';
+        if ($autoCreated) $msg .= ' ' . $autoCreated . '.';
+
+        echo json_encode([
+            'success'      => true,
+            'message'      => $msg,
+            'driver_id'    => $linkedDriverId,
+            'vehicle_id'   => $linkedVehicleId,
+            'auto_created' => $autoCreated,
+        ]);
+    } catch (Throwable $e) {
+        // Clean up partially saved file if something went wrong after saving
+        if (!empty($destPath) && is_file($destPath)) {
+            @unlink($destPath);
         }
+        http_response_code(500);
+        echo json_encode(['error' => 'Błąd podczas zapisywania pliku. Spróbuj ponownie.']);
     }
-
-    // ── Save record to DB ─────────────────────────────────────
-    $stmt = $db->prepare(
-        'INSERT INTO ddd_files
-         (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
-          file_size, file_hash, download_date, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    $stmt->execute([
-        $companyId,
-        $linkedDriverId,
-        $linkedVehicleId,
-        $fileType,
-        $file['name'],
-        $storedName,
-        $fileSize,
-        $fileHash,
-        $downloadDate ?: date('Y-m-d'),
-        $userId,
-    ]);
-
-    $msg = 'Plik został wgrany do archiwum.';
-    if ($autoCreated) $msg .= ' ' . $autoCreated . '.';
-
-    echo json_encode([
-        'success'      => true,
-        'message'      => $msg,
-        'driver_id'    => $linkedDriverId,
-        'vehicle_id'   => $linkedVehicleId,
-        'auto_created' => $autoCreated,
-    ]);
     exit;
 }
 
@@ -277,23 +307,28 @@ if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Nieprawidłowy identyfikator pliku.']); exit;
     }
 
-    $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
-    $stmt->execute([$fileId, $companyId]);
-    $f = $stmt->fetch();
+    try {
+        $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
+        $stmt->execute([$fileId, $companyId]);
+        $f = $stmt->fetch();
 
-    if (!$f) {
-        echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
+        if (!$f) {
+            echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
+        }
+
+        $db->prepare('UPDATE ddd_files SET is_deleted=1, deleted_at=NOW() WHERE id=?')
+           ->execute([$fileId]);
+
+        $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+        if (is_file($physPath)) {
+            @unlink($physPath);
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Plik usunięty z archiwum.']);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Błąd podczas usuwania pliku. Spróbuj ponownie.']);
     }
-
-    $db->prepare('UPDATE ddd_files SET is_deleted=1, deleted_at=NOW() WHERE id=?')
-       ->execute([$fileId]);
-
-    $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
-    if (is_file($physPath)) {
-        unlink($physPath);
-    }
-
-    echo json_encode(['success' => true, 'message' => 'Plik usunięty z archiwum.']);
     exit;
 }
 
@@ -306,29 +341,38 @@ if ($action === 'download' && $_SERVER['REQUEST_METHOD'] === 'GET') {
 
     if (!validateCsrf($csrf)) {
         http_response_code(403);
+        header('Content-Type: application/json');
         echo json_encode(['error' => 'Nieprawidłowy token CSRF.']); exit;
     }
 
-    $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
-    $stmt->execute([$fileId, $companyId]);
-    $f = $stmt->fetch();
+    try {
+        $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
+        $stmt->execute([$fileId, $companyId]);
+        $f = $stmt->fetch();
 
-    if (!$f) {
-        http_response_code(404);
-        echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
+        if (!$f) {
+            http_response_code(404);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
+        }
+
+        $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+        if (!is_file($physPath)) {
+            http_response_code(404);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Plik fizyczny nie istnieje.']); exit;
+        }
+
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . addslashes($f['original_name']) . '"');
+        header('Content-Length: ' . filesize($physPath));
+        header('Cache-Control: no-store');
+        readfile($physPath);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Błąd podczas pobierania pliku.']);
     }
-
-    $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
-    if (!is_file($physPath)) {
-        http_response_code(404);
-        echo json_encode(['error' => 'Plik fizyczny nie istnieje.']); exit;
-    }
-
-    header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="' . addslashes($f['original_name']) . '"');
-    header('Content-Length: ' . filesize($physPath));
-    header('Cache-Control: no-store');
-    readfile($physPath);
     exit;
 }
 
