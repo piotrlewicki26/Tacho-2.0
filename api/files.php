@@ -111,74 +111,112 @@ function dddNameTrim(string $raw): string
 }
 
 /**
- * Parse driver name AND card number from an EU tachograph driver-card DDD file.
+ * Parse driver name and card number from an EU tachograph driver-card DDD file.
  *
- * Locates the EF_Identification block (tag 0x01 0x05) using a 6-byte block
- * header and reads the fixed-layout fields per EU Regulation 165/2014
- * Annex 1B / 1C:
- *   base+0   : country code          (1 byte)
- *   base+1   : card number           (16 bytes, ASCII)
- *   base+17  : issuing authority     (36 bytes = encoding(1) + name(35))
- *   base+53  : issue date            (4 bytes, TimeReal)
- *   base+57  : validity begin        (4 bytes, TimeReal)
- *   base+61  : expiry date           (4 bytes, TimeReal)
- *   base+65  : holder surname        (36 bytes = encoding(1) + text(35))
- *   base+101 : holder first names    (36 bytes = encoding(1) + text(35))
+ * Two complementary strategies are tried in order:
+ *
+ * Strategy 1 – JSX algorithm (truck-delegate-pro.jsx parseDDD):
+ *   Scans for tag 0x05 0x20, then walks inside the block looking for a byte
+ *   in A-Z range that starts a plausible surname (≥3 chars, mixed-case) followed
+ *   by the first-name field 36 bytes later.  This matches the most common real
+ *   driver-card binary structure.
+ *
+ * Strategy 2 – EF_Identification (ISO 7816 / EU Reg. 165/2014 Annex 1B/1C):
+ *   Scans for tag 0x01 0x05, reads the 16-byte card number (alphanumeric) at
+ *   base+1, and reads surname/first-name at base+66/base+102 as a fallback for
+ *   name extraction when Strategy 1 finds nothing.
+ *
+ * Card number extraction always uses the EF_Identification block.
  *
  * @return array{last_name:string, first_name:string, card_number:string}|null
  */
 function dddParseDriverInfo(string $data): ?array
 {
     $len = strlen($data);
+
+    // ── Strategy 1: JSX tag 0x05 0x20 – primary name detection ───────────────
+    $driverName = null;
+    for ($i = 0; $i < $len - 4; $i++) {
+        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x20) {
+            continue;
+        }
+        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        if ($bl < 40 || $bl > 3000 || $i + 4 + $bl > $len) {
+            continue;
+        }
+        for ($k = 0; $k < $bl - 72; $k++) {
+            $b = ord($data[$i + 4 + $k]);
+            if ($b < 65 || $b > 90) {
+                continue;   // not A-Z
+            }
+            $sn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k, 36)));
+            $fn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36)));
+            if (strlen($sn) >= 3 && preg_match('/^[A-Z][a-z]{2}/', $sn) && strlen($fn) >= 2) {
+                $driverName = ['last_name' => $sn, 'first_name' => $fn];
+                break;
+            }
+        }
+        if ($driverName) {
+            break;
+        }
+    }
+
+    // ── Strategy 2: EF_Identification tag 0x01 0x05 – card number + fallback name ──
+    $cardNumber = null;
     for ($i = 0; $i < $len - 144; $i++) {
-        // EF_Identification tag: 0x01 0x05
         if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
             continue;
         }
-
-        // 6-byte block header: tag(2) + unknown(2) + data-length(2, big-endian)
         if ($i + 6 >= $len) {
             continue;
         }
+        // 6-byte block header: tag(2) + unknown(2) + data-length(2, big-endian)
         $bl = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
-        // EF_Identification needs at least 137 bytes (country+cardnum+authority+dates+names)
         if ($bl < 130 || $bl > 500 || $i + 6 + $bl > $len) {
             continue;
         }
 
-        $base = $i + 6;   // start of EF_Identification data
+        $base = $i + 6;
 
-        // ── Validate card number: 16 ASCII alphanumeric bytes at base+1 ──────
+        // ── Card number: 16 alphanumeric ASCII bytes at base+1 ─────────────
         $cardRaw = substr($data, $base + 1, 16);
         $valid   = true;
         for ($k = 0; $k < 16; $k++) {
             $b = ord($cardRaw[$k]);
-            if (($b < 0x30 || $b > 0x39) && ($b < 0x41 || $b > 0x5a) && ($b < 0x61 || $b > 0x7a)) {
+            if (($b < 0x30 || $b > 0x39) &&
+                ($b < 0x41 || $b > 0x5a) &&
+                ($b < 0x61 || $b > 0x7a)) {
                 $valid = false;
                 break;
             }
         }
-        if (!$valid) {
-            continue;
+        if ($valid) {
+            $cardNumber = rtrim($cardRaw);
         }
-        $cardNumber = rtrim($cardRaw);
 
-        // ── Surname: 35 bytes at base+66 (encoding byte skipped at base+65) ──
-        $sn = dddNameTrim(substr($data, $base + 66, 35));
+        // ── Fallback name: fixed offsets in EF_Identification ──────────────
+        if (!$driverName) {
+            $sn = dddNameTrim(substr($data, $base + 66, 35));
+            $fn = dddNameTrim(substr($data, $base + 102, 35));
+            if (strlen($sn) >= 2 && strlen($fn) >= 1) {
+                $driverName = ['last_name' => $sn, 'first_name' => $fn];
+            }
+        }
 
-        // ── First name: 35 bytes at base+102 (encoding byte at base+101) ─────
-        $fn = dddNameTrim(substr($data, $base + 102, 35));
-
-        if (strlen($sn) >= 2 && strlen($fn) >= 1) {
-            return [
-                'last_name'   => $sn,
-                'first_name'  => $fn,
-                'card_number' => $cardNumber,
-            ];
+        if ($cardNumber !== null || $driverName !== null) {
+            break;
         }
     }
 
-    return null;
+    if (!$driverName) {
+        return null;
+    }
+
+    return [
+        'last_name'   => $driverName['last_name'],
+        'first_name'  => $driverName['first_name'],
+        'card_number' => $cardNumber ?? '',
+    ];
 }
 
 /**
@@ -375,6 +413,51 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $userId,
             $parsedCardNumber ?: null,
         ]);
+        $newFileId = (int)$db->lastInsertId();
+
+        // ── Parse activity data and persist to ddd_activity_days ─────
+        try {
+            $actResult = ($fileType === 'driver')
+                ? parseDddFile($destPath)
+                : parseVehicleDdd($destPath);
+
+            if (!empty($actResult['days'])) {
+                $dates       = array_column($actResult['days'], 'date');
+                sort($dates);
+                $periodStart = $dates[0];
+                $periodEnd   = end($dates);
+
+                // Update period_start / period_end in ddd_files
+                $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
+                   ->execute([$periodStart, $periodEnd, $newFileId]);
+
+                // Persist per-day activity data (driver files only – full slot data)
+                if ($fileType === 'driver') {
+                    $insDay = $db->prepare(
+                        'INSERT IGNORE INTO ddd_activity_days
+                         (file_id, date, drive_min, work_min, avail_min, rest_min, dist_km,
+                          violations, segments)
+                         VALUES (?,?,?,?,?,?,?,?,?)'
+                    );
+                    foreach ($actResult['days'] as $day) {
+                        $insDay->execute([
+                            $newFileId,
+                            $day['date'],
+                            $day['drive'] ?? 0,
+                            $day['work']  ?? 0,
+                            $day['avail'] ?? 0,
+                            $day['rest']  ?? 0,
+                            $day['dist']  ?? 0,
+                            json_encode($day['viol'] ?? []),
+                            json_encode($day['segs'] ?? []),
+                        ]);
+                    }
+                }
+            }
+        } catch (Throwable $actErr) {
+            // Non-fatal: activity parsing failed but the file itself was saved
+            error_log('DDD activity parse error (file_id=' . $newFileId . '): ' . $actErr->getMessage());
+        }
 
         $msg = 'Plik został wgrany do archiwum.';
         if ($autoCreated) $msg .= ' ' . $autoCreated . '.';

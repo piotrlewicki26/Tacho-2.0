@@ -187,6 +187,33 @@ CREATE TABLE IF NOT EXISTS `ddd_files` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─────────────────────────────────────────────
+-- Pre-parsed DDD activity data (per day, per file)
+-- Populated during file upload; used by driver_analysis module
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS `ddd_activity_days` (
+  `id`         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `file_id`    INT UNSIGNED NOT NULL,
+  `date`       DATE         NOT NULL,
+  `drive_min`  SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total driving minutes (activity=3)',
+  `work_min`   SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total work/other-work minutes (activity=2)',
+  `avail_min`  SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total availability minutes (activity=1)',
+  `rest_min`   SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total rest minutes (activity=0)',
+  `dist_km`    SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Distance in km from presenceCounter record header',
+  `violations` JSON         DEFAULT NULL
+    COMMENT 'EU regulation violation list for this day',
+  `segments`   JSON         DEFAULT NULL
+    COMMENT 'Array of {act,start,end,dur} slot objects for timeline rendering',
+  UNIQUE KEY uq_file_date (`file_id`, `date`),
+  INDEX idx_file_date (`file_id`, `date`),
+  FOREIGN KEY (`file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─────────────────────────────────────────────
 -- Delegations
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `delegations` (
