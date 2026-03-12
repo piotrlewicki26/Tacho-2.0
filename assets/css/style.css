@@ -352,7 +352,7 @@ body {
 }
 
 @media (min-width: 1200px) {
-  .tp-main { margin-left: var(--tp-sidebar-w); }
+  .tp-main { margin-left: 25px; }
 }
 
 /* ── Utilities ──────────────────────────────────────────────── */

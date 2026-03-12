@@ -29,6 +29,22 @@ set_error_handler(function (int $errno, string $errstr, string $errfile = '', in
     throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
 }, E_ERROR | E_PARSE | E_USER_ERROR);
 
+// Catch any truly fatal PHP error (parse/compile-time, etc.) that bypasses
+// both set_error_handler and set_exception_handler.
+register_shutdown_function(function (): void {
+    $err = error_get_last();
+    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        if (!headers_sent()) {
+            http_response_code(500);
+            header('Content-Type: application/json');
+        }
+        echo json_encode(['error' => 'Błąd serwera. Spróbuj ponownie.']);
+    }
+});
+
 // Buffer any stray PHP warnings/notices so they never corrupt the JSON body
 ob_start();
 
@@ -132,6 +148,35 @@ function dddParseVehicleReg(string $data): ?string {
     return null;
 }
 
+/**
+ * Convert a company name into a safe filesystem directory name.
+ * Transliterates common Polish diacritics to ASCII, strips unsafe chars.
+ */
+function dddSanitizeDirName(string $name): string {
+    static $map = [
+        'ą' => 'a', 'ć' => 'c', 'ę' => 'e', 'ł' => 'l', 'ń' => 'n',
+        'ó' => 'o', 'ś' => 's', 'ź' => 'z', 'ż' => 'z',
+        'Ą' => 'A', 'Ć' => 'C', 'Ę' => 'E', 'Ł' => 'L', 'Ń' => 'N',
+        'Ó' => 'O', 'Ś' => 'S', 'Ź' => 'Z', 'Ż' => 'Z',
+    ];
+    $name = strtr($name, $map);
+    $name = preg_replace('/[^a-zA-Z0-9 _\-]/', '', $name);
+    $name = preg_replace('/[\s_]+/', '_', trim($name));
+    return substr($name, 0, 64) ?: 'company';
+}
+
+/**
+ * Return the absolute filesystem path for a stored DDD file.
+ * New records carry a stored_subdir; old (legacy) records are stored
+ * directly under uploads/ddd/{company_id}/.
+ */
+function dddPhysPath(array $f, int $companyId): string {
+    if (!empty($f['stored_subdir'])) {
+        return __DIR__ . '/../uploads/ddd/' . $f['stored_subdir'] . '/' . $f['stored_name'];
+    }
+    return __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+}
+
 // ══════════════════════════════════════════════════════════════
 // Upload
 // ══════════════════════════════════════════════════════════════
@@ -177,8 +222,15 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     try {
+        // ── Resolve company-name-based upload directory ───────────
+        $cStmt = $db->prepare('SELECT name FROM companies WHERE id = ? LIMIT 1');
+        $cStmt->execute([$companyId]);
+        $companyDirName = dddSanitizeDirName($cStmt->fetchColumn() ?: (string)$companyId);
+        $typeSubdir     = $fileType === 'driver' ? 'Drivers' : 'Vehicles';
+        $storedSubdir   = $companyDirName . '/' . $typeSubdir;
+
         // ── Store physical file ───────────────────────────────────
-        $uploadDir = __DIR__ . '/../uploads/ddd/' . $companyId . '/';
+        $uploadDir = __DIR__ . '/../uploads/ddd/' . $storedSubdir . '/';
         if (!is_dir($uploadDir) && !mkdir($uploadDir, 0750, true) && !is_dir($uploadDir)) {
             echo json_encode(['error' => 'Nie można utworzyć katalogu na serwerze.']); exit;
         }
@@ -254,8 +306,8 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare(
             'INSERT INTO ddd_files
              (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
-              file_size, file_hash, download_date, uploaded_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+              stored_subdir, file_size, file_hash, download_date, uploaded_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $companyId,
@@ -264,6 +316,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileType,
             $file['name'],
             $storedName,
+            $storedSubdir,
             $fileSize,
             $fileHash,
             $downloadDate ?: date('Y-m-d'),
@@ -319,7 +372,7 @@ if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $db->prepare('UPDATE ddd_files SET is_deleted=1, deleted_at=NOW() WHERE id=?')
            ->execute([$fileId]);
 
-        $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+        $physPath = dddPhysPath($f, $companyId);
         if (is_file($physPath)) {
             @unlink($physPath);
         }
@@ -356,7 +409,7 @@ if ($action === 'download' && $_SERVER['REQUEST_METHOD'] === 'GET') {
             echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
         }
 
-        $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+        $physPath = dddPhysPath($f, $companyId);
         if (!is_file($physPath)) {
             http_response_code(404);
             header('Content-Type: application/json');
