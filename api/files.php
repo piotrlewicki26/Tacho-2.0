@@ -1,7 +1,7 @@
 <?php
 /**
  * TachoPro 2.0 – DDD Files API
- * Handles: upload, delete, download
+ * Handles: upload (with auto driver/vehicle creation), delete, download
  */
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db.php';
@@ -13,12 +13,76 @@ requireModule('core');
 
 header('Content-Type: application/json');
 
-$action    = $_REQUEST['action']    ?? '';
+$action    = $_REQUEST['action'] ?? '';
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 $userId    = (int)$_SESSION['user_id'];
 
-// ── Upload ───────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// DDD binary helpers (ported from truck-delegate-pro.jsx)
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * Read a printable-ASCII string of up to $n bytes from binary $data at $offset.
+ * Non-printable bytes become null characters (later trimmed).
+ */
+function dddReadStr(string $data, int $offset, int $n): string {
+    $len = strlen($data);
+    $out = '';
+    for ($k = 0; $k < $n && $offset + $k < $len; $k++) {
+        $b = ord($data[$offset + $k]);
+        $out .= ($b >= 32 && $b < 127) ? chr($b) : "\0";
+    }
+    return $out;
+}
+
+/**
+ * Parse driver surname + first name from a driver DDD file.
+ * Returns ['last_name'=>…,'first_name'=>…] or null on failure.
+ */
+function dddParseDriverName(string $data): ?array {
+    $len = strlen($data);
+    for ($i = 0; $i < $len - 4; $i++) {
+        // Look for tag 0x05 0x20 (EF_Identification-like marker)
+        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x20) continue;
+        // Block length (big-endian uint16)
+        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        if ($bl < 40 || $bl > 3000 || $i + 4 + $bl > $len) continue;
+        for ($k = 0; $k < $bl - 72; $k++) {
+            $b = ord($data[$i + 4 + $k]);
+            if ($b < 65 || $b > 90) continue;         // must start with A-Z
+            $sn = str_replace("\0", '', dddReadStr($data, $i + 4 + $k,      36));
+            $fn = str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36));
+            $sn = trim($sn);
+            $fn = trim($fn);
+            // Surname: ≥3 chars, starts with uppercase then lowercase
+            if (strlen($sn) >= 3 && preg_match('/^[A-Z][a-z]{2}/', $sn) && strlen($fn) >= 2) {
+                return ['last_name' => $sn, 'first_name' => $fn];
+            }
+        }
+        if (isset($sn) && $sn) break;  // found block, no point continuing
+    }
+    return null;
+}
+
+/**
+ * Parse vehicle registration plate from a vehicle DDD file.
+ * Returns the registration string or null.
+ */
+function dddParseVehicleReg(string $data): ?string {
+    $len = strlen($data);
+    for ($i = 0; $i < $len - 14; $i++) {
+        $s = trim(str_replace("\0", '', dddReadStr($data, $i, 14)));
+        if (preg_match('/^[A-Z]{2,4}\s[A-Z0-9]{4,6}$/', $s)) {
+            return $s;
+        }
+    }
+    return null;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Upload
+// ══════════════════════════════════════════════════════════════
 if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
         echo json_encode(['error' => 'Nieprawidłowy token CSRF.']); exit;
@@ -27,19 +91,19 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Brak uprawnień.']); exit;
     }
 
-    $fileType    = $_POST['file_type']    ?? '';
-    $downloadDate= $_POST['download_date']?? date('Y-m-d');
+    $fileType     = $_POST['file_type']     ?? '';
+    $downloadDate = $_POST['download_date'] ?? date('Y-m-d');
 
-    if (!in_array($fileType, ['driver','vehicle'], true)) {
+    if (!in_array($fileType, ['driver', 'vehicle'], true)) {
         echo json_encode(['error' => 'Nieprawidłowy typ pliku.']); exit;
     }
 
     if (empty($_FILES['ddd_file']) || $_FILES['ddd_file']['error'] !== UPLOAD_ERR_OK) {
         $uploadErrors = [
-            UPLOAD_ERR_INI_SIZE   => 'Plik przekracza limit rozmiaru serwera.',
-            UPLOAD_ERR_FORM_SIZE  => 'Plik przekracza dozwolony rozmiar.',
-            UPLOAD_ERR_PARTIAL    => 'Plik został przesłany częściowo.',
-            UPLOAD_ERR_NO_FILE    => 'Nie wybrano pliku.',
+            UPLOAD_ERR_INI_SIZE  => 'Plik przekracza limit rozmiaru serwera.',
+            UPLOAD_ERR_FORM_SIZE => 'Plik przekracza dozwolony rozmiar.',
+            UPLOAD_ERR_PARTIAL   => 'Plik został przesłany częściowo.',
+            UPLOAD_ERR_NO_FILE   => 'Nie wybrano pliku.',
         ];
         $errCode = $_FILES['ddd_file']['error'] ?? -1;
         echo json_encode(['error' => $uploadErrors[$errCode] ?? 'Błąd przesyłania pliku.']);
@@ -47,23 +111,20 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $file = $_FILES['ddd_file'];
-    $maxSize = 10 * 1024 * 1024;  // 10 MB
-    if ($file['size'] > $maxSize) {
+    if ($file['size'] > 10 * 1024 * 1024) {
         echo json_encode(['error' => 'Plik jest za duży (maks. 10 MB).']); exit;
     }
 
-    // Validate extension
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, ['ddd','c1b','tgd'], true)) {
+    if (!in_array($ext, ['ddd', 'c1b', 'tgd'], true)) {
         echo json_encode(['error' => 'Nieobsługiwany format pliku.']); exit;
     }
 
-    // Validate MIME / magic bytes (DDD files are binary)
     if (!is_uploaded_file($file['tmp_name'])) {
         echo json_encode(['error' => 'Błąd bezpieczeństwa – plik nie został prawidłowo przesłany.']); exit;
     }
 
-    // Store file
+    // ── Store physical file ───────────────────────────────────
     $uploadDir = __DIR__ . '/../uploads/ddd/' . $companyId . '/';
     if (!is_dir($uploadDir)) {
         mkdir($uploadDir, 0750, true);
@@ -79,14 +140,74 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $fileHash = hash_file('sha256', $destPath);
     $fileSize = filesize($destPath);
 
-    // Save to DB
+    // ── Parse binary content for auto-create ─────────────────
+    $binaryData    = file_get_contents($destPath);
+    $linkedDriverId  = null;
+    $linkedVehicleId = null;
+    $autoCreated     = null;   // info message back to UI
+
+    if ($fileType === 'driver') {
+        $parsed = dddParseDriverName($binaryData);
+        if ($parsed) {
+            $lastName  = $parsed['last_name'];
+            $firstName = $parsed['first_name'];
+
+            // Try to find existing driver by name (exact, case-insensitive)
+            $stmt = $db->prepare(
+                'SELECT id FROM drivers
+                 WHERE company_id=? AND is_active=1
+                   AND LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?)
+                 LIMIT 1'
+            );
+            $stmt->execute([$companyId, $lastName, $firstName]);
+            $existing = $stmt->fetchColumn();
+
+            if ($existing) {
+                $linkedDriverId = (int)$existing;
+            } else {
+                // Auto-create driver
+                $db->prepare(
+                    'INSERT INTO drivers (company_id, first_name, last_name) VALUES (?,?,?)'
+                )->execute([$companyId, $firstName, $lastName]);
+                $linkedDriverId = (int)$db->lastInsertId();
+                $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
+            }
+        }
+    } elseif ($fileType === 'vehicle') {
+        $reg = dddParseVehicleReg($binaryData);
+        if ($reg) {
+            $stmt = $db->prepare(
+                'SELECT id FROM vehicles
+                 WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
+                 LIMIT 1'
+            );
+            $stmt->execute([$companyId, $reg]);
+            $existing = $stmt->fetchColumn();
+
+            if ($existing) {
+                $linkedVehicleId = (int)$existing;
+            } else {
+                // Auto-create vehicle
+                $db->prepare(
+                    'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
+                )->execute([$companyId, strtoupper($reg)]);
+                $linkedVehicleId = (int)$db->lastInsertId();
+                $autoCreated = "Automatycznie utworzono pojazd: {$reg}";
+            }
+        }
+    }
+
+    // ── Save record to DB ─────────────────────────────────────
     $stmt = $db->prepare(
         'INSERT INTO ddd_files
-         (company_id, file_type, original_name, stored_name, file_size, file_hash, download_date, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+         (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
+          file_size, file_hash, download_date, uploaded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $stmt->execute([
         $companyId,
+        $linkedDriverId,
+        $linkedVehicleId,
         $fileType,
         $file['name'],
         $storedName,
@@ -96,11 +217,22 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $userId,
     ]);
 
-    echo json_encode(['success' => true, 'message' => 'Plik został wgrany do archiwum.']);
+    $msg = 'Plik został wgrany do archiwum.';
+    if ($autoCreated) $msg .= ' ' . $autoCreated . '.';
+
+    echo json_encode([
+        'success'      => true,
+        'message'      => $msg,
+        'driver_id'    => $linkedDriverId,
+        'vehicle_id'   => $linkedVehicleId,
+        'auto_created' => $autoCreated,
+    ]);
     exit;
 }
 
-// ── Delete ───────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Delete
+// ══════════════════════════════════════════════════════════════
 if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
         echo json_encode(['error' => 'Nieprawidłowy token CSRF.']); exit;
@@ -114,7 +246,6 @@ if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Nieprawidłowy identyfikator pliku.']); exit;
     }
 
-    // Verify ownership
     $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
     $stmt->execute([$fileId, $companyId]);
     $f = $stmt->fetch();
@@ -123,11 +254,9 @@ if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
     }
 
-    // Soft-delete in DB
     $db->prepare('UPDATE ddd_files SET is_deleted=1, deleted_at=NOW() WHERE id=?')
        ->execute([$fileId]);
 
-    // Optionally remove physical file
     $physPath = __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
     if (is_file($physPath)) {
         unlink($physPath);
@@ -137,7 +266,9 @@ if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     exit;
 }
 
-// ── Download ─────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Download
+// ══════════════════════════════════════════════════════════════
 if ($action === 'download' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     $csrf   = $_GET['csrf'] ?? '';
     $fileId = (int)($_GET['id'] ?? 0);

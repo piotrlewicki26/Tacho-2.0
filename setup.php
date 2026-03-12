@@ -59,12 +59,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                     $stmt->execute([$companyId, $adminUser, $adminEmail, $hash, 'superadmin']);
 
-                    // Create default license (core only, 1 year)
+                    // Create default license (core only, 1 year, unlimited)
                     $licKey = generateLicenseKey($uniqueCode, ['core'], date('Y-m-d', strtotime('+1 year')));
                     $stmt = $db->prepare(
-                        'INSERT INTO licenses (company_id, license_key, mod_core, valid_from, valid_until) VALUES (?, ?, 1, CURDATE(), ?)'
+                        'INSERT INTO licenses
+                         (company_id, license_key, mod_core, version, published_at, max_users, max_vehicles, max_drivers, valid_from, valid_until)
+                         VALUES (?, ?, 1, ?, CURDATE(), 0, 0, 0, CURDATE(), ?)'
                     );
-                    $stmt->execute([$companyId, $licKey, date('Y-m-d', strtotime('+1 year'))]);
+                    $stmt->execute([$companyId, $licKey, '2.0', date('Y-m-d', strtotime('+1 year'))]);
 
                     $success = 'System został skonfigurowany pomyślnie. Zaloguj się używając utworzonych danych.';
                 }

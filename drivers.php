@@ -67,6 +67,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ];
 
     if ($postAction === 'add') {
+        if (!licenseAllowsMore('drivers')) {
+            $limit = licenseLimit('drivers');
+            flashSet('danger', "Limit kierowców licencji ($limit) został osiągnięty. Skontaktuj się z dostawcą w celu rozszerzenia licencji.");
+            redirect('/drivers.php');
+        }
         $fields['company_id'] = $companyId;
         $cols = implode(', ', array_keys($fields));
         $phs  = implode(', ', array_fill(0, count($fields), '?'));

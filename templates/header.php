@@ -162,7 +162,7 @@
   </ul>
 
   <div class="tp-sidebar-footer">
-    <small class="text-muted">v2.0 &copy; TachoPro</small>
+    <small class="text-muted">v2.0 · 2025-01-01<br>&copy; TachoPro</small>
   </div>
 </nav>
 

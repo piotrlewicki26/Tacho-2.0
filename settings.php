@@ -82,6 +82,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $urole  = in_array($_POST['user_role'] ?? '', ['admin','manager','viewer']) ? $_POST['user_role'] : 'viewer';
 
         if ($uname && $upass && strlen($upass) >= 10) {
+            if (!licenseAllowsMore('users')) {
+                $limit = licenseLimit('users');
+                flashSet('danger', "Limit użytkowników licencji ($limit) został osiągnięty. Skontaktuj się z dostawcą w celu rozszerzenia licencji.");
+                redirect('/settings.php#tab-users');
+            }
             $hash = password_hash($upass, PASSWORD_BCRYPT, ['cost' => 12]);
             try {
                 $db->prepare('INSERT INTO users (company_id, username, email, password_hash, role) VALUES (?,?,?,?,?)')
@@ -142,59 +147,67 @@ include __DIR__ . '/templates/header.php';
 
   <!-- Profile tab -->
   <div class="tab-pane fade show active" id="tab-profile">
-    <div class="tp-card" style="max-width:500px">
-      <div class="tp-card-header">
-        <i class="bi bi-person text-primary"></i>
-        <span class="tp-card-title">Mój profil</span>
-      </div>
-      <div class="tp-card-body">
-        <form method="POST" novalidate>
-          <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
-          <input type="hidden" name="tab" value="profile">
-          <div class="mb-3">
-            <label class="form-label fw-600">Login</label>
-            <input type="text" class="form-control" value="<?= e($currentUser['username']) ?>" disabled>
+    <div class="row">
+      <div class="col-lg-5 col-xl-4">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-person text-primary"></i>
+            <span class="tp-card-title">Mój profil</span>
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-600">E-mail</label>
-            <input type="email" name="email" class="form-control"
-                   value="<?= e($currentUser['email'] ?? '') ?>">
+          <div class="tp-card-body">
+            <form method="POST" novalidate>
+              <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
+              <input type="hidden" name="tab" value="profile">
+              <div class="mb-3">
+                <label class="form-label fw-600">Login</label>
+                <input type="text" class="form-control" value="<?= e($currentUser['username']) ?>" disabled>
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-600">E-mail</label>
+                <input type="email" name="email" class="form-control"
+                       value="<?= e($currentUser['email'] ?? '') ?>">
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-600">Rola</label>
+                <input type="text" class="form-control" value="<?= e($currentUser['role']) ?>" disabled>
+              </div>
+              <button type="submit" class="btn btn-primary">Zapisz</button>
+            </form>
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-600">Rola</label>
-            <input type="text" class="form-control" value="<?= e($currentUser['role']) ?>" disabled>
-          </div>
-          <button type="submit" class="btn btn-primary">Zapisz</button>
-        </form>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Password tab -->
   <div class="tab-pane fade" id="tab-password">
-    <div class="tp-card" style="max-width:500px">
-      <div class="tp-card-header">
-        <i class="bi bi-key text-warning"></i>
-        <span class="tp-card-title">Zmień hasło</span>
-      </div>
-      <div class="tp-card-body">
-        <form method="POST" novalidate>
-          <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
-          <input type="hidden" name="tab" value="password">
-          <div class="mb-3">
-            <label class="form-label fw-600">Aktualne hasło</label>
-            <input type="password" name="current_pass" class="form-control" required autocomplete="current-password">
+    <div class="row">
+      <div class="col-lg-5 col-xl-4">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-key text-warning"></i>
+            <span class="tp-card-title">Zmień hasło</span>
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-600">Nowe hasło (min. 10 znaków)</label>
-            <input type="password" name="new_pass" class="form-control" required minlength="10" autocomplete="new-password">
+          <div class="tp-card-body">
+            <form method="POST" novalidate>
+              <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
+              <input type="hidden" name="tab" value="password">
+              <div class="mb-3">
+                <label class="form-label fw-600">Aktualne hasło</label>
+                <input type="password" name="current_pass" class="form-control" required autocomplete="current-password">
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-600">Nowe hasło (min. 10 znaków)</label>
+                <input type="password" name="new_pass" class="form-control" required minlength="10" autocomplete="new-password">
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-600">Powtórz nowe hasło</label>
+                <input type="password" name="new_pass2" class="form-control" required autocomplete="new-password">
+              </div>
+              <button type="submit" class="btn btn-warning text-white">Zmień hasło</button>
+            </form>
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-600">Powtórz nowe hasło</label>
-            <input type="password" name="new_pass2" class="form-control" required autocomplete="new-password">
-          </div>
-          <button type="submit" class="btn btn-warning text-white">Zmień hasło</button>
-        </form>
+        </div>
       </div>
     </div>
   </div>
@@ -203,7 +216,7 @@ include __DIR__ . '/templates/header.php';
   <!-- Groups tab -->
   <div class="tab-pane fade" id="tab-groups">
     <div class="row g-4">
-      <div class="col-md-5">
+      <div class="col-lg-4 col-xl-3">
         <div class="tp-card">
           <div class="tp-card-header">
             <i class="bi bi-plus-circle text-primary"></i>
@@ -221,7 +234,7 @@ include __DIR__ . '/templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-md-7">
+      <div class="col-lg-5 col-xl-4">
         <div class="tp-card">
           <div class="tp-card-header">
             <i class="bi bi-collection text-secondary"></i>
@@ -259,7 +272,7 @@ include __DIR__ . '/templates/header.php';
   <!-- Users tab -->
   <div class="tab-pane fade" id="tab-users">
     <div class="row g-4">
-      <div class="col-md-5">
+      <div class="col-lg-4 col-xl-3">
         <div class="tp-card">
           <div class="tp-card-header">
             <i class="bi bi-person-plus text-primary"></i>
@@ -296,7 +309,7 @@ include __DIR__ . '/templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-md-7">
+      <div class="col-lg-8 col-xl-9">
         <div class="tp-card">
           <div class="tp-card-header">
             <i class="bi bi-people text-secondary"></i>

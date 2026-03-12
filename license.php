@@ -39,15 +39,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($postAction === 'add_license') {
         $mods = $_POST['modules'] ?? [];
-        $validFrom  = $_POST['valid_from']  ?? date('Y-m-d');
-        $validUntil = $_POST['valid_until'] ?? '';
+        $validFrom   = $_POST['valid_from']   ?? date('Y-m-d');
+        $validUntil  = $_POST['valid_until']  ?? '';
+        $version     = trim($_POST['version'] ?? '2.0');
+        $publishedAt = $_POST['published_at'] ?? date('Y-m-d');
+        $maxUsers    = max(0, (int)($_POST['max_users']    ?? 0));
+        $maxVehicles = max(0, (int)($_POST['max_vehicles'] ?? 0));
+        $maxDrivers  = max(0, (int)($_POST['max_drivers']  ?? 0));
         if (!$validUntil) { flashSet('danger', 'Podaj datę ważności licencji.'); redirect('/license.php'); }
 
         $licKey = generateLicenseKey($co['unique_code'], (array)$mods, $validUntil);
         $db->prepare(
             'INSERT INTO licenses
-             (company_id, license_key, mod_core, mod_delegation, mod_driver_analysis, mod_vehicle_analysis, valid_from, valid_until)
-             VALUES (?,?,?,?,?,?,?,?)'
+             (company_id, license_key, mod_core, mod_delegation, mod_driver_analysis, mod_vehicle_analysis,
+              version, published_at, max_users, max_vehicles, max_drivers, valid_from, valid_until)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'
         )->execute([
             $targetCid,
             $licKey,
@@ -55,6 +61,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             in_array('delegation',       (array)$mods) ? 1 : 0,
             in_array('driver_analysis',  (array)$mods) ? 1 : 0,
             in_array('vehicle_analysis', (array)$mods) ? 1 : 0,
+            $version,
+            $publishedAt,
+            $maxUsers,
+            $maxVehicles,
+            $maxDrivers,
             $validFrom,
             $validUntil,
         ]);
@@ -104,6 +115,14 @@ include __DIR__ . '/templates/header.php';
             <span class="badge bg-<?= e($licSt['class']) ?>"><?= e($licSt['label']) ?></span>
           </div>
           <div class="d-flex justify-content-between text-muted small">
+            <span>Wersja TachoPro</span>
+            <strong><?= e($activeLic['version'] ?? '—') ?></strong>
+          </div>
+          <div class="d-flex justify-content-between text-muted small">
+            <span>Data publikacji</span>
+            <strong><?= fmtDate($activeLic['published_at'] ?? null) ?></strong>
+          </div>
+          <div class="d-flex justify-content-between text-muted small">
             <span>Ważna od</span>
             <strong><?= fmtDate($activeLic['valid_from']) ?></strong>
           </div>
@@ -118,6 +137,32 @@ include __DIR__ . '/templates/header.php';
           </div>
           <?php endif; ?>
         </div>
+        <hr>
+        <p class="fw-600 mb-2">Limity licencji:</p>
+        <?php
+        $limitMap = [
+            'max_users'    => ['label' => 'Użytkownicy', 'icon' => 'people'],
+            'max_vehicles' => ['label' => 'Pojazdy',     'icon' => 'truck'],
+            'max_drivers'  => ['label' => 'Kierowcy',    'icon' => 'person-badge'],
+        ];
+        $countMap  = [
+            'max_users'    => 'SELECT COUNT(*) FROM users    WHERE company_id=' . $companyId . ' AND is_active=1 AND role!="superadmin"',
+            'max_vehicles' => 'SELECT COUNT(*) FROM vehicles WHERE company_id=' . $companyId . ' AND is_active=1',
+            'max_drivers'  => 'SELECT COUNT(*) FROM drivers  WHERE company_id=' . $companyId . ' AND is_active=1',
+        ];
+        foreach ($limitMap as $col => $info):
+            $limit   = (int)($activeLic[$col] ?? 0);
+            $current = (int)$db->query($countMap[$col])->fetchColumn();
+            $over    = $limit > 0 && $current > $limit;
+        ?>
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <i class="bi bi-<?= $info['icon'] ?> text-secondary"></i>
+          <span><?= e($info['label']) ?></span>
+          <span class="ms-auto badge bg-<?= $over ? 'danger' : 'secondary' ?>">
+            <?= $current ?><?= $limit > 0 ? '/' . $limit : ' / ∞' ?>
+          </span>
+        </div>
+        <?php endforeach; ?>
         <hr>
         <p class="fw-600 mb-2">Aktywne moduły:</p>
         <?php
@@ -169,19 +214,25 @@ include __DIR__ . '/templates/header.php';
         <div class="table-responsive">
           <table class="tp-table">
             <thead>
-              <tr><th>Ważna od</th><th>Ważna do</th><th>Status</th></tr>
+              <tr><th>Wersja</th><th>Ważna od</th><th>Ważna do</th><th>Limity (U/P/K)</th><th>Status</th></tr>
             </thead>
             <tbody>
               <?php foreach ($licenses as $lic): ?>
               <?php $st = dateStatus($lic['valid_until'], 30); ?>
               <tr>
+                <td><span class="badge bg-primary"><?= e($lic['version'] ?? '1.0') ?></span></td>
                 <td><?= fmtDate($lic['valid_from']) ?></td>
                 <td><?= fmtDate($lic['valid_until']) ?></td>
+                <td class="font-monospace small">
+                  <?= (int)($lic['max_users']    ?? 0) ?: '∞' ?> /
+                  <?= (int)($lic['max_vehicles'] ?? 0) ?: '∞' ?> /
+                  <?= (int)($lic['max_drivers']  ?? 0) ?: '∞' ?>
+                </td>
                 <td><span class="badge bg-<?= e($st['class']) ?>"><?= e($st['label']) ?></span></td>
               </tr>
               <?php endforeach; ?>
               <?php if (!$licenses): ?>
-              <tr><td colspan="3" class="text-center text-muted py-3">Brak historii licencji</td></tr>
+              <tr><td colspan="5" class="text-center text-muted py-3">Brak historii licencji</td></tr>
               <?php endif; ?>
             </tbody>
           </table>
@@ -214,13 +265,45 @@ include __DIR__ . '/templates/header.php';
           </select>
         </div>
         <div class="col-md-4">
+          <label class="form-label fw-600">Wersja TachoPro</label>
+          <input type="text" name="version" class="form-control" value="2.0"
+                 pattern="^\d+\.\d+(\.\d+)?$" placeholder="np. 2.0">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-600">Data publikacji licencji</label>
+          <input type="date" name="published_at" class="form-control" value="<?= date('Y-m-d') ?>">
+        </div>
+        <div class="col-md-6">
           <label class="form-label fw-600">Ważna od</label>
           <input type="date" name="valid_from" class="form-control" value="<?= date('Y-m-d') ?>">
         </div>
-        <div class="col-md-4">
+        <div class="col-md-6">
           <label class="form-label fw-600">Ważna do <span class="text-danger">*</span></label>
           <input type="date" name="valid_until" class="form-control" required
                  value="<?= date('Y-m-d', strtotime('+1 year')) ?>">
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-600">Limity (0 = bez limitu)</label>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-people"></i></span>
+                <input type="number" name="max_users"    class="form-control" min="0" value="0" placeholder="Użytkownicy">
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-truck"></i></span>
+                <input type="number" name="max_vehicles" class="form-control" min="0" value="0" placeholder="Pojazdy">
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-person-badge"></i></span>
+                <input type="number" name="max_drivers"  class="form-control" min="0" value="0" placeholder="Kierowcy">
+              </div>
+            </div>
+          </div>
         </div>
         <div class="col-12">
           <label class="form-label fw-600">Moduły</label>

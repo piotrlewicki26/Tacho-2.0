@@ -123,7 +123,7 @@ function generateCompanyCode(): string {
  * Generate a license key tied to a company code and enabled modules.
  */
 function generateLicenseKey(string $companyCode, array $modules, string $validUntil): string {
-    $payload = $companyCode . implode('|', $modules) . $validUntil . random_bytes(16);
+    $payload = $companyCode . implode('|', $modules) . $validUntil . bin2hex(random_bytes(16));
     return hash('sha256', $payload);
 }
 

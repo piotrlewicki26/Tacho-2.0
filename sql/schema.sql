@@ -22,16 +22,21 @@ CREATE TABLE IF NOT EXISTS `companies` (
 -- License modules
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `licenses` (
-  `id`            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `company_id`    INT UNSIGNED NOT NULL,
-  `license_key`   CHAR(64)     NOT NULL UNIQUE,
-  `mod_core`      TINYINT(1)   NOT NULL DEFAULT 1 COMMENT 'Dashboard/Drivers/Vehicles',
-  `mod_delegation`TINYINT(1)   NOT NULL DEFAULT 0,
-  `mod_driver_analysis` TINYINT(1) NOT NULL DEFAULT 0,
-  `mod_vehicle_analysis`TINYINT(1) NOT NULL DEFAULT 0,
-  `valid_from`    DATE         NOT NULL,
-  `valid_until`   DATE         NOT NULL,
-  `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `id`                   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `company_id`           INT UNSIGNED NOT NULL,
+  `license_key`          CHAR(64)          NOT NULL UNIQUE,
+  `mod_core`             TINYINT(1)        NOT NULL DEFAULT 1 COMMENT 'Dashboard/Drivers/Vehicles',
+  `mod_delegation`       TINYINT(1)        NOT NULL DEFAULT 0,
+  `mod_driver_analysis`  TINYINT(1)        NOT NULL DEFAULT 0,
+  `mod_vehicle_analysis` TINYINT(1)        NOT NULL DEFAULT 0,
+  `version`              VARCHAR(20)       NOT NULL DEFAULT '1.0'  COMMENT 'TachoPro version this license covers',
+  `published_at`         DATE              NOT NULL                COMMENT 'License publication / issue date',
+  `max_users`            SMALLINT UNSIGNED NOT NULL DEFAULT 0      COMMENT '0 = unlimited',
+  `max_vehicles`         SMALLINT UNSIGNED NOT NULL DEFAULT 0      COMMENT '0 = unlimited',
+  `max_drivers`          SMALLINT UNSIGNED NOT NULL DEFAULT 0      COMMENT '0 = unlimited',
+  `valid_from`           DATE              NOT NULL,
+  `valid_until`          DATE              NOT NULL,
+  `created_at`           TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
