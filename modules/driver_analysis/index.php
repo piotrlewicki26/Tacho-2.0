@@ -108,7 +108,7 @@ include __DIR__ . '/../../templates/header.php';
 
     <?php
     // Parse the DDD file using PHP (basic binary analysis)
-    $filePath = __DIR__ . '/../../uploads/ddd/' . $companyId . '/' . $selectedFile['stored_name'];
+    $filePath = dddPhysPath($selectedFile, $companyId);
     $parseResult = null;
     $parseError  = null;
 

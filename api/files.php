@@ -165,18 +165,6 @@ function dddSanitizeDirName(string $name): string {
     return substr($name, 0, 64) ?: 'company';
 }
 
-/**
- * Return the absolute filesystem path for a stored DDD file.
- * New records carry a stored_subdir; old (legacy) records are stored
- * directly under uploads/ddd/{company_id}/.
- */
-function dddPhysPath(array $f, int $companyId): string {
-    if (!empty($f['stored_subdir'])) {
-        return __DIR__ . '/../uploads/ddd/' . $f['stored_subdir'] . '/' . $f['stored_name'];
-    }
-    return __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
-}
-
 // ══════════════════════════════════════════════════════════════
 // Upload
 // ══════════════════════════════════════════════════════════════

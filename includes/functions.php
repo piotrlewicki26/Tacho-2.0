@@ -143,3 +143,15 @@ function formatBytes(int $bytes): string {
     if ($bytes >= 1024)    return number_format($bytes / 1024, 1)    . ' KB';
     return $bytes . ' B';
 }
+
+/**
+ * Return the absolute filesystem path for a stored DDD file.
+ * New records carry a stored_subdir (e.g. "CompanyName/Drivers");
+ * legacy records (stored_subdir IS NULL) are under uploads/ddd/{company_id}/.
+ */
+function dddPhysPath(array $f, int $companyId): string {
+    if (!empty($f['stored_subdir'])) {
+        return __DIR__ . '/../uploads/ddd/' . $f['stored_subdir'] . '/' . $f['stored_name'];
+    }
+    return __DIR__ . '/../uploads/ddd/' . $companyId . '/' . $f['stored_name'];
+}

@@ -79,7 +79,7 @@ $vehSummary = [];
 $parseError = null;
 
 if ($selectedFile) {
-    $filePath = __DIR__ . '/../../uploads/ddd/' . $companyId . '/' . $selectedFile['stored_name'];
+    $filePath = dddPhysPath($selectedFile, $companyId);
     if (is_file($filePath)) {
         $result     = parseVehicleDdd($filePath);
         $vehDays    = $result['days']    ?? [];
