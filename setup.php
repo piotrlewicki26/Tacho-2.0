@@ -69,6 +69,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([$companyId, $licKey, '2.0', date('Y-m-d', strtotime('+1 year'))]);
 
                     $success = 'System został skonfigurowany pomyślnie. Zaloguj się używając utworzonych danych.';
+
+                    // ── Initialise upload directory ───────────────────
+                    $dddDir = __DIR__ . '/uploads/ddd/';
+                    if (!is_dir($dddDir)) {
+                        @mkdir($dddDir, 0755, true);
+                    }
+                    if (!is_writable($dddDir)) {
+                        $success .= ' UWAGA: Katalog uploads/ddd/ nie ma uprawnień do zapisu. Uruchom: chmod -R 0755 uploads/ddd/';
+                    }
                 }
             } catch (Exception $e) {
                 error_log('Setup error: ' . $e->getMessage());

@@ -266,9 +266,14 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $storedSubdir   = $companyDirName . '/' . $typeSubdir;
 
         // ── Store physical file ───────────────────────────────────
-        $uploadDir = __DIR__ . '/../uploads/ddd/' . $storedSubdir . '/';
-        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0750, true) && !is_dir($uploadDir)) {
-            echo json_encode(['error' => 'Nie można utworzyć katalogu na serwerze.']); exit;
+        $dddBaseDir = __DIR__ . '/../uploads/ddd/';
+        if (!is_dir($dddBaseDir) || !is_writable($dddBaseDir)) {
+            echo json_encode(['error' => 'Katalog uploads/ddd/ nie istnieje lub nie ma uprawnień do zapisu. Sprawdź uprawnienia zapisu na serwerze (chmod 0755).']); exit;
+        }
+
+        $uploadDir = $dddBaseDir . $storedSubdir . '/';
+        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+            echo json_encode(['error' => 'Nie można utworzyć katalogu na serwerze. Sprawdź uprawnienia do uploads/ddd/.']); exit;
         }
 
         $storedName = date('Ymd_His_') . bin2hex(random_bytes(6)) . '.' . $ext;
