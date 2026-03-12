@@ -303,12 +303,10 @@ include __DIR__ . '/templates/header.php';
                  class="btn btn-xs btn-outline-primary me-1" title="Edytuj">
                 <i class="bi bi-pencil"></i>
               </a>
-              <?php if (hasModule('driver_analysis')): ?>
               <a href="/modules/driver_analysis/?driver_id=<?= $d['id'] ?>"
                  class="btn btn-xs btn-outline-info me-1" title="Analiza">
                 <i class="bi bi-bar-chart-line"></i>
               </a>
-              <?php endif; ?>
               <?php if (hasRole('admin')): ?>
               <form method="POST" class="d-inline"
                     onsubmit="return confirm('Czy na pewno dezaktywować tego kierowcę?')">

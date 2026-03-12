@@ -129,50 +129,23 @@ $_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
 
     <li class="tp-nav-separator"><small>Moduły</small></li>
 
-    <?php if (function_exists('hasModule') && hasModule('driver_analysis')): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='driver_analysis' ? ' active':'' ?>">
       <a href="/modules/driver_analysis/" class="tp-nav-link">
         <i class="bi bi-bar-chart-line"></i><span>Analiza kierowców</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item tp-nav-locked">
-      <span class="tp-nav-link">
-        <i class="bi bi-bar-chart-line"></i><span>Analiza kierowców</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </span>
-    </li>
-    <?php endif; ?>
 
-    <?php if (function_exists('hasModule') && hasModule('vehicle_analysis')): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='vehicle_analysis' ? ' active':'' ?>">
       <a href="/modules/vehicle_analysis/" class="tp-nav-link">
         <i class="bi bi-truck-front"></i><span>Analiza pojazdów</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item tp-nav-locked">
-      <span class="tp-nav-link">
-        <i class="bi bi-truck-front"></i><span>Analiza pojazdów</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </span>
-    </li>
-    <?php endif; ?>
 
-    <?php if (function_exists('hasModule') && hasModule('delegation')): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?>">
       <a href="/modules/delegation/" class="tp-nav-link">
         <i class="bi bi-map"></i><span>Delegacje</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item tp-nav-locked">
-      <span class="tp-nav-link">
-        <i class="bi bi-map"></i><span>Delegacje</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </span>
-    </li>
-    <?php endif; ?>
 
     <li class="tp-nav-separator"><small>Raporty & Firma</small></li>
 

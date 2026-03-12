@@ -70,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!licenseAllowsMore('vehicles')) {
             $limit = licenseLimit('vehicles');
             $limitMsg = $limit > 0 ? " (limit: $limit)" : '';
-            flashSet('danger', "Limit pojazdów planu Demo$limitMsg został osiągnięty. Przejdź na plan Pro, aby dodać więcej pojazdów.");
+            flashSet('danger', "Limit pojazdów planu Demo $limitMsg został osiągnięty. Przejdź na plan Pro, aby dodać więcej pojazdów.");
             redirect('/vehicles.php');
         }
         $fields['company_id'] = $companyId;
@@ -272,12 +272,10 @@ include __DIR__ . '/templates/header.php';
                  class="btn btn-xs btn-outline-primary me-1" title="Edytuj">
                 <i class="bi bi-pencil"></i>
               </a>
-              <?php if (hasModule('vehicle_analysis')): ?>
               <a href="/modules/vehicle_analysis/?vehicle_id=<?= $v['id'] ?>"
                  class="btn btn-xs btn-outline-info me-1" title="Analiza">
                 <i class="bi bi-bar-chart-line"></i>
               </a>
-              <?php endif; ?>
               <?php if (hasRole('admin')): ?>
               <form method="POST" class="d-inline"
                     onsubmit="return confirm('Dezaktywować pojazd?')">

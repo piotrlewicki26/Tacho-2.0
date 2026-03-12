@@ -1,76 +1,54 @@
 <?php
 /**
- * TachoPro 2.0 – License checker
- * Verifies that the company has a valid subscription / plan.
- * Works with the new subscription-based billing model.
+ * TachoPro 2.0 – Access checker
  *
- * For backward-compatibility the legacy `licenses` table check is kept as a
- * fallback – a company that has a valid legacy license record still gets access.
+ * The module licensing system has been removed.
+ * All modules are available to any company that has an active account
+ * (plan='pro', or plan='demo' with a non-expired trial).
+ *
+ * `hasModule()` / `requireModule()` are kept as thin wrappers so that
+ * existing call-sites do not need to change.
  */
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/subscription.php';
 
 /**
- * Load the active license for the current company (legacy table).
- * Returns the license row or null.
- */
-function getActiveLicense(): ?array {
-    static $license = false;
-    if ($license !== false) return $license ?: null;
-
-    $companyId = $_SESSION['company_id'] ?? null;
-    if (!$companyId) { $license = null; return null; }
-
-    $db   = getDB();
-    $stmt = $db->prepare(
-        'SELECT * FROM licenses
-         WHERE company_id = ?
-           AND valid_from  <= CURDATE()
-           AND valid_until >= CURDATE()
-         ORDER BY valid_until DESC
-         LIMIT 1'
-    );
-    $stmt->execute([$companyId]);
-    $license = $stmt->fetch() ?: null;
-    return $license;
-}
-
-/**
- * Check whether the current company has access to a given module.
+ * Returns true when the current company has access.
+ * All modules are granted equally – no per-module restrictions.
  *
- * Access is granted when EITHER:
- *  1. The company has plan='pro' (subscription model), OR
- *  2. The company has a valid legacy license row with the module enabled, OR
- *  3. The company has plan='demo' with an active trial (core module only).
+ * Access is granted when:
+ *  - company plan = 'pro', OR
+ *  - company plan = 'demo' AND trial has not expired
  */
 function hasModule(string $module): bool {
     $companyId = (int)($_SESSION['company_id'] ?? 0);
     if (!$companyId) return false;
 
-    // Subscription model: pro plan grants all modules
     $co = getCompanyPlan($companyId);
-    if ($co && $co['plan'] === 'pro') return true;
+    if (!$co) return false;
 
-    // Demo plan: only 'core' is accessible while trial is active
-    if ($co && $co['plan'] === 'demo') {
-        if (isTrialExpired($companyId)) return false;
-        return $module === 'core';
+    if ($co['plan'] === 'pro') return true;
+
+    // Demo: all modules accessible while trial is still valid
+    if ($co['plan'] === 'demo') {
+        return !isTrialExpired($companyId);
     }
 
-    // Legacy license fallback
-    $license = getActiveLicense();
-    if (!$license) return false;
-    $col = 'mod_' . $module;
-    return isset($license[$col]) && (bool)$license[$col];
+    return false;
 }
 
 /**
- * Require a module or show a "not licensed" page.
+ * Require access or redirect to dashboard with a message.
+ * No longer shows the "module unavailable" page.
  */
 function requireModule(string $module): void {
+    requireLogin();   // Must be logged in first
+
     if (!hasModule($module)) {
-        include __DIR__ . '/../templates/no_license.php';
+        // Trial has expired – send to billing page so they can upgrade
+        flashSet('warning', 'Twój okres próbny wygasł. Przejdź na plan Pro, aby kontynuować.');
+        header('Location: /billing.php');
         exit;
     }
 }
@@ -98,5 +76,14 @@ function licenseLimit(string $type): int {
         'users'    => 0,
         default    => 0,
     };
+}
+
+/**
+ * @deprecated No longer used. The licenses table is no longer checked for access control.
+ *             Kept only as a stub for any third-party code that may call this function.
+ * @return null always
+ */
+function getActiveLicense(): ?array {
+    return null;
 }
 
