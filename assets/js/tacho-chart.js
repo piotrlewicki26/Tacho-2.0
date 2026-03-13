@@ -28,7 +28,7 @@
   var T2Y = 106;
   var T2H = 26;
   var AXY = 148;
-  var RH  = 172;
+  var RH  = 192;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
