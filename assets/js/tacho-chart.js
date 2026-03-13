@@ -651,12 +651,8 @@
         }
       });
 
-      var startMin = di * 1440;
+      var dayStartMin = di * 1440;
       var hasPrev = idx > 0, hasNext = idx < sorted.length - 1;
-
-      /* Activity totals for the day */
-      var selTotals = {0:0,1:0,2:0,3:0};
-      (day.segs || []).forEach(function(s) { selTotals[s.act] = (selTotals[s.act]||0) + s.dur; });
 
       /* Button styles */
       var btnCss = function(en) {
@@ -666,32 +662,161 @@
       nextBtn.style.cssText = btnCss(hasNext); nextBtn.disabled = !hasNext;
       titleSpan.textContent = 'Widok dnia \u2014 ' + fmtDate(dayDate);
 
-      /* Chart SVG */
+      /* Chart dimensions */
       var cw = Math.max(400, Math.min(860, window.innerWidth * 0.9 - LW - 24));
       var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
+
       chartDiv.innerHTML = '';
-      var svgRow = document.createElement('div');
-      svgRow.style.cssText = 'display:flex;align-items:stretch;';
+
+      /* Helper: activity totals clipped to [absFrom, absTo] */
+      function rangeTotals(absFrom, absTo) {
+        var t = {0:0,1:0,2:0,3:0};
+        (day.segs||[]).forEach(function(s) {
+          var sA = dayStartMin + s.start, eA = dayStartMin + s.end;
+          var ov = Math.min(eA, absTo) - Math.max(sA, absFrom);
+          if (ov > 0) t[s.act] = (t[s.act]||0) + ov;
+        });
+        return t;
+      }
+
+      /* Helper: update activity breakdown panel */
+      function updateBreakdown(totals, totalSpan) {
+        breakdownDiv.innerHTML = '';
+        [3,2,1,0].forEach(function(k) {
+          var val = totals[k]||0;
+          var card = document.createElement('div');
+          card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
+          card.innerHTML =
+            '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
+            '<span style="font-size:11px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+
+            '&nbsp;<span style="color:#9AA0AA;font-size:10px;">('+pct(val, totalSpan)+'%)</span></span>';
+          breakdownDiv.appendChild(card);
+        });
+      }
+
+      /* == Overview row (full day, drag-to-select) == */
+      var overviewRow = document.createElement('div');
+      overviewRow.style.cssText = 'display:flex;align-items:stretch;';
       var svgSb = document.createElement('div');
       svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
-      svgSb.innerHTML = '<div style="font-size:10px;color:#1565C0;font-weight:700;margin-bottom:2px;">DZIE\u0143</div><div style="font-size:10px;color:#5A6070;">'+fmtDate(dayDate)+'</div>';
-      var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
-      fillChartSVG(zoomSvg, ws, weekDays, cw, startMin, startMin + 1440, null, dayViols);
-      svgRow.appendChild(svgSb); svgRow.appendChild(zoomSvg);
-      chartDiv.appendChild(svgRow);
+      svgSb.innerHTML =
+        '<div style="font-size:10px;color:#1565C0;font-weight:700;margin-bottom:2px;">DZIE\u0143</div>' +
+        '<div style="font-size:10px;color:#5A6070;">'+fmtDate(dayDate)+'</div>' +
+        '<div style="font-size:9px;color:#9AA0AA;margin-top:4px;">przeciągnij \u2192 zoom</div>';
+      var overviewSvg = mkSVG('svg', {width:cw, height:RH,
+        style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
+      fillChartSVG(overviewSvg, ws, weekDays, cw, dayStartMin, dayStartMin+1440, null, dayViols);
 
-      /* Activity breakdown */
-      breakdownDiv.innerHTML = '';
-      [3,2,1,0].forEach(function(k) {
-        var val = selTotals[k]||0;
-        var card = document.createElement('div');
-        card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
-        card.innerHTML =
-          '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
-          '<span style="font-size:11px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+'&nbsp;<span style="color:#9AA0AA;font-size:10px;">('+pct(val,1440)+'%)</span></span>';
-        breakdownDiv.appendChild(card);
+      /* Selection overlay elements */
+      var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
+        fill:'rgba(30,136,229,0.12)', stroke:'#1E88E5', 'stroke-width':1.5, rx:2,
+        'pointer-events':'none', visibility:'hidden'});
+      var selLabelBg  = mkSVG('rect', {x:0, y:T1Y-23, width:0, height:15, fill:'#1E88E5', rx:2,
+        'pointer-events':'none', visibility:'hidden'});
+      var selLabelTxt = mkSVG('text', {x:0, y:T1Y-11, 'text-anchor':'middle', fill:'#fff',
+        'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':600,
+        'pointer-events':'none', visibility:'hidden'});
+      overviewSvg.appendChild(selRect);
+      overviewSvg.appendChild(selLabelBg);
+      overviewSvg.appendChild(selLabelTxt);
+      overviewRow.appendChild(svgSb);
+      overviewRow.appendChild(overviewSvg);
+      chartDiv.appendChild(overviewRow);
+
+      /* == Info bar (shown when a range is selected) == */
+      var infoBar = document.createElement('div');
+      infoBar.style.cssText = 'display:none;align-items:center;gap:8px;padding:5px 12px;background:#E3F2FD;border-bottom:1px solid #BBDEFB;flex-wrap:wrap;font-family:Inter,sans-serif;';
+      chartDiv.appendChild(infoBar);
+
+      /* == Zoom row (shown when a range is selected) == */
+      var zoomRow = document.createElement('div');
+      zoomRow.style.cssText = 'display:none;align-items:stretch;background:#F8FBFF;border-bottom:1px solid #BBDEFB;';
+      chartDiv.appendChild(zoomRow);
+
+      /* Apply a time-range selection: show info bar + zoomed SVG */
+      function applySelection(selAbsFrom, selAbsTo) {
+        var durMin = selAbsTo - selAbsFrom;
+        var timeFrom = hhmm(selAbsFrom - dayStartMin);
+        var timeTo   = hhmm(selAbsTo   - dayStartMin);
+
+        /* Info bar */
+        infoBar.style.display = 'flex';
+        infoBar.innerHTML =
+          '<span style="font-size:11px;color:#1565C0;font-weight:700;">\u25BC Powi\u0119kszenie:</span>' +
+          '<span style="font-size:11px;color:#1A2030;">'+timeFrom+' \u2013 '+timeTo+'</span>' +
+          '<span style="font-size:11px;color:#9AA0AA;">('+hm(durMin)+')</span>';
+        var resetBtn2 = document.createElement('button');
+        resetBtn2.type = 'button'; resetBtn2.textContent = '\u00D7 Resetuj';
+        resetBtn2.style.cssText = 'background:#1E88E5;border:none;border-radius:3px;padding:2px 8px;font-size:11px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;margin-left:auto;';
+        resetBtn2.addEventListener('click', clearSelection);
+        infoBar.appendChild(resetBtn2);
+
+        /* Zoomed SVG */
+        zoomRow.style.display = 'flex';
+        zoomRow.innerHTML = '';
+        var zSb = document.createElement('div');
+        zSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#DDEEFF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;font-size:10px;';
+        zSb.innerHTML =
+          '<div style="color:#1565C0;font-weight:700;margin-bottom:2px;">ZOOM</div>' +
+          '<div style="color:#5A6070;">'+timeFrom+'</div>' +
+          '<div style="color:#5A6070;">'+timeTo+'</div>';
+        var zSvg = mkSVG('svg', {width:cw, height:RH,
+          style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
+        fillChartSVG(zSvg, ws, weekDays, cw, selAbsFrom, selAbsTo, null, dayViols);
+        zoomRow.appendChild(zSb);
+        zoomRow.appendChild(zSvg);
+
+        /* Update breakdown to selection stats */
+        updateBreakdown(rangeTotals(selAbsFrom, selAbsTo), durMin);
+      }
+
+      /* Clear selection and restore full-day view */
+      function clearSelection() {
+        selRect.setAttribute('visibility','hidden');
+        selLabelBg.setAttribute('visibility','hidden');
+        selLabelTxt.setAttribute('visibility','hidden');
+        infoBar.style.display = 'none';
+        zoomRow.style.display = 'none';
+        zoomRow.innerHTML = '';
+        updateBreakdown(rangeTotals(dayStartMin, dayStartMin+1440), 1440);
+      }
+
+      /* Drag-to-select on overview SVG */
+      overviewSvg.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return; e.preventDefault();
+        clearSelection();
+        var startX = Math.max(0, Math.min(cw, e.clientX - overviewSvg.getBoundingClientRect().left));
+        function onMove(ev) {
+          var cur = Math.max(0, Math.min(cw, ev.clientX - overviewSvg.getBoundingClientRect().left));
+          var x1=Math.min(startX,cur), x2=Math.max(startX,cur), bw=x2-x1;
+          var dur=Math.round((bw/cw)*1440);
+          selRect.setAttribute('x',x1); selRect.setAttribute('width',bw); selRect.setAttribute('visibility','visible');
+          var lw=Math.max(40, hm(dur).length*7);
+          selLabelBg.setAttribute('x',x1+bw/2-lw/2); selLabelBg.setAttribute('width',lw);
+          selLabelBg.setAttribute('visibility', dur>5?'visible':'hidden');
+          selLabelTxt.setAttribute('x',x1+bw/2); selLabelTxt.textContent=hm(dur);
+          selLabelTxt.setAttribute('visibility', dur>5?'visible':'hidden');
+        }
+        function onUp(ev) {
+          document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp);
+          var endX=Math.max(0,Math.min(cw,ev.clientX-overviewSvg.getBoundingClientRect().left));
+          var x1=Math.min(startX,endX), x2=Math.max(startX,endX);
+          if (x2-x1 < 8) {
+            selRect.setAttribute('visibility','hidden');
+            selLabelBg.setAttribute('visibility','hidden');
+            selLabelTxt.setAttribute('visibility','hidden');
+            return;
+          }
+          var selFrom = dayStartMin + Math.round((x1/cw)*1440);
+          var selTo   = dayStartMin + Math.round((x2/cw)*1440);
+          applySelection(selFrom, selTo);
+        }
+        document.addEventListener('mousemove',onMove);
+        document.addEventListener('mouseup',onUp);
       });
 
+      /* Initial breakdown: full day */
+      updateBreakdown(rangeTotals(dayStartMin, dayStartMin+1440), 1440);
       counterDiv.textContent = 'Dzie\u0144 ' + (idx+1) + ' z ' + sorted.length;
     }
 
