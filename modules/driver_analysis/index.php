@@ -60,9 +60,13 @@ if ($selectedFile) {
     $dbRows = $dbDays->fetchAll();
 
     if ($dbRows) {
-        /* Check if any row is missing crossing data (files uploaded before this feature) */
-        $needsCrossings = array_reduce($dbRows, function (bool $carry, array $row): bool {
-            return $carry || $row['border_crossings'] === null;
+        /* Trigger re-parse if any row is NULL (never parsed) or has stale '[]'
+         * from a previous parser version that used the wrong TLV tag.
+         * Rows confirmed-empty by the current parser are stored as JSON null, not '[]'. */
+        $emptyJsonArray = '[]';  /* legacy stale value written by the old broken parser */
+        $needsCrossings = array_reduce($dbRows, function (bool $carry, array $row) use ($emptyJsonArray): bool {
+            $borderCrossings = $row['border_crossings'];
+            return $carry || $borderCrossings === null || $borderCrossings === $emptyJsonArray;
         }, false);
 
         /* Re-parse binary file to backfill border_crossings for legacy rows */
@@ -74,13 +78,17 @@ if ($selectedFile) {
                 if ($rawData !== false) {
                     $curYear = (int)gmdate('Y');
                     $reparsedCrossings = parseBorderCrossings($rawData, $curYear - 3, $curYear + 1);
-                    /* Persist crossings for rows that were NULL so future loads use the DB */
+                    /* Persist crossings for stale/unset rows so future loads use the DB.
+                     * Store actual crossing data or JSON null (confirmed-empty sentinel) so
+                     * this block is not triggered again on subsequent views. */
                     $updCross = $db->prepare(
                         'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
                     );
                     foreach ($dbRows as $r) {
-                        if ($r['border_crossings'] !== null) continue; /* already set */
-                        $crs = $reparsedCrossings[$r['date']] ?? [];
+                        $borderCrossings = $r['border_crossings'];
+                        if ($borderCrossings !== null && $borderCrossings !== $emptyJsonArray) continue; /* already confirmed */
+                        /* null = no crossings found (JSON null, not SQL NULL) */
+                        $crs = $reparsedCrossings[$r['date']] ?? null;
                         $updCross->execute([json_encode($crs), $fileId, $r['date']]);
                     }
                 }

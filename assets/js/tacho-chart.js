@@ -14,14 +14,16 @@
 (function (NS) {
 
   /* == Activity constants ========================================= */
-  /* Fill: rest=light tint, available=light purple, work=solid orange, drive=solid red */
-  var ACT_FILL   = ['rgba(178,235,242,0.3)','rgba(121,134,203,0.3)','#FB8C00','#E53935'];
-  var ACT_SOLID  = ['#00ACC1','#5C6BC0','#EF6C00','#E53935'];
-  var ACT_STROKE = ['#80DEEA','#5C6BC0','#E65100','#C62828'];
-  var ACT_TEXT   = ['#546E7A','#3949AB','#fff','#fff'];
+  /* rest=light blue, available=light green, work=orange, drive=red */
+  var ACT_FILL   = ['rgba(100,181,246,0.45)','rgba(102,187,106,0.35)','#FB8C00','#E53935'];
+  var ACT_SOLID  = ['#64B5F6','#66BB6A','#EF6C00','#E53935'];
+  var ACT_STROKE = ['#42A5F5','#43A047','#E65100','#C62828'];
+  var ACT_TEXT   = ['#0D47A1','#1B5E20','#fff','#fff'];
   var ACT_NAME   = ['Odpoczynek','Dyspozycyjno\u015b\u0107','Praca','Jazda'];
-  /* Segment icons: ⊢ rest, ↕ available, ⊙ work/drive */
-  var ACT_ICONS  = ['\u22A2','\u21C4','\u2299','\u2299'];
+  /* Activity icons: — rest, ◇ available, ⚙ work, ▶ drive */
+  var ACT_ICONS  = ['\u2014','\u25C7','\u2699','\u25B6'];
+  /* Bar heights as fraction of track height, bottom-aligned (rest thin → drive full) */
+  var ACT_HEIGHT_FRAC = [0.22, 0.44, 0.72, 1.0];
 
   /* Layout */
   var LW  = 110;
@@ -183,11 +185,18 @@
       });
     }
 
-    /* Activity track background – light lime/green matching reference chart */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#DCEDC8', rx:2}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#AED581', 'stroke-width':1, rx:2}));
+    /* Activity track background */
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#F0F4F8', rx:2}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#C8D0DA', 'stroke-width':1, rx:2}));
 
-    /* Activity slots – full-height bars, solid vivid colors for drive/work */
+    /* Subtle reference lines at each activity-height boundary */
+    var barH0 = T1H - 4;
+    [ACT_HEIGHT_FRAC[0], ACT_HEIGHT_FRAC[1], ACT_HEIGHT_FRAC[2]].forEach(function(frac) {
+      var refY = T1Y + 2 + Math.round(barH0 * (1 - frac));
+      svgEl.appendChild(mkSVG('line', {x1:0, y1:refY, x2:cw, y2:refY, stroke:'#DDE1E8', 'stroke-width':0.8, opacity:0.7}));
+    });
+
+    /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
     weekDays.forEach(function(day, di) {
       if (!day || !day.segs) return;
       day.segs.forEach(function(s) {
@@ -196,25 +205,27 @@
         var x1 = clampX(Math.max(absS, rangeMin));
         var x2 = clampX(Math.min(absE, rangeMax));
         var bw = x2 - x1; if (bw < 0.4) return;
-        /* Full-height bar (drive/work = solid vivid; rest/available = light tint) */
-        var bh = T1H - 4, by = T1Y + 2;
-        var segFill = s.act >= 2 ? ACT_SOLID[s.act] : ACT_FILL[s.act];
-        var textCol = s.act >= 2 ? '#fff' : ACT_TEXT[s.act];
+        /* Height fraction based on activity type, bottom-aligned */
+        var barH = T1H - 4;
+        var bh = Math.max(3, Math.round(barH * ACT_HEIGHT_FRAC[s.act]));
+        var by = T1Y + 2 + (barH - bh);
+        var segFill = ACT_SOLID[s.act];
+        var textCol = ACT_TEXT[s.act];
         var g = mkSVG('g');
         g.setAttribute('style', 'cursor:pointer;');
         g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:segFill, rx:2}));
-        if (s.act >= 2) {
-          /* Subtle border for drive/work bars */
-          g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':1, rx:2, 'pointer-events':'none'}));
-        }
-        if (bw > 28) {
+        /* Subtle border on all bars */
+        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':1, rx:2, 'pointer-events':'none'}));
+        if (bw > 28 && bh > 16) {
           var fsz = bw > 80 ? 14 : bw > 45 ? 12 : 10;
-          /* Duration label – upper half of bar */
-          var txt = mkSVG('text', {x:x1+bw/2, y:by+bh*0.44, 'text-anchor':'middle', fill:textCol, 'font-size':fsz, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          /* Duration label – upper portion */
+          var txt = mkSVG('text', {x:x1+bw/2, y:by+Math.max(12,bh*0.44), 'text-anchor':'middle', fill:textCol, 'font-size':fsz, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
           txt.textContent = hhmm(s.dur); g.appendChild(txt);
-          /* Type icon – lower half of bar */
-          var ico = mkSVG('text', {x:x1+bw/2, y:by+bh*0.74, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(9, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
-          ico.textContent = ACT_ICONS[s.act]; g.appendChild(ico);
+          /* Activity icon – lower portion (only if bar is tall enough) */
+          if (bh > 28) {
+            var ico = mkSVG('text', {x:x1+bw/2, y:by+bh-6, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(9, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+            ico.textContent = ACT_ICONS[s.act]; g.appendChild(ico);
+          }
         }
         /* Click -> tooltip */
         (function(seg, dObj) {
