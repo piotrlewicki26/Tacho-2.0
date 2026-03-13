@@ -60,10 +60,41 @@ if ($selectedFile) {
     $dbRows = $dbDays->fetchAll();
 
     if ($dbRows) {
+        /* Check if crossing data is missing (files uploaded before this feature) */
+        $needsCrossings = array_reduce($dbRows, function ($carry, $row) {
+            return $carry && $row['border_crossings'] === null;
+        }, true);
+
+        /* Re-parse binary file to backfill border_crossings for legacy rows */
+        $reparsedCrossings = [];
+        if ($needsCrossings) {
+            $fp = dddPhysPath($selectedFile, $companyId);
+            if (is_file($fp)) {
+                $rawData = file_get_contents($fp);
+                if ($rawData !== false) {
+                    $curYear = (int)gmdate('Y');
+                    $reparsedCrossings = parseBorderCrossings($rawData, $curYear - 3, $curYear + 1);
+                    /* Persist so we won't need to re-parse again */
+                    if (!empty($reparsedCrossings)) {
+                        $updCross = $db->prepare(
+                            'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
+                        );
+                        foreach ($reparsedCrossings as $dt => $crs) {
+                            $updCross->execute([json_encode($crs), $fileId, $dt]);
+                        }
+                    }
+                }
+            }
+        }
+
         foreach ($dbRows as $row) {
             $viols     = json_decode($row['violations']      ?? '[]', true) ?: [];
             $segs      = json_decode($row['segments']        ?? '[]', true) ?: [];
             $crossings = json_decode($row['border_crossings'] ?? '[]', true) ?: [];
+            /* Use freshly re-parsed crossings if DB had none */
+            if (empty($crossings) && isset($reparsedCrossings[$row['date']])) {
+                $crossings = $reparsedCrossings[$row['date']];
+            }
             $days[] = [
                 'date'      => $row['date'],
                 'drive'     => (int)$row['drive_min'],

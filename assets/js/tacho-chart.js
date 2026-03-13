@@ -239,7 +239,9 @@
       });
     }
 
-    /* Border crossing markers (EF_CardPlacesOfDailyWorkPeriod 0x0522) */
+    /* Border crossing markers (EF_CardPlacesOfDailyWorkPeriod 0x0522)
+     * Visual: bold country code above band ▸ filled ● pin at band top ▸ solid
+     * vertical line through activity + rest bands — matching reference chart. */
     weekDays.forEach(function(day, di) {
       var crs = day && day.crossings;
       if (!crs || !crs.length) return;
@@ -249,38 +251,67 @@
         var x = px(absMin);
         if (x < 2 || x > cw - 2) return;
 
-        /* Vertical dashed line through both activity and rest bands */
+        /* Solid vertical line from top of activity band through rest band */
         svgEl.appendChild(mkSVG('line', {
-          x1: x, y1: T1Y + 12, x2: x, y2: T2Y + T2H,
-          stroke: '#263238', 'stroke-width': 1.5,
-          'stroke-dasharray': '4,2', opacity: 0.65
+          x1: x, y1: T1Y, x2: x, y2: T2Y + T2H,
+          stroke: '#212121', 'stroke-width': 1.8, opacity: 0.75
         }));
 
-        /* Filled circle pin at the top of the line */
+        /* Filled black circle at the very top of the activity band */
         svgEl.appendChild(mkSVG('circle', {
-          cx: x, cy: T1Y + 6, r: 5,
-          fill: '#263238', stroke: '#FFFFFF', 'stroke-width': 1.5
+          cx: x, cy: T1Y, r: 5.5,
+          fill: '#212121', stroke: '#FFFFFF', 'stroke-width': 1.5
         }));
 
-        /* Small right-pointing triangle next to circle */
+        /* Right-pointing solid triangle (►) next to the circle */
         var arr = mkSVG('text', {
-          x: x + 7, y: T1Y + 10,
-          'text-anchor': 'start', fill: '#263238',
+          x: x + 7, y: T1Y + 4.5,
+          'text-anchor': 'start', fill: '#212121',
           'font-size': 10, 'font-family': 'Inter,sans-serif',
-          'pointer-events': 'none'
+          'font-weight': 700, 'pointer-events': 'none'
         });
-        arr.textContent = '\u25B6';
+        arr.textContent = '\u25BA';
         svgEl.appendChild(arr);
 
-        /* Country code label above the band */
+        /* Country code label above the activity band (clear zone) */
         var lbl = mkSVG('text', {
-          x: x, y: T1Y - 6,
-          'text-anchor': 'middle', fill: '#1A237E',
+          x: x, y: T1Y - 10,
+          'text-anchor': 'middle', fill: '#1565C0',
           'font-size': 13, 'font-family': 'Inter,sans-serif',
           'font-weight': 700, 'pointer-events': 'none'
         });
         lbl.textContent = cr.country;
         svgEl.appendChild(lbl);
+
+        /* Invisible hit-area for tooltip */
+        (function(crossing, dayObj) {
+          var hit = mkSVG('rect', {
+            x: x - 10, y: T1Y - 14, width: 20, height: T2Y + T2H - T1Y + 14,
+            fill: 'transparent', cursor: 'pointer'
+          });
+          hit.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            ev._tachoSeg = true;
+            var tip = getTip();
+            var crossDate = dayObj ? new Date(dayObj.date) : null;
+            tip.innerHTML =
+              '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;">' +
+                '<div style="width:11px;height:11px;border-radius:50%;background:#212121;flex-shrink:0;"></div>' +
+                '<strong style="font-size:15px;color:#ECEFF1;">' + crossing.country + '</strong>' +
+              '</div>' +
+              (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
+              '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(crossing.tmin) + '</div>' +
+              '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
+                (crossing.type === 0 ? 'Wjazd' : crossing.type === 1 ? 'Wyjazd' : 'Przejazd') +
+              '</div>';
+            tip.style.display = 'block';
+            var vx = Math.min(ev.clientX + 15, window.innerWidth - 220);
+            var vy = Math.min(ev.clientY + 15, window.innerHeight - 120);
+            tip.style.left = vx + 'px';
+            tip.style.top  = vy + 'px';
+          });
+          svgEl.appendChild(hit);
+        })(cr, day);
       });
     });
 
