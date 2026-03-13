@@ -76,8 +76,36 @@
 </header>
 
 <!-- ═══ SIDEBAR ════════════════════════════════════════════════ -->
+<?php
+// Load plan info once for sidebar rendering (suppresses notice when header is
+// included on pages that haven't called require_once subscription.php yet).
+if (!function_exists('getCompanyPlan')) {
+    require_once __DIR__ . '/../includes/subscription.php';
+}
+$_hdrCid  = (int)($_SESSION['company_id'] ?? 0);
+$_hdrPlan = $_hdrCid ? (getCompanyPlan($_hdrCid)['plan'] ?? PLAN_DEMO) : PLAN_DEMO;
+$_hdrHasPro     = in_array($_hdrPlan, [PLAN_PRO, PLAN_PRO_PLUS], true);
+$_hdrHasProPlus = $_hdrPlan === PLAN_PRO_PLUS;
+// Plan badge label and colour
+$_hdrPlanLabel = match($_hdrPlan) {
+    PLAN_PRO_PLUS => ['text' => 'PRO+',  'bg' => '#F59E0B', 'fg' => '#1a1a1a'],
+    PLAN_PRO      => ['text' => 'PRO',   'bg' => '#22C55E', 'fg' => '#fff'],
+    default       => ['text' => 'DEMO',  'bg' => '#9CA3AF', 'fg' => '#fff'],
+};
+?>
 <nav class="tp-sidebar" id="sidebar">
   <ul class="tp-nav list-unstyled mb-0">
+
+    <!-- Plan badge -->
+    <li class="tp-nav-item" style="pointer-events:none;">
+      <a href="/billing.php" class="tp-nav-link" style="pointer-events:all;opacity:1;" title="Abonament">
+        <i class="bi bi-shield-check" style="color:<?= $_hdrPlanLabel['bg'] ?>"></i>
+        <span style="display:flex;align-items:center;gap:6px;">
+          Plan
+          <span style="background:<?= $_hdrPlanLabel['bg'] ?>;color:<?= $_hdrPlanLabel['fg'] ?>;font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px;letter-spacing:.5px;"><?= $_hdrPlanLabel['text'] ?></span>
+        </span>
+      </a>
+    </li>
 
     <li class="tp-nav-item<?= ($activePage??'')==='dashboard' ? ' active':'' ?>">
       <a href="/dashboard.php" class="tp-nav-link">
@@ -97,7 +125,7 @@
       </a>
     </li>
 
-    <li class="tp-nav-separator"><small>Moduły</small></li>
+    <li class="tp-nav-separator"><small>Moduły PRO</small></li>
 
     <li class="tp-nav-item<?= ($activePage??'')==='driver_analysis' ? ' active':'' ?>">
       <a href="/modules/driver_analysis/" class="tp-nav-link">
@@ -111,15 +139,25 @@
       </a>
     </li>
 
-    <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?>">
-      <a href="/modules/delegation/" class="tp-nav-link">
-        <i class="bi bi-map"></i><span>Delegacje</span>
+    <li class="tp-nav-separator"><small>Moduły PRO+</small></li>
+
+    <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?><?= !$_hdrHasProPlus ? ' tp-nav-locked' : '' ?>">
+      <a href="/modules/delegation/" class="tp-nav-link" <?= !$_hdrHasProPlus ? 'title="Wymagany pakiet PRO+"' : '' ?>>
+        <i class="bi bi-map"></i>
+        <span>Delegacje</span>
+        <?php if (!$_hdrHasProPlus): ?>
+        <i class="bi bi-lock-fill ms-auto" style="font-size:11px;opacity:.55;" title="PRO+"></i>
+        <?php endif; ?>
       </a>
     </li>
 
-    <li class="tp-nav-item<?= ($activePage??'')==='violations' ? ' active':'' ?>">
-      <a href="/modules/violations/" class="tp-nav-link">
-        <i class="bi bi-exclamation-triangle"></i><span>Naruszenia</span>
+    <li class="tp-nav-item<?= ($activePage??'')==='violations' ? ' active':'' ?><?= !$_hdrHasProPlus ? ' tp-nav-locked' : '' ?>">
+      <a href="/modules/violations/" class="tp-nav-link" <?= !$_hdrHasProPlus ? 'title="Wymagany pakiet PRO+"' : '' ?>>
+        <i class="bi bi-exclamation-triangle"></i>
+        <span>Naruszenia</span>
+        <?php if (!$_hdrHasProPlus): ?>
+        <i class="bi bi-lock-fill ms-auto" style="font-size:11px;opacity:.55;" title="PRO+"></i>
+        <?php endif; ?>
       </a>
     </li>
 
@@ -132,6 +170,12 @@
     </li>
 
     <?php if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin','superadmin'])): ?>
+    <li class="tp-nav-item<?= ($activePage??'')==='billing' ? ' active':'' ?>">
+      <a href="/billing.php" class="tp-nav-link">
+        <i class="bi bi-credit-card"></i><span>Abonament</span>
+      </a>
+    </li>
+
     <li class="tp-nav-item<?= ($activePage??'')==='company' ? ' active':'' ?>">
       <a href="/company.php" class="tp-nav-link">
         <i class="bi bi-building"></i><span>Firma</span>
@@ -193,3 +237,30 @@
 
     <!-- Flash messages -->
     <?= flashHtml() ?>
+
+    <!-- Plan / trial status banner (shown on every page except billing/no_access) -->
+    <?php if (!in_array($activePage ?? '', ['billing', ''], true) || ($activePage??'') === ''): ?>
+    <?php if ($_hdrPlan === PLAN_DEMO && isTrialExpired($_hdrCid)): ?>
+    <div class="alert alert-danger d-flex align-items-center gap-3 mb-4 py-2" role="alert">
+      <i class="bi bi-x-circle-fill fs-5 flex-shrink-0"></i>
+      <div class="flex-grow-1">
+        <strong>Okres próbny wygasł.</strong>
+        Wybierz pakiet, aby korzystać ze wszystkich funkcji.
+      </div>
+      <a href="/billing.php#upgrade-section" class="btn btn-sm btn-danger text-white fw-bold flex-shrink-0">
+        Kup pakiet →
+      </a>
+    </div>
+    <?php elseif ($_hdrPlan === PLAN_DEMO && $_hdrCid): ?>
+    <?php $__dLeft = trialDaysRemaining($_hdrCid); ?>
+    <div class="alert alert-warning d-flex align-items-center gap-3 mb-4 py-2" role="alert">
+      <i class="bi bi-clock-fill fs-5 flex-shrink-0"></i>
+      <div class="flex-grow-1">
+        <strong>Wersja DEMO</strong> – pozostało <?= $__dLeft ?> <?= $__dLeft === 1 ? 'dzień' : ($__dLeft < 5 ? 'dni' : 'dni') ?> okresu próbnego.
+      </div>
+      <a href="/billing.php#upgrade-section" class="btn btn-sm btn-warning fw-bold flex-shrink-0">
+        Wybierz pakiet →
+      </a>
+    </div>
+    <?php endif; ?>
+    <?php endif; ?>

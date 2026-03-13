@@ -73,6 +73,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ];
 
     if ($postAction === 'add') {
+        // Enforce demo driver limit
+        if (!licenseAllowsMore('drivers', $companyId)) {
+            flashSet('danger', 'Osiągnięto limit kierowców dla planu DEMO (' . DEMO_MAX_DRIVERS . '). Aktywuj pakiet PRO, aby dodać więcej.');
+            redirect('/drivers.php?action=add');
+        }
         $fields['company_id'] = $companyId;
         $cols = implode(', ', array_keys($fields));
         $phs  = implode(', ', array_fill(0, count($fields), '?'));
