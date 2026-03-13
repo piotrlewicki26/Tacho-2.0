@@ -736,7 +736,11 @@
 
     requestAnimationFrame(renderWeeks);
     if (typeof ResizeObserver !== 'undefined') {
-      var ro = new ResizeObserver(function(){ renderWeeks(); });
+      var _lastRoWidth = 0;
+      var ro = new ResizeObserver(function(entries) {
+        var w = entries[0].contentRect.width;
+        if (Math.abs(w - _lastRoWidth) > 1) { _lastRoWidth = w; renderWeeks(); }
+      });
       ro.observe(container);
     }
   };
