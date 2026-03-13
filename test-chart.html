@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>TachoChart Zoom Test</title>
+<style>body{font-family:Inter,sans-serif;padding:20px;background:#f5f5f5;}</style>
+</head>
+<body>
+<h2>TachoChart Zoom Test</h2>
+<div id="chart" style="width:900px;background:#fff;padding:10px;border-radius:8px;box-sizing:border-box;"></div>
+<script src="assets/js/tacho-chart.js"></script>
+<script>
+var days = [];
+var base = new Date('2024-11-04');
+for (var i = 0; i < 7; i++) {
+  var d = new Date(base);
+  d.setDate(d.getDate() + i);
+  days.push({
+    date: d.toISOString().slice(0,10),
+    segs: [
+      {act:0, start:0,   end:420,  dur:420},
+      {act:3, start:420, end:570,  dur:150},
+      {act:2, start:570, end:630,  dur:60},
+      {act:3, start:630, end:810,  dur:180},
+      {act:0, start:810, end:840,  dur:30},
+      {act:3, start:840, end:990,  dur:150},
+      {act:0, start:990, end:1440, dur:450}
+    ],
+    dist: 350 + i*20
+  });
+}
+document.addEventListener('DOMContentLoaded', function () {
+  TachoChart.render('chart', days);
+});
+</script>
+</body>
+</html>
