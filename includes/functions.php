@@ -172,9 +172,12 @@ function dddReadStr(string $data, int $offset, int $len): string {
  *   bits14-11 = activity (0=REST, 1=AVAIL, 2=WORK, 3=DRIVE)
  *   bits10-0  = time in minutes from midnight
  *
- * Improvements over previous version:
- *  - Requires timestamps to be exact midnight UTC (00:00:00) – eliminates most
- *    false-positive matches from random binary regions of the card file.
+ * Algorithm ported from the reference parseDDD() in truck-delegate-pro.jsx
+ * (commit ea1fcf7b808040c2256107ee0b6ba4cd4b3c3589):
+ *  - Scans every 2 bytes; does NOT require midnight-UTC timestamps so that real
+ *    driver cards with sub-second offset timestamps are not silently dropped.
+ *  - presenceCounter range 500–8000 (JSX: pres<500||pres>8000).
+ *  - Distance ≤ 1100 km per day (JSX: dist>1100).
  *  - Uses IQR-based outlier removal to handle multi-tachograph cards correctly.
  *
  * @return array{days:array,summary:array}|array{error:string}
@@ -203,13 +206,10 @@ function parseDddFile(string $path): array {
         $yr   = (int)gmdate('Y', $ts);
         if ($yr < $yrMin || $yr > $yrMax) continue;
 
-        // Require exact midnight UTC – eliminates most false positives from
-        // random binary regions while preserving all real tachograph records.
-        if ($ts % 86400 !== 0) continue;
-
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        if ($pres < 500 || $pres > 65000 || $dist > 1500) continue;
+        // JSX bounds: pres 500–8000, dist ≤ 1100 km
+        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
@@ -365,12 +365,10 @@ function parseVehicleDdd(string $path): array {
         $yr   = (int)gmdate('Y', $ts);
         if ($yr < $yrMin || $yr > $yrMax) continue;
 
-        // Require exact midnight UTC – eliminates most false positives
-        if ($ts % 86400 !== 0) continue;
-
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        if ($pres < 500 || $pres > 65000 || $dist > 1500) continue;
+        // JSX bounds: pres 500–8000, dist ≤ 1100 km
+        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }

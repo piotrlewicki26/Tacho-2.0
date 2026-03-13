@@ -210,6 +210,11 @@
         html += `<li>${escHtml(issue)}</li>`;
       }
       html += `</ul></div></div>`;
+    } else if (info.is_duplicate) {
+      html += `<div class="alert alert-warning d-flex align-items-center gap-2 mb-3">
+        <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+        <strong>Plik już istnieje w archiwum.</strong>&nbsp;Możesz go wgrać ponownie, ale zostanie zapisany jako duplikat.
+      </div>`;
     } else {
       html += `<div class="alert alert-success d-flex align-items-center gap-2 mb-3">
         <i class="bi bi-check-circle-fill fs-5"></i>
@@ -217,12 +222,13 @@
       </div>`;
     }
 
-    // ── Warnings ─────────────────────────────────────────────
-    if (warnings.length) {
+    // ── Warnings (excluding duplicate – already shown above) ─────
+    const otherWarnings = warnings.filter(w => !w.includes('duplikat'));
+    if (otherWarnings.length) {
       html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3">
         <i class="bi bi-exclamation-triangle-fill flex-shrink-0 fs-5 mt-1"></i>
         <div><strong>Uwagi:</strong><ul class="mb-0 mt-1">`;
-      for (const w of warnings) {
+      for (const w of otherWarnings) {
         html += `<li>${escHtml(w)}</li>`;
       }
       html += `</ul></div></div>`;

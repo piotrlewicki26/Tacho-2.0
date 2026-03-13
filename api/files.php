@@ -291,6 +291,16 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['error' => 'Błąd bezpieczeństwa – plik nie został prawidłowo przesłany.']); exit;
     }
 
+    // ── Duplicate check BEFORE storing ─────────────────────────────────────
+    $uploadHash = hash_file('sha256', $file['tmp_name']);
+    $dupChk     = $db->prepare(
+        'SELECT id FROM ddd_files WHERE company_id=? AND file_hash=? AND is_deleted=0 LIMIT 1'
+    );
+    $dupChk->execute([$companyId, $uploadHash]);
+    if ($dupChk->fetchColumn()) {
+        echo json_encode(['error' => 'Ten plik już istnieje w archiwum (duplikat).']); exit;
+    }
+
     try {
         // ── Resolve company-name-based upload directory ───────────
         $cStmt = $db->prepare('SELECT name FROM companies WHERE id = ? LIMIT 1');
@@ -317,7 +327,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['error' => 'Nie można zapisać pliku na serwerze.']); exit;
         }
 
-        $fileHash = hash_file('sha256', $destPath);
+        $fileHash = $uploadHash;   // already computed above
         $fileSize = filesize($destPath);
 
         // ── Parse binary content for auto-create ─────────────────
@@ -615,6 +625,17 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $info['file_name'] = $file['name'];
         $info['file_size'] = $file['size'];
         $info['file_type'] = $fileType;
+
+        // ── Duplicate detection ──────────────────────────────────────
+        $fileHash = hash('sha256', $binaryData);
+        $dupStmt  = $db->prepare(
+            'SELECT id FROM ddd_files WHERE company_id=? AND file_hash=? AND is_deleted=0 LIMIT 1'
+        );
+        $dupStmt->execute([$companyId, $fileHash]);
+        if ($dupStmt->fetchColumn()) {
+            $warnings[] = 'Ten plik został już wcześniej wgrany do archiwum (duplikat).';
+            $info['is_duplicate'] = true;
+        }
 
         if ($fileType === 'driver') {
             // ── Parse driver name + card number ────────────────────

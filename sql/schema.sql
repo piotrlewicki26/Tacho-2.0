@@ -183,7 +183,8 @@ CREATE TABLE IF NOT EXISTS `ddd_files` (
   FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`uploaded_by`)REFERENCES `users`(`id`)    ON DELETE SET NULL,
   INDEX idx_company_type (`company_id`, `file_type`),
-  INDEX idx_deleted (`is_deleted`)
+  INDEX idx_deleted (`is_deleted`),
+  UNIQUE KEY `uq_company_hash` (`company_id`, `file_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─────────────────────────────────────────────
