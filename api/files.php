@@ -151,7 +151,8 @@ function dddParseDriverInfo(string $data): ?array
             }
             $sn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k, 36)));
             $fn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36)));
-            if (strlen($sn) >= 3 && preg_match('/^[A-Z][A-Za-z]{2}/u', $sn) && strlen($fn) >= 2) {
+            if (strlen($sn) >= 3 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $sn)
+                && strlen($fn) >= 2 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $fn)) {
                 $driverName = ['last_name' => $sn, 'first_name' => $fn];
                 break;
             }
