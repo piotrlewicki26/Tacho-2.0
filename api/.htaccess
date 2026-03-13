@@ -1,2 +1,14 @@
 # TachoPro 2.0 – API directory
+# Prevent directory listing
 Options -Indexes
+
+# Ensure PHP files in this directory are served as PHP (not downloaded as text)
+<FilesMatch "\.php$">
+    # Explicitly allow PHP execution for all files in api/
+    Require all granted
+</FilesMatch>
+
+# Do not inherit RewriteEngine rules from parent directory
+<IfModule mod_rewrite.c>
+    RewriteEngine Off
+</IfModule>
