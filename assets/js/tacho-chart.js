@@ -601,15 +601,127 @@
     zoomPanel.scrollIntoView({behavior:'smooth', block:'nearest'});
   }
 
+  /* == Range/zoom modal pop-up ===================================== *
+   * Opens a fixed overlay showing a zoomed fragment of the week chart *
+   * (result of a drag-select on the weekly timeline).                */
+  function showRangeModal(info) {
+    var weekStart = info.weekStart, weekDays = info.weekDays;
+    var startMin  = info.startMin,  endMin   = info.endMin;
+    var dur       = endMin - startMin;
+    var cw = Math.max(400, Math.min(860, window.innerWidth * 0.9 - LW - 24));
+    var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
+
+    /* Activity totals within selection */
+    var selTotals = {0:0,1:0,2:0,3:0};
+    weekDays.forEach(function(day, di) {
+      if (!day || !day.segs) return;
+      var base = di * 1440;
+      day.segs.forEach(function(s) {
+        var absS=base+s.start, absE=base+s.end;
+        var iS=Math.max(absS,startMin), iE=Math.min(absE,endMin);
+        if (iE>iS) selTotals[s.act]=(selTotals[s.act]||0)+(iE-iS);
+      });
+    });
+
+    var startD = addD(weekStart, Math.floor(startMin/1440));
+    var endD   = addD(weekStart, Math.floor(endMin/1440));
+    var startT = hhmm(startMin%1440), endT = hhmm(endMin%1440);
+    var isFullDay = (dur === 1440 && startMin % 1440 === 0);
+
+    /* Remove any existing modal */
+    var ex = document.getElementById('tacho-range-modal');
+    if (ex) ex.remove();
+
+    /* Backdrop */
+    var backdrop = document.createElement('div');
+    backdrop.id = 'tacho-range-modal';
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding-top:40px;font-family:Inter,sans-serif;';
+
+    /* Panel */
+    var panel = document.createElement('div');
+    panel.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,0.4);width:95%;max-width:960px;overflow:hidden;display:flex;flex-direction:column;';
+
+    /* Header */
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;background:#1E88E5;flex-shrink:0;';
+    var titleSpan = document.createElement('span');
+    titleSpan.style.cssText = 'flex:1;text-align:center;font-size:13px;font-weight:700;color:#fff;';
+    titleSpan.textContent = isFullDay
+      ? 'Widok dnia \u2014 ' + fmtDate(startD)
+      : 'Powi\u0119kszony fragment \u2014 ' + fmtDate(startD) + ' ' + startT + ' \u2013 ' + fmtDate(endD) + ' ' + endT;
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button'; closeBtn.textContent = '\u2715'; closeBtn.title = 'Zamknij';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:4px 10px;font-size:14px;color:#fff;cursor:pointer;margin-left:4px;font-family:Inter,sans-serif;';
+    closeBtn.addEventListener('click', function() { backdrop.remove(); document.removeEventListener('keydown', onKey); });
+    hdr.appendChild(titleSpan); hdr.appendChild(closeBtn);
+    panel.appendChild(hdr);
+
+    /* Duration info bar */
+    var durBar = document.createElement('div');
+    durBar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 14px;background:#E3F2FD;border-bottom:1px solid #BBDEFB;font-family:Inter,sans-serif;font-size:11px;color:#1565C0;';
+    durBar.innerHTML = '<strong>Zakres:</strong> '+fmtDate(startD)+' <b>'+startT+'</b> \u2192 '+fmtDate(endD)+' <b>'+endT+'</b>' +
+      '<span style="margin-left:auto;background:#1E88E5;border-radius:4px;padding:2px 10px;color:#fff;font-weight:700;font-size:12px;">'+hm(dur)+'</span>';
+    panel.appendChild(durBar);
+
+    /* Zoomed SVG row */
+    var chartDiv = document.createElement('div');
+    chartDiv.style.cssText = 'overflow-x:auto;background:#FFF;border-bottom:1px solid #BBDEFB;flex-shrink:0;';
+    var svgRow = document.createElement('div');
+    svgRow.style.cssText = 'display:flex;align-items:stretch;';
+    var svgSb = document.createElement('div');
+    svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
+    svgSb.innerHTML = '<div style="font-size:10px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay?'DZIE\u0143':'ZOOM')+'</div>'+
+      '<div style="font-size:10px;color:#5A6070;">'+(isFullDay?fmtDate(startD):hm(dur))+'</div>';
+    var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
+    fillChartSVG(zoomSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols);
+    svgRow.appendChild(svgSb); svgRow.appendChild(zoomSvg);
+    chartDiv.appendChild(svgRow);
+    panel.appendChild(chartDiv);
+
+    /* Activity breakdown */
+    var breakdownDiv = document.createElement('div');
+    breakdownDiv.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;background:#fff;flex-shrink:0;';
+    [3,2,1,0].forEach(function(k) {
+      var val = selTotals[k]||0;
+      var card = document.createElement('div');
+      card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
+      card.innerHTML = '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
+        '<span style="font-size:11px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+'&nbsp;<span style="color:#9AA0AA;font-size:10px;">('+pct(val,dur)+'%)</span></span>';
+      breakdownDiv.appendChild(card);
+    });
+    panel.appendChild(breakdownDiv);
+
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+
+    backdrop.addEventListener('click', function(e) {
+      if (e.target === backdrop) { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+    });
+    function onKey(e) {
+      if (!document.getElementById('tacho-range-modal')) { document.removeEventListener('keydown', onKey); return; }
+      if (e.key === 'Escape') { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+    }
+    document.addEventListener('keydown', onKey);
+  }
+
   /* == Day modal pop-up ============================================ *
    * Opens a fixed overlay showing one day's zoomed chart with        *
    * ◄ / ► navigation between all available days in daysData.        */
   function showDayModal(initDate, daysData) {
     /* Sort all days by date */
     var sorted = daysData.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
-    var curIdx = 0;
+    /* If the requested date has no data, inject a synthetic empty entry so the
+       correct day is shown instead of falling back to the first available day. */
+    var curIdx = -1;
     for (var i = 0; i < sorted.length; i++) {
       if (sorted[i].date === initDate) { curIdx = i; break; }
+    }
+    if (curIdx === -1) {
+      sorted.push({date: initDate, segs: [], dist: 0});
+      sorted.sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+      for (var j = 0; j < sorted.length; j++) {
+        if (sorted[j].date === initDate) { curIdx = j; break; }
+      }
     }
 
     /* Remove any existing modal */
@@ -971,18 +1083,11 @@
     chartArea.style.cssText = 'border:1px solid #E0E4E8;border-top:none;border-radius:0 0 4px 4px;overflow:hidden;';
     container.appendChild(chartArea);
 
-    /* Zoom panel (hidden until selection) */
-    var zoomPanel = document.createElement('div');
-    zoomPanel.style.cssText = 'display:none;';
-    container.appendChild(zoomPanel);
-
     var selCtrl = {clearPrev: null};
 
     /* Render function */
     function renderWeeks() {
       chartArea.innerHTML = '';
-      zoomPanel.innerHTML = '';
-      zoomPanel.style.cssText = 'display:none;';
       hideTip();
       var cw = Math.max(400, container.clientWidth - LW - 4);
       var visible = getVisibleWeeks();
@@ -990,13 +1095,12 @@
       visible.forEach(function(w) {
         buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
           if (info.isDateClick) {
-            var dateStr = addD(info.weekStart, Math.floor(info.startMin / 1440)).toISOString().slice(0, 10);
+            /* Build date string using local calendar fields to avoid UTC offset bug */
+            var d = addD(info.weekStart, Math.floor(info.startMin / 1440));
+            var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
             showDayModal(dateStr, daysData);
           } else {
-            var cw2 = Math.max(400, container.clientWidth - LW - 4);
-            showZoomedView(zoomPanel, info, cw2, function() {
-              /* Back button: just hide panel */
-            });
+            showRangeModal(info);
           }
         });
       });
