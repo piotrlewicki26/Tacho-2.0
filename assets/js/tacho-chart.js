@@ -376,7 +376,7 @@
     var svgEl = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
     fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols, function(di) {
       /* Date label click → zoom the whole day */
-      if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440});
+      if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440, isDateClick:true});
     });
 
     /* Selection overlay rects */
@@ -601,7 +601,145 @@
     zoomPanel.scrollIntoView({behavior:'smooth', block:'nearest'});
   }
 
-  /* == Public API ================================================= */
+  /* == Day modal pop-up ============================================ *
+   * Opens a fixed overlay showing one day's zoomed chart with        *
+   * ◄ / ► navigation between all available days in daysData.        */
+  function showDayModal(initDate, daysData) {
+    /* Sort all days by date */
+    var sorted = daysData.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+    var curIdx = 0;
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].date === initDate) { curIdx = i; break; }
+    }
+
+    /* Remove any existing modal */
+    var ex = document.getElementById('tacho-day-modal');
+    if (ex) ex.remove();
+
+    /* Backdrop */
+    var backdrop = document.createElement('div');
+    backdrop.id = 'tacho-day-modal';
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding-top:40px;font-family:Inter,sans-serif;';
+
+    /* Panel */
+    var panel = document.createElement('div');
+    panel.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,0.4);width:95%;max-width:960px;overflow:hidden;display:flex;flex-direction:column;';
+
+    /* Persistent elements updated by go() */
+    var prevBtn   = document.createElement('button');
+    var nextBtn   = document.createElement('button');
+    var titleSpan = document.createElement('span');
+    var chartDiv  = document.createElement('div');
+    var breakdownDiv = document.createElement('div');
+    var counterDiv   = document.createElement('div');
+
+    function go(idx) {
+      curIdx = idx;
+      var day = sorted[idx];
+      var dayDate = new Date(day.date + 'T00:00:00');
+      var ws  = monDay(dayDate);
+      var di  = Math.round((dayDate - ws) / 86400000);
+
+      /* Build full weekDays context from sorted */
+      var weekDays = new Array(7).fill(null);
+      sorted.forEach(function(d) {
+        var dd  = new Date(d.date + 'T00:00:00');
+        var dws = monDay(dd);
+        if (dws.getTime() === ws.getTime()) {
+          var ddi = Math.round((dd - dws) / 86400000);
+          if (ddi >= 0 && ddi < 7) weekDays[ddi] = d;
+        }
+      });
+
+      var startMin = di * 1440;
+      var hasPrev = idx > 0, hasNext = idx < sorted.length - 1;
+
+      /* Activity totals for the day */
+      var selTotals = {0:0,1:0,2:0,3:0};
+      (day.segs || []).forEach(function(s) { selTotals[s.act] = (selTotals[s.act]||0) + s.dur; });
+
+      /* Button styles */
+      var btnCss = function(en) {
+        return 'background:rgba(255,255,255,'+(en?'0.2':'0.06')+');border:1px solid rgba(255,255,255,'+(en?'0.55':'0.2')+');border-radius:4px;padding:4px 12px;font-size:13px;color:'+(en?'#fff':'rgba(255,255,255,0.3)')+';cursor:'+(en?'pointer':'default')+';font-family:Inter,sans-serif;font-weight:700;white-space:nowrap;';
+      };
+      prevBtn.style.cssText = btnCss(hasPrev); prevBtn.disabled = !hasPrev;
+      nextBtn.style.cssText = btnCss(hasNext); nextBtn.disabled = !hasNext;
+      titleSpan.textContent = 'Widok dnia \u2014 ' + fmtDate(dayDate);
+
+      /* Chart SVG */
+      var cw = Math.max(400, Math.min(860, window.innerWidth * 0.9 - LW - 24));
+      var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
+      chartDiv.innerHTML = '';
+      var svgRow = document.createElement('div');
+      svgRow.style.cssText = 'display:flex;align-items:stretch;';
+      var svgSb = document.createElement('div');
+      svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
+      svgSb.innerHTML = '<div style="font-size:10px;color:#1565C0;font-weight:700;margin-bottom:2px;">DZIE\u0143</div><div style="font-size:10px;color:#5A6070;">'+fmtDate(dayDate)+'</div>';
+      var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
+      fillChartSVG(zoomSvg, ws, weekDays, cw, startMin, startMin + 1440, null, dayViols);
+      svgRow.appendChild(svgSb); svgRow.appendChild(zoomSvg);
+      chartDiv.appendChild(svgRow);
+
+      /* Activity breakdown */
+      breakdownDiv.innerHTML = '';
+      [3,2,1,0].forEach(function(k) {
+        var val = selTotals[k]||0;
+        var card = document.createElement('div');
+        card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
+        card.innerHTML =
+          '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
+          '<span style="font-size:11px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+'&nbsp;<span style="color:#9AA0AA;font-size:10px;">('+pct(val,1440)+'%)</span></span>';
+        breakdownDiv.appendChild(card);
+      });
+
+      counterDiv.textContent = 'Dzie\u0144 ' + (idx+1) + ' z ' + sorted.length;
+    }
+
+    /* Build static panel structure */
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 14px;background:#1E88E5;flex-shrink:0;';
+    prevBtn.type = 'button'; prevBtn.innerHTML = '\u25C4 Poprzedni';
+    nextBtn.type = 'button'; nextBtn.innerHTML = 'Nast\u0119pny \u25BA';
+    prevBtn.addEventListener('click', function() { if (curIdx > 0) go(curIdx - 1); });
+    nextBtn.addEventListener('click', function() { if (curIdx < sorted.length-1) go(curIdx + 1); });
+    titleSpan.style.cssText = 'flex:1;text-align:center;font-size:13px;font-weight:700;color:#fff;';
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button'; closeBtn.textContent = '\u2715';
+    closeBtn.title = 'Zamknij';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:4px 10px;font-size:14px;color:#fff;cursor:pointer;margin-left:4px;font-family:Inter,sans-serif;';
+    closeBtn.addEventListener('click', function() { backdrop.remove(); document.removeEventListener('keydown', onKey); });
+    hdr.appendChild(prevBtn); hdr.appendChild(titleSpan); hdr.appendChild(nextBtn); hdr.appendChild(closeBtn);
+    panel.appendChild(hdr);
+
+    chartDiv.style.cssText = 'overflow-x:auto;background:#FFF;border-bottom:1px solid #BBDEFB;flex-shrink:0;';
+    panel.appendChild(chartDiv);
+
+    breakdownDiv.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;background:#fff;flex-shrink:0;';
+    panel.appendChild(breakdownDiv);
+
+    counterDiv.style.cssText = 'text-align:center;padding:5px;font-size:11px;color:#9AA0AA;background:#F8FBFF;border-top:1px solid #E0E4E8;flex-shrink:0;';
+    panel.appendChild(counterDiv);
+
+    /* Populate */
+    go(curIdx);
+
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+
+    /* Close on backdrop click */
+    backdrop.addEventListener('click', function(e) {
+      if (e.target === backdrop) { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+    });
+
+    /* Keyboard: ← → navigate, Esc close */
+    function onKey(e) {
+      if (!document.getElementById('tacho-day-modal')) { document.removeEventListener('keydown', onKey); return; }
+      if (e.key === 'Escape') { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+      else if (e.key === 'ArrowLeft'  && curIdx > 0) go(curIdx - 1);
+      else if (e.key === 'ArrowRight' && curIdx < sorted.length-1) go(curIdx + 1);
+    }
+    document.addEventListener('keydown', onKey);
+  }
   NS.render = function(containerId, daysData) {
     var container = document.getElementById(containerId);
     if (!container) return;
@@ -726,10 +864,15 @@
       dateRange.textContent = fmtDate(visible[0].start) + ' \u2013 ' + fmtDate(addD(visible[visible.length-1].start, 6));
       visible.forEach(function(w) {
         buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
-          var cw2 = Math.max(400, container.clientWidth - LW - 4);
-          showZoomedView(zoomPanel, info, cw2, function() {
-            /* Back button: just hide panel */
-          });
+          if (info.isDateClick) {
+            var dateStr = addD(info.weekStart, Math.floor(info.startMin / 1440)).toISOString().slice(0, 10);
+            showDayModal(dateStr, daysData);
+          } else {
+            var cw2 = Math.max(400, container.clientWidth - LW - 4);
+            showZoomedView(zoomPanel, info, cw2, function() {
+              /* Back button: just hide panel */
+            });
+          }
         });
       });
     }
