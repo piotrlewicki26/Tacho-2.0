@@ -24,11 +24,11 @@
   /* Layout */
   var LW  = 110;
   var T1Y = 46;
-  var T1H = 74;
-  var T2Y = 134;
-  var T2H = 34;
-  var AXY = 186;
-  var RH  = 250;
+  var T1H = 130;
+  var T2Y = 190;
+  var T2H = 60;
+  var AXY = 270;
+  var RH  = 305;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
