@@ -64,7 +64,7 @@
   // ── Step 1: "Sprawdź plik" click → run preview ────────────
   previewBtn.addEventListener('click', async function () {
     previewError.innerHTML = '';
-    if (!fileInput.files.length) {
+    if (!fileInput.files || !fileInput.files.length) {
       previewError.innerHTML = '<div class="alert alert-warning py-2">Wybierz plik DDD, aby go sprawdzić.</div>';
       return;
     }
@@ -73,10 +73,25 @@
     previewSpinner.classList.remove('d-none');
 
     try {
-      const fd = new FormData(form);
-      fd.set('action', 'preview');           // override to preview, not upload
+      // Build FormData manually – avoids Chrome edge-cases with form-element
+      // FormData construction (e.g. required-file-input inside Bootstrap modal).
+      const csrfEl  = form.querySelector('[name="csrf_token"]');
+      const dlEl    = form.querySelector('[name="download_date"]');
+      const notesEl = form.querySelector('[name="notes"]');
 
-      const resp = await fetch('/api/files.php', { method: 'POST', body: fd });
+      const fd = new FormData();
+      fd.append('action',        'preview');
+      fd.append('csrf_token',    csrfEl  ? csrfEl.value  : '');
+      fd.append('file_type',     fileTypeEl.value);
+      fd.append('ddd_file',      fileInput.files[0], fileInput.files[0].name);
+      if (dlEl)    fd.append('download_date', dlEl.value    || '');
+      if (notesEl) fd.append('notes',         notesEl.value || '');
+
+      const resp = await fetch(form.getAttribute('action'), {
+        method:      'POST',
+        body:        fd,
+        credentials: 'same-origin',
+      });
       const text = await resp.text();
       let data;
       try { data = JSON.parse(text); } catch (_) {
@@ -130,10 +145,26 @@
     msgBox.innerHTML = '';
 
     try {
-      const fd = new FormData(form);
-      fd.set('action', 'upload');
+      // Build FormData manually for Chrome compatibility
+      const csrfEl  = form.querySelector('[name="csrf_token"]');
+      const dlEl    = form.querySelector('[name="download_date"]');
+      const notesEl = form.querySelector('[name="notes"]');
 
-      const resp = await fetch(form.getAttribute('action'), { method: 'POST', body: fd });
+      const fd = new FormData();
+      fd.append('action',        'upload');
+      fd.append('csrf_token',    csrfEl  ? csrfEl.value  : '');
+      fd.append('file_type',     fileTypeEl.value);
+      if (fileInput.files && fileInput.files.length) {
+        fd.append('ddd_file', fileInput.files[0], fileInput.files[0].name);
+      }
+      if (dlEl)    fd.append('download_date', dlEl.value    || '');
+      if (notesEl) fd.append('notes',         notesEl.value || '');
+
+      const resp = await fetch(form.getAttribute('action'), {
+        method:      'POST',
+        body:        fd,
+        credentials: 'same-origin',
+      });
       const text = await resp.text();
       let data;
       try { data = JSON.parse(text); } catch (_) {

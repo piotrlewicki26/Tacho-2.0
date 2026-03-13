@@ -18,7 +18,7 @@
           <div id="dddStep1">
             <div class="mb-3">
               <label class="form-label fw-semibold">Typ pliku</label>
-              <select name="file_type" id="dddFileType" class="form-select" required>
+              <select name="file_type" id="dddFileType" class="form-select">
                 <option value="driver">Karta kierowcy</option>
                 <option value="vehicle">Urządzenie rejestrujące (pojazd)</option>
               </select>
@@ -26,7 +26,8 @@
             <div class="mb-3">
               <label class="form-label fw-semibold">Plik DDD / C1B / TGD</label>
               <input type="file" name="ddd_file" id="dddFileInput" class="form-control"
-                     accept=".ddd,.DDD,.c1b,.C1B,.tgd,.TGD" required>
+                     accept=".ddd,.c1b,.tgd">
+              <!-- Chrome handles extensions case-insensitively; server validates regardless -->
               <div class="form-text">Obsługiwane formaty: .ddd, .c1b, .tgd (maks. 10 MB)</div>
             </div>
             <div class="mb-3">
