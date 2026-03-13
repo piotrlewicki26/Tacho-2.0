@@ -22,13 +22,13 @@
   var ACT_HFRAC  = [0.30, 0.52, 0.72, 1.00];
 
   /* Layout */
-  var LW  = 78;
-  var T1Y = 28;
-  var T1H = 38;
-  var T2Y = 74;
-  var T2H = 18;
-  var AXY = 104;
-  var RH  = 122;
+  var LW  = 90;
+  var T1Y = 36;
+  var T1H = 56;
+  var T2Y = 106;
+  var T2H = 26;
+  var AXY = 148;
+  var RH  = 172;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
@@ -177,7 +177,7 @@
         var st = d ? dayStatus(d.segs) : null; if (!st) return;
         var col = st==='error' ? '#E53935' : st==='warn' ? '#FF9800' : '#43A047';
         var xc = px(di*1440+720);
-        if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:10, r:3.5, fill:col, opacity:0.85}));
+        if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:16, r:5, fill:col, opacity:0.85}));
       });
     }
 
@@ -202,7 +202,7 @@
         g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:ACT_FILL[s.act], rx:2}));
         g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':0.8, rx:2, 'pointer-events':'none'}));
         if (bw > 50) {
-          var txt = mkSVG('text', {x:x1+bw/2, y:tCY+4, 'text-anchor':'middle', fill:ACT_TEXT[s.act], 'font-size':bw>80?10:8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          var txt = mkSVG('text', {x:x1+bw/2, y:tCY+5, 'text-anchor':'middle', fill:ACT_TEXT[s.act], 'font-size':bw>80?12:10, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
           txt.textContent = hhmm(s.dur); g.appendChild(txt);
         }
         /* Click -> tooltip */
@@ -230,7 +230,7 @@
         var col = hasErr ? '#E53935' : '#FF9800';
         var sx1 = clampX(di*1440), sx2 = clampX((di+1)*1440), sw = sx2-sx1;
         if (sw < 1) return;
-        svgEl.appendChild(mkSVG('rect', {x:sx1+1, y:T1Y, width:Math.max(0,sw-2), height:3, fill:col, opacity:0.8, rx:1}));
+        svgEl.appendChild(mkSVG('rect', {x:sx1+1, y:T1Y, width:Math.max(0,sw-2), height:5, fill:col, opacity:0.8, rx:1}));
         if (sw > 16) {
           var ic = mkSVG('text', {x:sx1+sw/2, y:T1Y-2, 'text-anchor':'middle', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
           ic.textContent = hasErr ? '\u26D4' : '\u26A0\uFE0F';
@@ -253,7 +253,7 @@
         var g = mkSVG('g');
         g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:'#90CAF9', rx:2, opacity:0.75}));
         if (bw > 35) {
-          var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#1565C0', 'font-size':8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
           t.textContent = hhmm(s.dur); g.appendChild(t);
         }
         svgEl.appendChild(g);
@@ -288,7 +288,7 @@
         var timeStr = hhmm(tk % 1440);
         var dObj2 = addD(weekStart, dIdx);
         var lbl = (tk % 1440 === 0) ? fmtDate(dObj2) : timeStr;
-        var tl = mkSVG('text', {x:xt, y:AXY+13, 'text-anchor':'middle', fill:'#1565C0', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':tk%1440===0?700:400});
+        var tl = mkSVG('text', {x:xt, y:AXY+15, 'text-anchor':'middle', fill:'#1565C0', 'font-size':11, 'font-family':'Inter,sans-serif', 'font-weight':tk%1440===0?700:400});
         tl.textContent = lbl; svgEl.appendChild(tl);
       }
     } else {
@@ -306,8 +306,8 @@
           var dg = mkSVG('g');
           dg.setAttribute('style', 'cursor:pointer;');
           var hitW = Math.min(px(1440) - 4, 90);
-          dg.appendChild(mkSVG('rect', {x:xm - hitW/2, y:AXY+2, width:hitW, height:14, fill:'transparent', rx:2}));
-          var tl2 = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600, 'text-decoration':'underline'});
+          dg.appendChild(mkSVG('rect', {x:xm - hitW/2, y:AXY+2, width:hitW, height:16, fill:'transparent', rx:2}));
+          var tl2 = mkSVG('text', {x:xm, y:AXY+15, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':12, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600, 'text-decoration':'underline'});
           tl2.textContent = fmtDate(dLbl);
           dg.appendChild(tl2);
           (function(dayIdx) {
@@ -318,7 +318,7 @@
           })(di3);
           svgEl.appendChild(dg);
         } else {
-          var tl2b = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
+          var tl2b = mkSVG('text', {x:xm, y:AXY+15, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':12, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
           tl2b.textContent = fmtDate(dLbl); svgEl.appendChild(tl2b);
         }
       }
@@ -360,16 +360,16 @@
     var wkBadge = '';
     if (weekViols.length) {
       var bCol = hasWkErr ? {bg:'#FFEBEE',tx:'#C62828'} : {bg:'#FFF8E1',tx:'#E65100'};
-      wkBadge = '<div style="font-size:8px;padding:1px 4px;border-radius:2px;background:'+bCol.bg+';color:'+bCol.tx+';font-weight:700;margin-top:2px;">'+(hasWkErr ? '&#9940; NARUSZENIE' : '&#9888; OSTRZEZENIE')+'</div>';
+      wkBadge = '<div style="font-size:9px;padding:1px 4px;border-radius:2px;background:'+bCol.bg+';color:'+bCol.tx+';font-weight:700;margin-top:2px;">'+(hasWkErr ? '&#9940; NARUSZENIE' : '&#9888; OSTRZEZENIE')+'</div>';
     }
     sb.innerHTML =
       '<div style="display:flex;align-items:center;gap:3px;margin-bottom:2px">' +
-        '<div style="width:5px;height:5px;border-radius:50%;background:'+dCol+';flex-shrink:0;"></div>' +
-        '<span style="font-size:12px;font-weight:700;color:#1565C0;">W'+String(isoWeek(weekStart)).padStart(2,'0')+'</span>' +
+        '<div style="width:7px;height:7px;border-radius:50%;background:'+dCol+';flex-shrink:0;"></div>' +
+        '<span style="font-size:14px;font-weight:700;color:#1565C0;">W'+String(isoWeek(weekStart)).padStart(2,'0')+'</span>' +
       '</div>' +
-      '<div style="font-size:8px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
-      '<div style="font-size:8px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
-      '<div style="margin-top:2px;font-size:10px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
+      '<div style="font-size:10px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
+      '<div style="font-size:10px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
+      '<div style="margin-top:2px;font-size:12px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
       wkBadge;
 
     /* SVG */
@@ -383,8 +383,8 @@
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
       fill:'rgba(30,136,229,0.12)', stroke:'#1E88E5', 'stroke-width':1.5, rx:2,
       'pointer-events':'none', visibility:'hidden'});
-    var selLabelBg  = mkSVG('rect', {x:0, y:T1Y-21, width:0, height:13, fill:'#1E88E5', rx:2, 'pointer-events':'none', visibility:'hidden'});
-    var selLabelTxt = mkSVG('text', {x:0, y:T1Y-11, 'text-anchor':'middle', fill:'#fff', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none', visibility:'hidden'});
+    var selLabelBg  = mkSVG('rect', {x:0, y:T1Y-23, width:0, height:15, fill:'#1E88E5', rx:2, 'pointer-events':'none', visibility:'hidden'});
+    var selLabelTxt = mkSVG('text', {x:0, y:T1Y-11, 'text-anchor':'middle', fill:'#fff', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none', visibility:'hidden'});
     svgEl.appendChild(selRect); svgEl.appendChild(selLabelBg); svgEl.appendChild(selLabelTxt);
 
     /* Selection drag interaction */
@@ -430,15 +430,15 @@
     footer.style.cssText='display:flex;align-items:stretch;background:#F8F9FB;border-top:1px solid #EEF0F4;';
     var ftL=document.createElement('div');
     ftL.style.cssText='width:'+LW+'px;flex-shrink:0;border-right:1px solid #E2E4EA;padding:4px 8px;display:flex;align-items:center;';
-    if (dist>0) ftL.innerHTML='<span style="font-size:9px;color:#9AA0AA;font-weight:500;">'+dist+' km</span>';
+    if (dist>0) ftL.innerHTML='<span style="font-size:10px;color:#9AA0AA;font-weight:500;">'+dist+' km</span>';
     var ftR=document.createElement('div');
     ftR.style.cssText='flex:1;display:flex;align-items:center;flex-wrap:wrap;overflow:hidden;';
     [3,2,1,0].forEach(function(k) {
       var val=totals[k]||0; if(!val) return;
       var itm=document.createElement('div');
       itm.style.cssText='display:flex;align-items:center;gap:5px;padding:4px 10px;border-right:1px solid #EEF0F4;';
-      itm.innerHTML='<div style="width:8px;height:8px;border-radius:2px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
-        '<span style="font-size:9px;color:#6A7080;white-space:nowrap;"><span style="font-weight:600;color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</span> '+hm(val)+'</span>';
+      itm.innerHTML='<div style="width:9px;height:9px;border-radius:2px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
+        '<span style="font-size:10px;color:#6A7080;white-space:nowrap;"><span style="font-weight:600;color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</span> '+hm(val)+'</span>';
       ftR.appendChild(itm);
     });
 
@@ -449,7 +449,7 @@
     if (allViols.length) {
       var violBtn=document.createElement('button'); violBtn.type='button';
       var vECol=allViols.some(function(v){ return v.sev==='error'; })?'#C62828':'#E65100';
-      violBtn.style.cssText='background:none;border:none;font-size:9px;color:'+vECol+';cursor:pointer;padding:4px 10px;font-family:Inter,sans-serif;font-weight:700;white-space:nowrap;';
+      violBtn.style.cssText='background:none;border:none;font-size:10px;color:'+vECol+';cursor:pointer;padding:4px 10px;font-family:Inter,sans-serif;font-weight:700;white-space:nowrap;';
       violBtn.textContent=(allViols.some(function(v){ return v.sev==='error'; })?'\u26D4':'\u26A0\uFE0F')+' '+allViols.length+' narusz./ostrz.';
       var violPanel=document.createElement('div');
       violPanel.style.cssText='display:none;background:#FFF8E1;border-top:1px solid #FFE082;padding:6px 12px;';
@@ -472,7 +472,7 @@
 
     /* Expand detail table */
     var expandBtn=document.createElement('button'); expandBtn.type='button';
-    expandBtn.style.cssText='margin-left:auto;background:none;border:none;font-size:10px;color:#1E88E5;cursor:pointer;padding:4px 14px;font-family:Inter,sans-serif;font-weight:600;flex-shrink:0;';
+    expandBtn.style.cssText='margin-left:auto;background:none;border:none;font-size:11px;color:#1E88E5;cursor:pointer;padding:4px 14px;font-family:Inter,sans-serif;font-weight:600;flex-shrink:0;';
     expandBtn.textContent='\u25B8 Szczeg\u00f3\u0142y';
     var dtWrap=document.createElement('div'); dtWrap.style.cssText='display:none;border-top:1px solid #EEF0F4;overflow-x:auto;';
     var tbH='<table style="width:100%;border-collapse:collapse;font-size:11px;font-family:Inter,sans-serif;"><thead><tr style="background:#F0F4F8;">';
@@ -572,8 +572,8 @@
 
     var svgSb = document.createElement('div');
     svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
-    svgSb.innerHTML = '<div style="font-size:9px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay ? 'DZIE\u0143' : 'POWI\u0118KSZENIE')+'</div>' +
-      '<div style="font-size:9px;color:#5A6070;">'+(isFullDay ? fmtDate(startD) : hm(dur))+'</div>';
+    svgSb.innerHTML = '<div style="font-size:10px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay ? 'DZIE\u0143' : 'POWI\u0118KSZENIE')+'</div>' +
+      '<div style="font-size:10px;color:#5A6070;">'+(isFullDay ? fmtDate(startD) : hm(dur))+'</div>';
 
     var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
     var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
@@ -699,7 +699,7 @@
     /* Chart header */
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
-    hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
+    hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:10px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
       '<div style="flex:1;padding:5px 12px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
     container.appendChild(hdr);
 
