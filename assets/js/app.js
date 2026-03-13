@@ -133,7 +133,7 @@
       const fd = new FormData(form);
       fd.set('action', 'upload');
 
-      const resp = await fetch(form.action, { method: 'POST', body: fd });
+      const resp = await fetch(form.getAttribute('action'), { method: 'POST', body: fd });
       const text = await resp.text();
       let data;
       try { data = JSON.parse(text); } catch (_) {
