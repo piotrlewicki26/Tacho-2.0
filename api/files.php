@@ -742,3 +742,4 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 http_response_code(400);
 echo json_encode(['error' => 'Nieznana akcja.']);
+echo json_encode(['error' => 'Nieznana akcja.']);
