@@ -1,18 +1,19 @@
-/* TachoPro 2.0 - SVG Tachograph Timeline Chart v2
- * Ported from truck-delegate-pro.jsx (commit ea1fcf7b808040c2256107ee0b6ba4cd4b3c3589)
+/* TachoPro 2.0 - SVG Tachograph Timeline Chart v3
  * Features:
  *   - Week count selector: 1-6 weeks (default: current + 4 back = 5 weeks)
  *   - Prev / Next / Today navigation
- *   - Click-drag selection -> fragment preview panel (time range + activity breakdown)
- *   - EU 561/2006 violation rendering (day tints, strips, icons, badges, lists)
- *   - Per-week expandable violation + detail tables
+ *   - Click-drag selection -> ZOOMS INTO selected fragment (hour-grid axis)
+ *   - Back button to return to full week view
+ *   - Click on any activity bar -> tooltip with full segment details
+ *   - EU 561/2006 violation rendering (tints, strips, icons, badges, lists)
+ *   - Per-week expandable detail + violation tables
  *   - Responsive resize via ResizeObserver
  */
 'use strict';
 
 (function (NS) {
 
-  /* == Activity constants (match JSX) ========================= */
+  /* == Activity constants ========================================= */
   var ACT_FILL   = ['#80DEEA','#9FA8DA','#FFCC80','#EF9A9A'];
   var ACT_SOLID  = ['#00ACC1','#5C6BC0','#EF6C00','#E53935'];
   var ACT_STROKE = ['#00838F','#3949AB','#BF360C','#C62828'];
@@ -20,7 +21,7 @@
   var ACT_NAME   = ['Odpoczynek','Dyspozycyjno\u015b\u0107','Praca','Jazda'];
   var ACT_HFRAC  = [0.30, 0.52, 0.72, 1.00];
 
-  /* Layout constants */
+  /* Layout */
   var LW  = 78;
   var T1Y = 28;
   var T1H = 38;
@@ -38,7 +39,7 @@
   var EU_WEEK_DRIVE_WARN = 3360;
   var EU_WEEK_DRIVE_ERR  = 3600;
 
-  /* == Helpers ================================================= */
+  /* == Helpers ==================================================== */
   function hhmm(m) {
     m = Math.round(m);
     return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
@@ -72,7 +73,7 @@
   }
   function sum(arr, fn) { return arr.reduce(function(a,x){ return a + fn(x); }, 0); }
 
-  /* == EU Violation Engine ===================================== */
+  /* == EU Violation Engine ========================================= */
   function computeDayViolations(segs) {
     if (!segs || !segs.length) return [];
     var drive = sum(segs.filter(function(s){ return s.act===3; }), function(s){ return s.dur; });
@@ -89,7 +90,7 @@
       else if (s.act===0 && s.dur>=15) cont=0;
     });
     if (maxCont > EU_CONT_DRIVE) {
-      viols.push({sev:'warn', msg:'Jazda ciągła '+hhmm(maxCont)+' > 4:30', rule:'art.7 rozp.561/2006'});
+      viols.push({sev:'warn', msg:'Jazda ci\u0105g\u0142a '+hhmm(maxCont)+' > 4:30', rule:'art.7 rozp.561/2006'});
     }
     if (drive > 0 && rest < EU_DAY_REST_MIN) {
       viols.push({sev:'error', msg:'Odpoczynek '+hhmm(rest)+' < 11:00', rule:'art.8 rozp.561/2006'});
@@ -115,10 +116,198 @@
     return viols.some(function(v){ return v.sev==='error'; }) ? 'error' : 'warn';
   }
 
-  /* == Build one week row ====================================== */
-  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete) {
-    var px = function(m) { return (m/TOTAL_MIN)*cw; };
+  /* == Shared tooltip ============================================== */
+  var _tip = null;
+  function getTip() {
+    if (!_tip) {
+      _tip = document.createElement('div');
+      _tip.id = 'tacho-seg-tip';
+      _tip.style.cssText = 'position:fixed;z-index:9999;background:#1A2030;color:#fff;border-radius:7px;padding:10px 14px;font-size:12px;font-family:Inter,sans-serif;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,0.35);display:none;max-width:240px;line-height:1.55;';
+      document.body.appendChild(_tip);
+      document.addEventListener('click', function(e) {
+        if (!e._tachoSeg) _tip.style.display = 'none';
+      });
+    }
+    return _tip;
+  }
+  function hideTip() { getTip().style.display = 'none'; }
+  function showTip(e, s, dayDate) {
+    var t = getTip();
+    t.innerHTML =
+      '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;">' +
+        '<div style="width:11px;height:11px;border-radius:3px;background:'+ACT_SOLID[s.act]+';flex-shrink:0;"></div>' +
+        '<strong style="font-size:13px;color:#ECEFF1;">'+ACT_NAME[s.act]+'</strong>' +
+      '</div>' +
+      '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">'+fmtDate(dayDate)+'</div>' +
+      '<div style="color:#B0BEC5;font-size:11px;">'+hhmm(s.start)+'&nbsp;<span style="opacity:0.5;">\u2192</span>&nbsp;'+hhmm(s.end)+'</div>' +
+      '<div style="font-size:15px;font-weight:700;color:'+ACT_SOLID[s.act]+';margin-top:3px;">'+hhmm(s.dur)+'</div>';
+    t.style.display = 'block';
+    var vx = Math.min(e.clientX+15, window.innerWidth - 260);
+    var vy = Math.min(e.clientY+15, window.innerHeight - 110);
+    t.style.left = vx + 'px';
+    t.style.top  = vy + 'px';
+  }
 
+  /* == Core SVG content builder =================================== *
+   * Draws tracks, activity bars, violations, axis into an existing  *
+   * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) */
+  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols) {
+    var rangeSpan = rangeMax - rangeMin;
+    var isZoomed  = rangeSpan < TOTAL_MIN * 0.9999;
+    var px = function(m) { return (m - rangeMin) / rangeSpan * cw; };
+    var clampX = function(m) { return Math.max(0, Math.min(cw, px(m))); };
+
+    /* Day backgrounds */
+    var firstDay = Math.floor(rangeMin / 1440);
+    var lastDay  = Math.min(7, Math.ceil(rangeMax / 1440));
+    for (var di = firstDay; di < lastDay; di++) {
+      var bgX1 = clampX(di * 1440), bgX2 = clampX((di+1) * 1440);
+      var bw0 = bgX2 - bgX1; if (bw0 <= 0) continue;
+      var vl = dayViols ? dayViols[di] || [] : [];
+      var bg = vl.some(function(v){ return v.sev==='error'; }) ? '#FFF5F5' :
+               vl.some(function(v){ return v.sev==='warn';  }) ? '#FFFDE7' :
+               di%2===0 ? '#FFF' : '#F6F7FA';
+      svgEl.appendChild(mkSVG('rect', {x:bgX1, y:0, width:bw0, height:RH, fill:bg}));
+    }
+
+    /* Status dots (full view only) */
+    if (!isZoomed) {
+      weekDays.forEach(function(d, di) {
+        var st = d ? dayStatus(d.segs) : null; if (!st) return;
+        var col = st==='error' ? '#E53935' : st==='warn' ? '#FF9800' : '#43A047';
+        var xc = px(di*1440+720);
+        if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:10, r:3.5, fill:col, opacity:0.85}));
+      });
+    }
+
+    /* Activity track background */
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#E0F7FA', rx:2, opacity:0.3}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#B2EBF2', 'stroke-width':0.8, rx:2}));
+
+    /* Activity slots */
+    weekDays.forEach(function(day, di) {
+      if (!day || !day.segs) return;
+      day.segs.forEach(function(s) {
+        var absS = di*1440 + s.start, absE = di*1440 + s.end;
+        if (absE <= rangeMin || absS >= rangeMax) return; /* outside zoom */
+        var x1 = clampX(Math.max(absS, rangeMin));
+        var x2 = clampX(Math.min(absE, rangeMax));
+        var bw = x2 - x1; if (bw < 0.4) return;
+        var tCY = T1Y + T1H/2;
+        var bh = Math.max(4, Math.round((T1H-2) * ACT_HFRAC[s.act]));
+        var by = tCY - bh/2;
+        var g = mkSVG('g');
+        g.setAttribute('style', 'cursor:pointer;');
+        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:ACT_FILL[s.act], rx:2}));
+        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':0.8, rx:2, 'pointer-events':'none'}));
+        if (bw > 50) {
+          var txt = mkSVG('text', {x:x1+bw/2, y:tCY+4, 'text-anchor':'middle', fill:ACT_TEXT[s.act], 'font-size':bw>80?10:8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          txt.textContent = hhmm(s.dur); g.appendChild(txt);
+        }
+        /* Click -> tooltip */
+        (function(seg, dObj) {
+          g.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            ev._tachoSeg = true;
+            showTip(ev, seg, dObj ? new Date(dObj.date) : null);
+          });
+        })(s, day);
+        if (onSegClick) {
+          (function(seg, dObj) {
+            g.addEventListener('click', function(ev) { onSegClick(ev, seg, dObj); });
+          })(s, day);
+        }
+        svgEl.appendChild(g);
+      });
+    });
+
+    /* Violation markers per day */
+    if (dayViols) {
+      weekDays.forEach(function(day, di) {
+        var vl = dayViols[di]; if (!vl || !vl.length) return;
+        var hasErr = vl.some(function(v){ return v.sev==='error'; });
+        var col = hasErr ? '#E53935' : '#FF9800';
+        var sx1 = clampX(di*1440), sx2 = clampX((di+1)*1440), sw = sx2-sx1;
+        if (sw < 1) return;
+        svgEl.appendChild(mkSVG('rect', {x:sx1+1, y:T1Y, width:Math.max(0,sw-2), height:3, fill:col, opacity:0.8, rx:1}));
+        if (sw > 16) {
+          var ic = mkSVG('text', {x:sx1+sw/2, y:T1Y-2, 'text-anchor':'middle', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+          ic.textContent = hasErr ? '\u26D4' : '\u26A0\uFE0F';
+          svgEl.appendChild(ic);
+        }
+      });
+    }
+
+    /* Daily-rest track */
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#E3F2FD', rx:2, opacity:0.35}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#BBDEFB', 'stroke-width':0.8, rx:2}));
+    weekDays.forEach(function(day, di) {
+      if (!day || !day.segs) return;
+      day.segs.forEach(function(s) {
+        if (s.act !== 0 || s.dur < 9*60) return;
+        var absS = di*1440+s.start, absE = di*1440+s.end;
+        if (absE <= rangeMin || absS >= rangeMax) return;
+        var x1 = clampX(Math.max(absS,rangeMin)), x2 = clampX(Math.min(absE,rangeMax)), bw = x2-x1;
+        if (bw < 0.4) return;
+        var g = mkSVG('g');
+        g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:'#90CAF9', rx:2, opacity:0.75}));
+        if (bw > 35) {
+          var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#1565C0', 'font-size':8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          t.textContent = hhmm(s.dur); g.appendChild(t);
+        }
+        svgEl.appendChild(g);
+      });
+    });
+
+    /* Separators + axis */
+    if (isZoomed) {
+      /* Hour (or sub-hour) grid lines in zoomed view */
+      var step;
+      if (rangeSpan <= 2*60) step = 15;
+      else if (rangeSpan <= 4*60) step = 30;
+      else if (rangeSpan <= 16*60) step = 60;
+      else if (rangeSpan <= 3*1440) step = 6*60;
+      else step = 1440;
+
+      /* Draw day boundary separators within range */
+      for (var d2 = Math.ceil(rangeMin/1440); d2 < Math.floor(rangeMax/1440)+1 && d2 < 7; d2++) {
+        var xd = px(d2*1440);
+        if (xd > 0 && xd < cw) svgEl.appendChild(mkSVG('line', {x1:xd, y1:T1Y-8, x2:xd, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.2, 'stroke-dasharray':'4,3', opacity:0.5}));
+      }
+      svgEl.appendChild(mkSVG('line', {x1:0, y1:AXY, x2:cw, y2:AXY, stroke:'#E0E2E8', 'stroke-width':1}));
+
+      /* Time tick labels */
+      var firstTick = Math.ceil(rangeMin / step) * step;
+      for (var tk = firstTick; tk <= rangeMax; tk += step) {
+        var xt = px(tk); if (xt < 10 || xt > cw-10) continue;
+        /* vertical grid line */
+        svgEl.appendChild(mkSVG('line', {x1:xt, y1:T1Y, x2:xt, y2:AXY, stroke:'#DDE1E6', 'stroke-width':0.8, opacity:0.6}));
+        /* label: day-of-week + time */
+        var dIdx = Math.floor(tk/1440);
+        var timeStr = hhmm(tk % 1440);
+        var dObj2 = addD(weekStart, dIdx);
+        var lbl = (tk % 1440 === 0) ? fmtDate(dObj2) : timeStr;
+        var tl = mkSVG('text', {x:xt, y:AXY+13, 'text-anchor':'middle', fill:'#1565C0', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':tk%1440===0?700:400});
+        tl.textContent = lbl; svgEl.appendChild(tl);
+      }
+    } else {
+      /* Normal full-week separators + day labels */
+      for (var di2=1; di2<7; di2++) {
+        var xsep = px(di2*1440);
+        if (xsep>=0 && xsep<=cw) svgEl.appendChild(mkSVG('line', {x1:xsep, y1:T1Y-8, x2:xsep, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.2, 'stroke-dasharray':'4,3', opacity:0.5}));
+      }
+      svgEl.appendChild(mkSVG('line', {x1:0, y1:AXY, x2:cw, y2:AXY, stroke:'#E0E2E8', 'stroke-width':1}));
+      for (var di3=0; di3<7; di3++) {
+        var xm = px(di3*1440+720); if (xm<22||xm>cw-22) continue;
+        var dLbl = addD(weekStart, di3);
+        var tl2 = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
+        tl2.textContent = fmtDate(dLbl); svgEl.appendChild(tl2);
+      }
+    }
+  }
+
+  /* == Build one week row ========================================= */
+  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(d) {
       if (!d) return;
@@ -166,99 +355,7 @@
 
     /* SVG */
     var svgEl = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
-
-    /* Day backgrounds with violation tint */
-    for (var di=0; di<7; di++) {
-      var rx = Math.max(0, px(di*1440)), rw = Math.min(cw, px((di+1)*1440)) - rx;
-      if (rw<=0) continue;
-      var vl = dayViols[di];
-      var bg = vl.some(function(v){ return v.sev==='error'; }) ? '#FFF5F5' :
-               vl.some(function(v){ return v.sev==='warn';  }) ? '#FFFDE7' :
-               di%2===0 ? '#FFF' : '#F6F7FA';
-      svgEl.appendChild(mkSVG('rect', {x:rx, y:0, width:rw, height:RH, fill:bg}));
-    }
-
-    /* Status dots */
-    weekDays.forEach(function(d, di) {
-      var st = d ? dayStatus(d.segs) : null;
-      if (!st) return;
-      var col = st==='error' ? '#E53935' : st==='warn' ? '#FF9800' : '#43A047';
-      var xc = px(di*1440+720);
-      if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:10, r:3.5, fill:col, opacity:0.85}));
-    });
-
-    /* Activity track background */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#E0F7FA', rx:2, opacity:0.3}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#B2EBF2', 'stroke-width':0.8, rx:2}));
-
-    /* Activity slots */
-    weekDays.forEach(function(day, di) {
-      if (!day || !day.segs) return;
-      day.segs.forEach(function(s) {
-        var absS=di*1440+s.start, absE=di*1440+s.end;
-        var x1=Math.max(0,px(absS)), x2=Math.min(cw,px(absE)), bw=x2-x1;
-        if (bw<0.4) return;
-        var tCY=T1Y+T1H/2, bh=Math.max(4,Math.round((T1H-2)*ACT_HFRAC[s.act])), by=tCY-bh/2;
-        var g = mkSVG('g');
-        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:ACT_FILL[s.act], rx:2}));
-        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':0.8, rx:2, 'pointer-events':'none'}));
-        if (bw>50) {
-          var txt=mkSVG('text', {x:x1+bw/2, y:tCY+4, 'text-anchor':'middle', fill:ACT_TEXT[s.act], 'font-size':bw>80?10:8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
-          txt.textContent = hhmm(s.dur);
-          g.appendChild(txt);
-        }
-        svgEl.appendChild(g);
-      });
-    });
-
-    /* Violation markers per day (strip at top of track + icon) */
-    weekDays.forEach(function(day, di) {
-      var vl = dayViols[di];
-      if (!vl.length) return;
-      var hasErr = vl.some(function(v){ return v.sev==='error'; });
-      var col = hasErr ? '#E53935' : '#FF9800';
-      var x1=px(di*1440), bw=Math.max(0, px((di+1)*1440)-x1);
-      if (bw<1) return;
-      svgEl.appendChild(mkSVG('rect', {x:x1+1, y:T1Y, width:Math.max(0,bw-2), height:3, fill:col, opacity:0.8, rx:1}));
-      if (bw>16) {
-        var ic=mkSVG('text', {x:x1+bw/2, y:T1Y-2, 'text-anchor':'middle', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
-        ic.textContent = hasErr ? '\u26D4' : '\u26A0\uFE0F';
-        svgEl.appendChild(ic);
-      }
-    });
-
-    /* Daily-rest track */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#E3F2FD', rx:2, opacity:0.35}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#BBDEFB', 'stroke-width':0.8, rx:2}));
-    weekDays.forEach(function(day, di) {
-      if (!day || !day.segs) return;
-      day.segs.forEach(function(s) {
-        if (s.act!==0 || s.dur<9*60) return;
-        var x1=Math.max(0,px(di*1440+s.start)), bw=Math.min(cw,px(di*1440+s.end))-x1;
-        if (bw<0.4) return;
-        var g=mkSVG('g');
-        g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:'#90CAF9', rx:2, opacity:0.75}));
-        if (bw>35) {
-          var t=mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#1565C0', 'font-size':8, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
-          t.textContent=hhmm(s.dur); g.appendChild(t);
-        }
-        svgEl.appendChild(g);
-      });
-    });
-
-    /* Day separators */
-    for (var di2=1; di2<7; di2++) {
-      var xsep=px(di2*1440);
-      if (xsep>=0 && xsep<=cw) svgEl.appendChild(mkSVG('line', {x1:xsep, y1:T1Y-8, x2:xsep, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.2, 'stroke-dasharray':'4,3', opacity:0.5}));
-    }
-    svgEl.appendChild(mkSVG('line', {x1:0, y1:AXY, x2:cw, y2:AXY, stroke:'#E0E2E8', 'stroke-width':1}));
-    for (var di3=0; di3<7; di3++) {
-      var xm=px(di3*1440+720);
-      if (xm<22||xm>cw-22) continue;
-      var dLbl=addD(weekStart,di3);
-      var tl=mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
-      tl.textContent=fmtDate(dLbl); svgEl.appendChild(tl);
-    }
+    fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols);
 
     /* Selection overlay rects */
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
@@ -268,9 +365,10 @@
     var selLabelTxt = mkSVG('text', {x:0, y:T1Y-11, 'text-anchor':'middle', fill:'#fff', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none', visibility:'hidden'});
     svgEl.appendChild(selRect); svgEl.appendChild(selLabelBg); svgEl.appendChild(selLabelTxt);
 
-    /* Selection interaction */
+    /* Selection drag interaction */
     svgEl.addEventListener('mousedown', function(e) {
       if (e.button!==0) return; e.preventDefault();
+      hideTip();
       if (selCtrl.clearPrev) selCtrl.clearPrev();
       selCtrl.clearPrev = function() {
         selRect.setAttribute('visibility','hidden');
@@ -294,7 +392,9 @@
         document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp);
         var endX=Math.max(0,Math.min(cw,ev.clientX-svgEl.getBoundingClientRect().left));
         var x1=Math.min(startX,endX), x2=Math.max(startX,endX);
-        if (x2-x1<8) { selRect.setAttribute('visibility','hidden'); selLabelBg.setAttribute('visibility','hidden'); selLabelTxt.setAttribute('visibility','hidden'); return; }
+        if (x2-x1<8) {
+          selRect.setAttribute('visibility','hidden'); selLabelBg.setAttribute('visibility','hidden'); selLabelTxt.setAttribute('visibility','hidden'); return;
+        }
         var startMin=Math.round((x1/cw)*TOTAL_MIN), endMin=Math.round((x2/cw)*TOTAL_MIN);
         if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:startMin, endMin:endMin});
       }
@@ -351,10 +451,10 @@
     /* Expand detail table */
     var expandBtn=document.createElement('button'); expandBtn.type='button';
     expandBtn.style.cssText='margin-left:auto;background:none;border:none;font-size:10px;color:#1E88E5;cursor:pointer;padding:4px 14px;font-family:Inter,sans-serif;font-weight:600;flex-shrink:0;';
-    expandBtn.textContent='\u25B8 Szczegóły';
+    expandBtn.textContent='\u25B8 Szczeg\u00f3\u0142y';
     var dtWrap=document.createElement('div'); dtWrap.style.cssText='display:none;border-top:1px solid #EEF0F4;overflow-x:auto;';
     var tbH='<table style="width:100%;border-collapse:collapse;font-size:11px;font-family:Inter,sans-serif;"><thead><tr style="background:#F0F4F8;">';
-    ['Data','Start','Stop','Czas','Aktywność','Km'].forEach(function(h){ tbH+='<th style="padding:5px 10px;text-align:left;font-weight:700;color:#5A6070;font-size:10px;border-bottom:1px solid #E0E4E8;white-space:nowrap;">'+h+'</th>'; });
+    ['Data','Start','Stop','Czas','Aktywno\u015b\u0107','Km'].forEach(function(h){ tbH+='<th style="padding:5px 10px;text-align:left;font-weight:700;color:#5A6070;font-size:10px;border-bottom:1px solid #E0E4E8;white-space:nowrap;">'+h+'</th>'; });
     tbH+='</tr></thead><tbody>';
     weekDays.forEach(function(day, di) {
       if (!day||!day.segs) return;
@@ -369,7 +469,7 @@
         tbH+='<td style="padding:4px 10px;border-bottom:1px solid #F0F2F5;white-space:nowrap;"><span style="display:inline-flex;align-items:center;gap:5px;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+ACT_SOLID[s.act]+';flex-shrink:0;"></span><span style="color:'+ACT_SOLID[s.act]+';font-weight:600;">'+ACT_NAME[s.act]+'</span></span></td>';
         tbH+='<td style="padding:4px 10px;color:#5A6070;border-bottom:1px solid #F0F2F5;white-space:nowrap;">'+(si===0&&day.dist?day.dist+' km':'')+'</td></tr>';
         if (si===day.segs.length-1 && dv.length) {
-          tbH+='<tr style="background:#FFF8E1;"><td colspan="6" style="padding:3px 10px;border-bottom:1px solid #FFE082;font-size:10px;color:#B45309;">'+dv.map(function(v){ return (v.sev==='error'?'&#9940;':'&#9888;')+' '+v.msg+' <em style=\"color:#9A7800\">('+v.rule+')</em>'; }).join(' &nbsp;&middot;&nbsp; ')+'</td></tr>';
+          tbH+='<tr style="background:#FFF8E1;"><td colspan="6" style="padding:3px 10px;border-bottom:1px solid #FFE082;font-size:10px;color:#B45309;">'+dv.map(function(v){ return (v.sev==='error'?'&#9940;':'&#9888;')+' '+v.msg+' <em style=\\"color:#9A7800\\">('+v.rule+')</em>'; }).join(' &nbsp;&middot;&nbsp; ')+'</td></tr>';
         }
       });
     });
@@ -378,61 +478,116 @@
     expandBtn.addEventListener('click', function() {
       var shown=dtWrap.style.display!=='none';
       dtWrap.style.display=shown?'none':'block';
-      expandBtn.textContent=shown?'\u25B8 Szczegóły':'\u25BE Ukryj';
+      expandBtn.textContent=shown?'\u25B8 Szczeg\u00f3\u0142y':'\u25BE Ukryj';
     });
     ftR.appendChild(expandBtn);
     wrapper.appendChild(dtWrap);
     chartArea.appendChild(wrapper);
   }
 
-  /* == Selection Preview Panel ================================== */
-  function showSelectionPreview(panel, info) {
-    var weekStart=info.weekStart, weekDays=info.weekDays, startMin=info.startMin, endMin=info.endMin;
-    var dur=endMin-startMin;
-    var selTotals={0:0,1:0,2:0,3:0};
+  /* == Zoomed view panel ========================================== *
+   * Renders a full-width zoomed SVG for the selected time fragment,  *
+   * with activity breakdown and a Back button.                        */
+  function showZoomedView(zoomPanel, info, cw, onBack) {
+    var weekStart = info.weekStart, weekDays = info.weekDays;
+    var startMin  = info.startMin,  endMin   = info.endMin;
+    var dur       = endMin - startMin;
+
+    /* Compute activity totals within selection */
+    var selTotals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(day, di) {
-      if (!day||!day.segs) return;
-      var base=di*1440;
+      if (!day || !day.segs) return;
+      var base = di * 1440;
       day.segs.forEach(function(s) {
         var absS=base+s.start, absE=base+s.end;
         var iS=Math.max(absS,startMin), iE=Math.min(absE,endMin);
         if (iE>iS) selTotals[s.act]=(selTotals[s.act]||0)+(iE-iS);
       });
     });
-    var startD=addD(weekStart, Math.floor(startMin/1440));
-    var endD  =addD(weekStart, Math.floor(endMin/1440));
-    var startT=hhmm(startMin%1440), endT=hhmm(endMin%1440);
-    var html='<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">' +
-      '<span style="font-size:15px;">&#128204;</span>' +
-      '<strong style="font-size:13px;color:#1565C0;">Zaznaczony fragment</strong>' +
-      '<span style="font-size:11px;color:#5A6070;">'+fmtDate(startD)+' <b>'+startT+'</b> &rarr; '+fmtDate(endD)+' <b>'+endT+'</b></span>' +
-      '<span style="margin-left:auto;background:#1E88E5;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;">'+hm(dur)+'</span>' +
-      '</div><div style="display:flex;gap:8px;flex-wrap:wrap;">';
-    [3,2,1,0].forEach(function(k) {
-      var val=selTotals[k]||0;
-      html+='<div style="display:flex;align-items:center;gap:5px;background:#fff;border:1px solid #BBDEFB;border-radius:4px;padding:5px 10px;">' +
-        '<div style="width:10px;height:10px;border-radius:2px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
-        '<span style="font-size:11px;color:#1A2030;"><strong>'+ACT_NAME[k]+'</strong>: '+hm(val)+' <span style="color:#9AA0AA;">('+pct(val,dur)+'%)</span></span></div>';
+
+    var startD = addD(weekStart, Math.floor(startMin/1440));
+    var endD   = addD(weekStart, Math.floor(endMin/1440));
+    var startT = hhmm(startMin%1440), endT = hhmm(endMin%1440);
+
+    zoomPanel.innerHTML = '';
+    zoomPanel.style.cssText = 'margin-top:8px;border:2px solid #1E88E5;border-radius:8px;background:#F0F8FF;overflow:hidden;font-family:Inter,sans-serif;';
+
+    /* Panel header */
+    var ph = document.createElement('div');
+    ph.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 12px;background:#1E88E5;flex-wrap:wrap;';
+
+    var backBtn = document.createElement('button'); backBtn.type='button';
+    backBtn.style.cssText = 'background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:3px 10px;font-size:11px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;font-weight:600;white-space:nowrap;';
+    backBtn.textContent = '\u2190 Wr\u00f3\u0107';
+    backBtn.addEventListener('click', function() {
+      zoomPanel.innerHTML = '';
+      zoomPanel.style.cssText = 'display:none;';
+      if (onBack) onBack();
     });
-    html+='</div>';
-    panel.innerHTML=html+'<button onclick="this.parentNode.style.display=\'none\'" style="position:absolute;top:6px;right:10px;background:none;border:none;font-size:18px;line-height:1;cursor:pointer;color:#9AA0AA;">&times;</button>';
-    panel.style.position='relative';
-    panel.style.display='block';
+
+    var phTitle = document.createElement('span');
+    phTitle.style.cssText = 'font-size:12px;font-weight:700;color:#fff;white-space:nowrap;';
+    phTitle.textContent = 'Powi\u0119kszony fragment \u2014 W'+String(isoWeek(weekStart)).padStart(2,'0');
+
+    var phRange = document.createElement('span');
+    phRange.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.85);';
+    phRange.innerHTML = fmtDate(startD)+' <b>'+startT+'</b> \u2192 '+fmtDate(endD)+' <b>'+endT+'</b>';
+
+    var phDur = document.createElement('span');
+    phDur.style.cssText = 'margin-left:auto;background:rgba(255,255,255,0.25);border-radius:4px;padding:2px 10px;font-size:12px;font-weight:700;color:#fff;white-space:nowrap;';
+    phDur.textContent = hm(dur);
+
+    ph.appendChild(backBtn); ph.appendChild(phTitle); ph.appendChild(phRange); ph.appendChild(phDur);
+    zoomPanel.appendChild(ph);
+
+    /* Zoomed SVG row */
+    var svgRow = document.createElement('div');
+    svgRow.style.cssText = 'display:flex;align-items:stretch;background:#FFF;border-bottom:1px solid #BBDEFB;';
+
+    var svgSb = document.createElement('div');
+    svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
+    svgSb.innerHTML = '<div style="font-size:9px;color:#1565C0;font-weight:700;margin-bottom:2px;">POWI\u0118KSZENIE</div>' +
+      '<div style="font-size:9px;color:#5A6070;">'+hm(dur)+'</div>';
+
+    var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
+    var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
+    fillChartSVG(zoomSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols);
+
+    svgRow.appendChild(svgSb); svgRow.appendChild(zoomSvg);
+    zoomPanel.appendChild(svgRow);
+
+    /* Activity breakdown */
+    var breakdown = document.createElement('div');
+    breakdown.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;background:#fff;border-top:1px solid #BBDEFB;';
+    [3,2,1,0].forEach(function(k) {
+      var val = selTotals[k]||0;
+      var card = document.createElement('div');
+      card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
+      card.innerHTML =
+        '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
+        '<span style="font-size:11px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+'&nbsp;<span style="color:#9AA0AA;font-size:10px;">('+pct(val,dur)+'%)</span></span>';
+      breakdown.appendChild(card);
+    });
+    zoomPanel.appendChild(breakdown);
+
+    zoomPanel.style.display = 'block';
+    /* Scroll into view */
+    zoomPanel.scrollIntoView({behavior:'smooth', block:'nearest'});
   }
 
-  /* == Public API ============================================== */
+  /* == Public API ================================================= */
   NS.render = function(containerId, daysData) {
-    var container=document.getElementById(containerId);
+    var container = document.getElementById(containerId);
     if (!container) return;
-    container.innerHTML='';
-    container.style.fontFamily='Inter,sans-serif';
-    if (!daysData||!daysData.length) {
-      container.innerHTML='<div style="text-align:center;color:#9AA0AA;padding:24px 0;">Brak danych aktywności do wyświetlenia.</div>';
+    container.innerHTML = '';
+    container.style.fontFamily = 'Inter,sans-serif';
+    if (!daysData || !daysData.length) {
+      container.innerHTML = '<div style="text-align:center;color:#9AA0AA;padding:24px 0;">Brak danych aktywno\u015bci do wy\u015bwietlenia.</div>';
       return;
     }
 
     /* Group by ISO weeks */
-    var weekMap={};
+    var weekMap = {};
     daysData.forEach(function(day) {
       var d=new Date(day.date), ws=monDay(d), key=ws.toISOString().slice(0,10);
       if (!weekMap[key]) weekMap[key]={start:ws, days:new Array(7).fill(null)};
@@ -441,9 +596,9 @@
     });
 
     /* State */
-    var numWeeks=5;
-    var thisMonday=monDay(new Date());
-    var startWk=addD(thisMonday, -(numWeeks-1)*7);
+    var numWeeks = 5;
+    var thisMonday = monDay(new Date());
+    var startWk = addD(thisMonday, -(numWeeks-1)*7);
 
     function getVisibleWeeks() {
       var res=[];
@@ -455,33 +610,32 @@
     }
 
     /* Toolbar */
-    var toolbar=document.createElement('div');
-    toolbar.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;';
+    var toolbar = document.createElement('div');
+    toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;';
 
     function mkBtn(lbl, extra) {
       var b=document.createElement('button'); b.type='button'; b.textContent=lbl;
       b.style.cssText='background:#FFF;border:1px solid #DDE1E6;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;'+(extra||'');
       return b;
     }
-    var prevBtn=mkBtn('\u25C4');
-    var todayBtn=mkBtn('Dziś','background:#E3F2FD;border-color:#1E88E5;color:#1E88E5;font-weight:600;');
-    var nextBtn=mkBtn('\u25BA');
-    var sep=document.createElement('div'); sep.style.cssText='width:1px;height:20px;background:#DDE1E6;';
-    var wkLabel=document.createElement('span');
-    wkLabel.style.cssText='font-size:11px;color:#9AA0AA;font-family:Inter,sans-serif;';
-    wkLabel.textContent='Tygodni:';
-    var dateRange=document.createElement('span');
-    dateRange.style.cssText='font-size:11px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
+    var prevBtn  = mkBtn('\u25C4');
+    var todayBtn = mkBtn('Dzi\u015b','background:#E3F2FD;border-color:#1E88E5;color:#1E88E5;font-weight:600;');
+    var nextBtn  = mkBtn('\u25BA');
+    var sep      = document.createElement('div'); sep.style.cssText = 'width:1px;height:20px;background:#DDE1E6;';
+    var wkLabel  = document.createElement('span');
+    wkLabel.style.cssText = 'font-size:11px;color:#9AA0AA;font-family:Inter,sans-serif;';
+    wkLabel.textContent = 'Tygodni:';
+    var dateRange = document.createElement('span');
+    dateRange.style.cssText = 'font-size:11px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
 
-    var wkBtns=[];
-    for (var n=1;n<=6;n++) {
+    var wkBtns = [];
+    for (var n=1; n<=6; n++) {
       (function(nn) {
         var b=document.createElement('button'); b.type='button'; b.textContent=nn; b.dataset.n=nn;
         var active=nn===numWeeks;
         b.style.cssText='background:'+(active?'#E3F2FD':'#FFF')+';border:1px solid '+(active?'#1E88E5':'#DDE1E6')+';border-radius:3px;padding:3px 9px;font-size:11px;cursor:pointer;color:'+(active?'#1E88E5':'#9AA0AA')+';font-weight:'+(active?600:400)+';font-family:Inter,sans-serif;';
         b.addEventListener('click', function() {
-          numWeeks=nn;
-          startWk=addD(thisMonday, -(numWeeks-1)*7);
+          numWeeks=nn; startWk=addD(thisMonday,-(numWeeks-1)*7);
           wkBtns.forEach(function(x) {
             var a=parseInt(x.dataset.n)===nn;
             x.style.background=a?'#E3F2FD':'#FFF'; x.style.borderColor=a?'#1E88E5':'#DDE1E6';
@@ -501,53 +655,62 @@
     container.appendChild(toolbar);
 
     /* Legend */
-    var legend=document.createElement('div');
-    legend.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
+    var legend = document.createElement('div');
+    legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
     [{fill:'#80DEEA',bd:'#00838F',lbl:'Odpoczynek'},{fill:'#EF9A9A',bd:'#C62828',lbl:'Jazda'},
-     {fill:'#FFCC80',bd:'#BF360C',lbl:'Praca'},{fill:'#9FA8DA',bd:'#3949AB',lbl:'Dyspozycyjność'},
-     {fill:'#90CAF9',bd:'#1E88E5',lbl:'Odpocz. >=9h'}].forEach(function(it) {
+     {fill:'#FFCC80',bd:'#BF360C',lbl:'Praca'},{fill:'#9FA8DA',bd:'#3949AB',lbl:'Dyspozycyjno\u015b\u0107'},
+     {fill:'#90CAF9',bd:'#1E88E5',lbl:'Odpocz. \u22659h'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
       d.innerHTML='<div style="width:18px;height:9px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:10px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
     });
-    var stLg=document.createElement('div');
-    stLg.style.cssText='margin-left:auto;font-size:10px;color:#9AA0AA;white-space:nowrap;';
-    stLg.innerHTML='&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeciągnij, by zaznaczyć fragment</span>';
+    var stLg = document.createElement('div');
+    stLg.style.cssText = 'margin-left:auto;font-size:10px;color:#9AA0AA;white-space:nowrap;';
+    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
-    /* Header */
-    var hdr=document.createElement('div');
-    hdr.style.cssText='display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
-    hdr.innerHTML='<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
-      '<div style="flex:1;padding:5px 12px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">OŚ CZASU (7 DNI) &#x2014; zaznacz fragment myszą &#x2192; podgląd wybranego okresu</div>';
+    /* Chart header */
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
+    hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
+      '<div style="flex:1;padding:5px 12px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment | kliknij na aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
     container.appendChild(hdr);
 
     /* Chart area */
-    var chartArea=document.createElement('div');
-    chartArea.style.cssText='border:1px solid #E0E4E8;border-top:none;border-radius:0 0 4px 4px;overflow:hidden;';
+    var chartArea = document.createElement('div');
+    chartArea.style.cssText = 'border:1px solid #E0E4E8;border-top:none;border-radius:0 0 4px 4px;overflow:hidden;';
     container.appendChild(chartArea);
 
-    /* Selection preview panel */
-    var selPanel=document.createElement('div');
-    selPanel.style.cssText='display:none;margin-top:8px;border:1.5px solid #1E88E5;border-radius:6px;background:#EAF4FF;padding:12px 16px;font-family:Inter,sans-serif;';
-    container.appendChild(selPanel);
+    /* Zoom panel (hidden until selection) */
+    var zoomPanel = document.createElement('div');
+    zoomPanel.style.cssText = 'display:none;';
+    container.appendChild(zoomPanel);
 
-    var selCtrl={clearPrev:null};
+    var selCtrl = {clearPrev: null};
 
     /* Render function */
     function renderWeeks() {
-      chartArea.innerHTML='';
-      selPanel.style.display='none';
-      var cw=Math.max(400, container.clientWidth-LW-4);
-      var visible=getVisibleWeeks();
-      dateRange.textContent=fmtDate(visible[0].start)+' \u2013 '+fmtDate(addD(visible[visible.length-1].start,6));
-      visible.forEach(function(w){ buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info){ showSelectionPreview(selPanel, info); }); });
+      chartArea.innerHTML = '';
+      zoomPanel.innerHTML = '';
+      zoomPanel.style.cssText = 'display:none;';
+      hideTip();
+      var cw = Math.max(400, container.clientWidth - LW - 4);
+      var visible = getVisibleWeeks();
+      dateRange.textContent = fmtDate(visible[0].start) + ' \u2013 ' + fmtDate(addD(visible[visible.length-1].start, 6));
+      visible.forEach(function(w) {
+        buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
+          var cw2 = Math.max(400, container.clientWidth - LW - 4);
+          showZoomedView(zoomPanel, info, cw2, function() {
+            /* Back button: just hide panel */
+          });
+        });
+      });
     }
 
     requestAnimationFrame(renderWeeks);
-    if (typeof ResizeObserver!=='undefined') {
-      var ro=new ResizeObserver(function(){ renderWeeks(); });
+    if (typeof ResizeObserver !== 'undefined') {
+      var ro = new ResizeObserver(function(){ renderWeeks(); });
       ro.observe(container);
     }
   };
