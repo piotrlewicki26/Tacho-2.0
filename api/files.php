@@ -442,8 +442,8 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $insDay = $db->prepare(
                         'INSERT IGNORE INTO ddd_activity_days
                          (file_id, date, drive_min, work_min, avail_min, rest_min, dist_km,
-                          violations, segments)
-                         VALUES (?,?,?,?,?,?,?,?,?)'
+                          violations, segments, border_crossings)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)'
                     );
                     foreach ($actResult['days'] as $day) {
                         $insDay->execute([
@@ -454,8 +454,9 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $day['avail'] ?? 0,
                             $day['rest']  ?? 0,
                             $day['dist']  ?? 0,
-                            json_encode($day['viol'] ?? []),
-                            json_encode($day['segs'] ?? []),
+                            json_encode($day['viol']      ?? []),
+                            json_encode($day['segs']      ?? []),
+                            json_encode($day['crossings'] ?? []),
                         ]);
                     }
                 }

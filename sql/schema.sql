@@ -209,6 +209,8 @@ CREATE TABLE IF NOT EXISTS `ddd_activity_days` (
     COMMENT 'EU regulation violation list for this day',
   `segments`   JSON         DEFAULT NULL
     COMMENT 'Array of {act,start,end,dur} slot objects for timeline rendering',
+  `border_crossings` JSON   DEFAULT NULL
+    COMMENT 'Array of {ts,tmin,type,country} border-crossing records for this day',
   UNIQUE KEY uq_file_date (`file_id`, `date`),
   INDEX idx_file_date (`file_id`, `date`),
   FOREIGN KEY (`file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE

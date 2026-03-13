@@ -53,7 +53,7 @@ $chartDays  = [];   // [{date, segs, dist}] for JS timeline chart
 if ($selectedFile) {
     // Try pre-parsed data from ddd_activity_days first (fast path)
     $dbDays = $db->prepare(
-        'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
+        'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings
          FROM ddd_activity_days WHERE file_id=? ORDER BY date'
     );
     $dbDays->execute([$fileId]);
@@ -61,20 +61,22 @@ if ($selectedFile) {
 
     if ($dbRows) {
         foreach ($dbRows as $row) {
-            $viols = json_decode($row['violations'] ?? '[]', true) ?: [];
-            $segs  = json_decode($row['segments']   ?? '[]', true) ?: [];
+            $viols     = json_decode($row['violations']      ?? '[]', true) ?: [];
+            $segs      = json_decode($row['segments']        ?? '[]', true) ?: [];
+            $crossings = json_decode($row['border_crossings'] ?? '[]', true) ?: [];
             $days[] = [
-                'date'  => $row['date'],
-                'drive' => (int)$row['drive_min'],
-                'work'  => (int)$row['work_min'],
-                'avail' => (int)$row['avail_min'],
-                'rest'  => (int)$row['rest_min'],
-                'dist'  => (int)$row['dist_km'],
-                'segs'  => $segs,
-                'viol'  => $viols,
+                'date'      => $row['date'],
+                'drive'     => (int)$row['drive_min'],
+                'work'      => (int)$row['work_min'],
+                'avail'     => (int)$row['avail_min'],
+                'rest'      => (int)$row['rest_min'],
+                'dist'      => (int)$row['dist_km'],
+                'segs'      => $segs,
+                'crossings' => $crossings,
+                'viol'      => $viols,
             ];
             // Chart data
-            $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km']];
+            $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => $crossings];
             // Summary
             $summary['drive'] += (int)$row['drive_min'];
             $summary['work']  += (int)$row['work_min'];
@@ -94,7 +96,7 @@ if ($selectedFile) {
             $summary     = $parseResult['summary'] ?? $summary;
             $violations  = $summary['violations']  ?? [];
             foreach ($days as $day) {
-                $chartDays[] = ['date' => $day['date'], 'segs' => $day['segs'] ?? [], 'dist' => $day['dist'] ?? 0];
+                $chartDays[] = ['date' => $day['date'], 'segs' => $day['segs'] ?? [], 'dist' => $day['dist'] ?? 0, 'crossings' => $day['crossings'] ?? []];
             }
         } else {
             $parseError = 'Plik fizyczny nie istnieje w archiwum. Prześlij plik ponownie.';

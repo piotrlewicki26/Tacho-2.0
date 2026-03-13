@@ -239,6 +239,51 @@
       });
     }
 
+    /* Border crossing markers (EF_CardPlacesOfDailyWorkPeriod 0x0522) */
+    weekDays.forEach(function(day, di) {
+      var crs = day && day.crossings;
+      if (!crs || !crs.length) return;
+      crs.forEach(function(cr) {
+        var absMin = di * 1440 + cr.tmin;
+        if (absMin < rangeMin || absMin > rangeMax) return;
+        var x = px(absMin);
+        if (x < 2 || x > cw - 2) return;
+
+        /* Vertical dashed line through both activity and rest bands */
+        svgEl.appendChild(mkSVG('line', {
+          x1: x, y1: T1Y + 12, x2: x, y2: T2Y + T2H,
+          stroke: '#263238', 'stroke-width': 1.5,
+          'stroke-dasharray': '4,2', opacity: 0.65
+        }));
+
+        /* Filled circle pin at the top of the line */
+        svgEl.appendChild(mkSVG('circle', {
+          cx: x, cy: T1Y + 6, r: 5,
+          fill: '#263238', stroke: '#FFFFFF', 'stroke-width': 1.5
+        }));
+
+        /* Small right-pointing triangle next to circle */
+        var arr = mkSVG('text', {
+          x: x + 7, y: T1Y + 10,
+          'text-anchor': 'start', fill: '#263238',
+          'font-size': 10, 'font-family': 'Inter,sans-serif',
+          'pointer-events': 'none'
+        });
+        arr.textContent = '\u25B6';
+        svgEl.appendChild(arr);
+
+        /* Country code label above the band */
+        var lbl = mkSVG('text', {
+          x: x, y: T1Y - 6,
+          'text-anchor': 'middle', fill: '#1A237E',
+          'font-size': 13, 'font-family': 'Inter,sans-serif',
+          'font-weight': 700, 'pointer-events': 'none'
+        });
+        lbl.textContent = cr.country;
+        svgEl.appendChild(lbl);
+      });
+    });
+
     /* Daily-rest track */
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#E3F2FD', rx:2, opacity:0.35}));
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#BBDEFB', 'stroke-width':1.2, rx:2}));
