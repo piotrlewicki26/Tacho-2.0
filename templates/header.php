@@ -16,39 +16,6 @@
 </head>
 <body class="tp-layout">
 
-<?php
-// Load subscription helper if not already loaded (some pages include it explicitly)
-if (!function_exists('isDemo')) {
-    require_once __DIR__ . '/../includes/subscription.php';
-}
-if (!function_exists('hasModule')) {
-    require_once __DIR__ . '/../includes/license_check.php';
-}
-$_tpCompanyId  = (int)($_SESSION['company_id'] ?? 0);
-$_tpIsDemo     = $_tpCompanyId ? isDemo($_tpCompanyId) : false;
-$_tpTrialExpired = $_tpCompanyId ? isTrialExpired($_tpCompanyId) : false;
-$_tpDaysLeft   = $_tpCompanyId ? trialDaysRemaining($_tpCompanyId) : 0;
-$_tpIsProPlus  = $_tpCompanyId ? isProPlus($_tpCompanyId) : false;
-?>
-
-<!-- ═══ DEMO TOP BANNER ════════════════════════════════════════ -->
-<?php if ($_tpIsDemo): ?>
-<div class="tp-demo-banner <?= $_tpTrialExpired ? 'expired' : '' ?>">
-  <i class="bi bi-<?= $_tpTrialExpired ? 'x-circle-fill' : 'hourglass-split' ?> me-2"></i>
-  <?php if ($_tpTrialExpired): ?>
-    <strong>Okres próbny wygasł.</strong>
-    Twoje konto jest ograniczone do trybu demo.
-  <?php else: ?>
-    <strong>Wersja DEMO</strong> – pozostało
-    <strong><?= $_tpDaysLeft ?> <?= $_tpDaysLeft === 1 ? 'dzień' : 'dni' ?></strong>
-    (maks. <?= DEMO_MAX_DRIVERS ?> kierowców, <?= DEMO_MAX_VEHICLES ?> pojazdów).
-  <?php endif; ?>
-  <a href="/billing.php#upgrade-section" class="tp-demo-upgrade-link">
-    Wybierz pakiet PRO &rarr;
-  </a>
-</div>
-<?php endif; ?>
-
 <!-- ═══ TOP BAR ═══════════════════════════════════════════════ -->
 <header class="tp-topbar d-flex align-items-center px-3 gap-3">
   <!-- Hamburger (mobile) -->
@@ -95,7 +62,6 @@ $_tpIsProPlus  = $_tpCompanyId ? isProPlus($_tpCompanyId) : false;
       </small></li>
       <li><hr class="dropdown-divider"></li>
       <li><a class="dropdown-item" href="/settings.php"><i class="bi bi-gear me-2"></i>Ustawienia</a></li>
-      <li><a class="dropdown-item" href="/billing.php"><i class="bi bi-credit-card me-2"></i>Abonament</a></li>
       <li><a class="dropdown-item" href="/audit.php"><i class="bi bi-clock-history me-2"></i>Historia zmian</a></li>
       <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'superadmin'): ?>
       <li><hr class="dropdown-divider"></li>
@@ -145,52 +111,25 @@ $_tpIsProPlus  = $_tpCompanyId ? isProPlus($_tpCompanyId) : false;
       </a>
     </li>
 
-    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?>">
       <a href="/modules/delegation/" class="tp-nav-link">
         <i class="bi bi-map"></i><span>Delegacje</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item">
-      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
-        <i class="bi bi-map"></i><span>Delegacje</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </a>
-    </li>
-    <?php endif; ?>
 
-    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='violations' ? ' active':'' ?>">
       <a href="/modules/violations/" class="tp-nav-link">
         <i class="bi bi-exclamation-triangle"></i><span>Naruszenia</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item">
-      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
-        <i class="bi bi-exclamation-triangle"></i><span>Naruszenia</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </a>
-    </li>
-    <?php endif; ?>
 
     <li class="tp-nav-separator"><small>Raporty & Firma</small></li>
 
-    <?php if ($_tpIsProPlus || $_tpIsDemo): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='reports' ? ' active':'' ?>">
       <a href="/reports.php" class="tp-nav-link">
         <i class="bi bi-file-earmark-bar-graph"></i><span>Raporty</span>
       </a>
     </li>
-    <?php else: ?>
-    <li class="tp-nav-item">
-      <a href="/billing.php#upgrade-section" class="tp-nav-link text-muted" title="Dostępne w PRO Module+">
-        <i class="bi bi-file-earmark-bar-graph"></i><span>Raporty</span>
-        <i class="bi bi-lock-fill ms-auto small"></i>
-      </a>
-    </li>
-    <?php endif; ?>
 
     <?php if (isset($_SESSION['role']) && in_array($_SESSION['role'], ['admin','superadmin'])): ?>
     <li class="tp-nav-item<?= ($activePage??'')==='company' ? ' active':'' ?>">
@@ -206,20 +145,11 @@ $_tpIsProPlus  = $_tpCompanyId ? isProPlus($_tpCompanyId) : false;
     </li>
     <?php endif; ?>
 
-    <li class="tp-nav-separator"><small>Rozliczenia</small></li>
+    <li class="tp-nav-separator"><small>Archiwum</small></li>
 
-    <li class="tp-nav-item<?= ($activePage??'')==='billing' ? ' active':'' ?>">
-      <a href="/billing.php" class="tp-nav-link">
-        <i class="bi bi-credit-card"></i><span>Abonament</span>
-        <?php if ($_tpIsDemo && !$_tpTrialExpired && $_tpDaysLeft <= 3): ?>
-        <span class="badge bg-danger ms-auto"><?= $_tpDaysLeft ?>d</span>
-        <?php endif; ?>
-      </a>
-    </li>
-
-    <li class="tp-nav-item<?= ($activePage??'')==='billing' ? '' : '' ?>">
-      <a href="/invoices.php" class="tp-nav-link">
-        <i class="bi bi-receipt"></i><span>Faktury</span>
+    <li class="tp-nav-item<?= ($activePage??'')==='files' ? ' active':'' ?>">
+      <a href="/files.php" class="tp-nav-link">
+        <i class="bi bi-archive"></i><span>Archiwum DDD</span>
       </a>
     </li>
 

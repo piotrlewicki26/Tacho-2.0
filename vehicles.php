@@ -67,12 +67,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ];
 
     if ($postAction === 'add') {
-        if (!licenseAllowsMore('vehicles')) {
-            $limit = licenseLimit('vehicles');
-            $limitMsg = $limit > 0 ? " (limit: $limit)" : '';
-            flashSet('danger', "Limit pojazdów planu Demo $limitMsg został osiągnięty. Przejdź na plan Pro, aby dodać więcej pojazdów.");
-            redirect('/vehicles.php');
-        }
         $fields['company_id'] = $companyId;
         $cols = implode(', ', array_keys($fields));
         $phs  = implode(', ', array_fill(0, count($fields), '?'));

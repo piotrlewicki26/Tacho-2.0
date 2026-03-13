@@ -1,6 +1,0 @@
-# TachoPro License Issuer – Security
-Options -Indexes
-
-<FilesMatch "\.(php)$">
-  # Allow PHP files in this directory
-</FilesMatch>

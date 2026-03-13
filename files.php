@@ -8,7 +8,6 @@ require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/license_check.php';
 
 requireLogin();
-requireModule('core');
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];

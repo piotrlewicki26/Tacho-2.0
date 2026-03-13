@@ -98,41 +98,8 @@ $pageTitle    = 'Dashboard';
 $pageSubtitle = 'Przegląd systemu – ' . date('d.m.Y');
 $activePage   = 'dashboard';
 
-// Load subscription info for demo banner
-require_once __DIR__ . '/includes/subscription.php';
-$_dashCompanyPlan = getCompanyPlan($companyId);
-
 include __DIR__ . '/templates/header.php';
 ?>
-
-<!-- ── Demo upgrade widget ──────────────────────────────────── -->
-<?php if (isDemo($companyId)): ?>
-<?php $dLeft = trialDaysRemaining($companyId); ?>
-<div class="alert alert-<?= isTrialExpired($companyId) ? 'danger' : 'warning' ?> d-flex align-items-start gap-3 mb-4 shadow-sm">
-  <i class="bi bi-<?= isTrialExpired($companyId) ? 'exclamation-octagon-fill' : 'gift-fill' ?> fs-3 flex-shrink-0 mt-1"></i>
-  <div class="flex-grow-1">
-    <?php if (isTrialExpired($companyId)): ?>
-    <div class="fw-bold fs-6 mb-1">Twój okres próbny wygasł</div>
-    <p class="mb-0 small">
-      Konto jest zablokowane. Aby przywrócić pełny dostęp, przejdź na plan Pro.
-      Rozliczanie: <strong>15 zł netto/kierowca</strong> + <strong>10 zł netto/pojazd</strong> miesięcznie.
-    </p>
-    <?php else: ?>
-    <div class="fw-bold fs-6 mb-1">
-      Wersja demonstracyjna –
-      <?= $dLeft === 0 ? 'ostatni dzień' : "pozostało $dLeft " . ($dLeft === 1 ? 'dzień' : 'dni') ?>
-    </div>
-    <p class="mb-0 small">
-      Demo: maks. <?= DEMO_MAX_DRIVERS ?> kierowców i <?= DEMO_MAX_VEHICLES ?> pojazdów.
-      Plan Pro: <strong>15 zł netto/kierowca</strong> + <strong>10 zł netto/pojazd</strong>/miesiąc – bez limitu.
-    </p>
-    <?php endif; ?>
-  </div>
-  <a href="/billing.php#upgrade-section" class="btn btn-sm btn-<?= isTrialExpired($companyId) ? 'danger' : 'warning' ?> flex-shrink-0 fw-bold">
-    <i class="bi bi-crown me-1"></i>Upgrade do Pro
-  </a>
-</div>
-<?php endif; ?>
 
 <!-- ── Quick stats row ───────────────────────────────────────── -->
 <div class="row g-3 mb-4">

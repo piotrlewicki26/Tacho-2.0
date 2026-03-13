@@ -72,12 +72,7 @@ if (empty($_SESSION['user_id'])) {
 }
 
 // ── Module check (return JSON 403 instead of HTML redirect) ───
-if (!hasModule('core')) {
-    while (ob_get_level() > 0) ob_end_clean();
-    http_response_code(403);
-    echo json_encode(['error' => 'Brak dostępu. Wymagany aktywny abonament PRO lub PRO Module+.']);
-    exit;
-}
+// All authenticated users have access – no plan gating required.
 
 // Discard any stray output that may have accumulated
 while (ob_get_level() > 0) ob_end_clean();

@@ -82,11 +82,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $urole  = in_array($_POST['user_role'] ?? '', ['admin','manager','viewer']) ? $_POST['user_role'] : 'viewer';
 
         if ($uname && $upass && strlen($upass) >= 10) {
-            if (!licenseAllowsMore('users')) {
-                $limit = licenseLimit('users');
-                flashSet('danger', "Limit użytkowników licencji ($limit) został osiągnięty. Skontaktuj się z dostawcą w celu rozszerzenia licencji.");
-                redirect('/settings.php#tab-users');
-            }
             $hash = password_hash($upass, PASSWORD_BCRYPT, ['cost' => 12]);
             try {
                 $db->prepare('INSERT INTO users (company_id, username, email, password_hash, role) VALUES (?,?,?,?,?)')

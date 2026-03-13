@@ -120,14 +120,6 @@ function generateCompanyCode(): string {
 }
 
 /**
- * Generate a license key tied to a company code and enabled modules.
- */
-function generateLicenseKey(string $companyCode, array $modules, string $validUntil): string {
-    $payload = $companyCode . implode('|', $modules) . $validUntil . bin2hex(random_bytes(16));
-    return hash('sha256', $payload);
-}
-
-/**
  * Sanitise a filename for storage.
  */
 function safeFilename(string $name): string {
@@ -158,8 +150,7 @@ function dddPhysPath(array $f, int $companyId): string {
 
 /**
  * Read up to $len bytes from $data at $offset, mapping every non-printable-ASCII
- * byte to "\0".  Mirrors the JSX readStr() helper inside parseDDD() from
- * truck-delegate-pro.jsx.
+ * byte to "\0".
  */
 function dddReadStr(string $data, int $offset, int $len): string {
     $result = '';
@@ -172,7 +163,7 @@ function dddReadStr(string $data, int $offset, int $len): string {
 }
 
 /**
- * PHP port of the JSX parseDDD() activity-data parser (truck-delegate-pro.jsx).
+ * DDD driver-card activity parser.
  *
  * Record header layout (EU Reg. 165/2014 Annex 1B/1C):
  *   TimeReal(4) + presenceCounter(2) + distanceKm(2) + activity entries(2 each)
@@ -180,6 +171,11 @@ function dddReadStr(string $data, int $offset, int $len): string {
  *   bit15 = slot (0=driver, 1=co-driver)
  *   bits14-11 = activity (0=REST, 1=AVAIL, 2=WORK, 3=DRIVE)
  *   bits10-0  = time in minutes from midnight
+ *
+ * Improvements over previous version:
+ *  - Requires timestamps to be exact midnight UTC (00:00:00) – eliminates most
+ *    false-positive matches from random binary regions of the card file.
+ *  - Uses IQR-based outlier removal to handle multi-tachograph cards correctly.
  *
  * @return array{days:array,summary:array}|array{error:string}
  */
@@ -207,9 +203,13 @@ function parseDddFile(string $path): array {
         $yr   = (int)gmdate('Y', $ts);
         if ($yr < $yrMin || $yr > $yrMax) continue;
 
+        // Require exact midnight UTC – eliminates most false positives from
+        // random binary regions while preserving all real tachograph records.
+        if ($ts % 86400 !== 0) continue;
+
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
+        if ($pres < 500 || $pres > 65000 || $dist > 1500) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
@@ -270,7 +270,7 @@ function parseDddFile(string $path): array {
             }
         }
 
-        // Strictly-monotonic time filter (JSX: only strictly-increasing tmin)
+        // Strictly-monotonic time filter – only strictly-increasing tmin
         $mono = []; $lt = -1;
         foreach ($pts as $p) {
             if ($p['tmin'] > $lt) { $mono[] = $p; $lt = $p['tmin']; }
@@ -287,7 +287,7 @@ function parseDddFile(string $path): array {
             }
         }
 
-        // Validate total minutes: 1350 ≤ total ≤ 1460 (JSX requirement)
+        // Validate total minutes (accept 1350–1460 to handle minor truncation)
         $total = array_sum(array_column($slots, 'dur'));
         if ($total < 1350 || $total > 1460) continue;
 
@@ -345,8 +345,7 @@ function parseDddFile(string $path): array {
 }
 
 /**
- * PHP port of the vehicle-unit DDD parser – extracts daily distance from
- * tachograph mass-memory files.
+ * Vehicle-unit DDD parser – extracts daily distance from tachograph mass-memory files.
  *
  * @return array{days:array,summary:array}|array{error:string}
  */
@@ -366,9 +365,12 @@ function parseVehicleDdd(string $path): array {
         $yr   = (int)gmdate('Y', $ts);
         if ($yr < $yrMin || $yr > $yrMax) continue;
 
+        // Require exact midnight UTC – eliminates most false positives
+        if ($ts % 86400 !== 0) continue;
+
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
+        if ($pres < 500 || $pres > 65000 || $dist > 1500) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
