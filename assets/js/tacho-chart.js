@@ -150,8 +150,9 @@
 
   /* == Core SVG content builder =================================== *
    * Draws tracks, activity bars, violations, axis into an existing  *
-   * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) */
-  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols) {
+   * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) *
+   * onDateClick(di) – called when a day-label is clicked (full view) */
+  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick) {
     var rangeSpan = rangeMax - rangeMin;
     var isZoomed  = rangeSpan < TOTAL_MIN * 0.9999;
     var px = function(m) { return (m - rangeMin) / rangeSpan * cw; };
@@ -300,8 +301,26 @@
       for (var di3=0; di3<7; di3++) {
         var xm = px(di3*1440+720); if (xm<22||xm>cw-22) continue;
         var dLbl = addD(weekStart, di3);
-        var tl2 = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
-        tl2.textContent = fmtDate(dLbl); svgEl.appendChild(tl2);
+        if (onDateClick) {
+          /* clickable group: transparent hit-rect + label text */
+          var dg = mkSVG('g');
+          dg.setAttribute('style', 'cursor:pointer;');
+          var hitW = Math.min(px(1440) - 4, 90);
+          dg.appendChild(mkSVG('rect', {x:xm - hitW/2, y:AXY+2, width:hitW, height:14, fill:'transparent', rx:2}));
+          var tl2 = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600, 'text-decoration':'underline'});
+          tl2.textContent = fmtDate(dLbl);
+          dg.appendChild(tl2);
+          (function(dayIdx) {
+            dg.addEventListener('click', function(ev) {
+              ev.stopPropagation();
+              onDateClick(dayIdx);
+            });
+          })(di3);
+          svgEl.appendChild(dg);
+        } else {
+          var tl2b = mkSVG('text', {x:xm, y:AXY+13, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
+          tl2b.textContent = fmtDate(dLbl); svgEl.appendChild(tl2b);
+        }
       }
     }
   }
@@ -355,7 +374,10 @@
 
     /* SVG */
     var svgEl = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
-    fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols);
+    fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols, function(di) {
+      /* Date label click → zoom the whole day */
+      if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440});
+    });
 
     /* Selection overlay rects */
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
@@ -527,7 +549,11 @@
 
     var phTitle = document.createElement('span');
     phTitle.style.cssText = 'font-size:12px;font-weight:700;color:#fff;white-space:nowrap;';
-    phTitle.textContent = 'Powi\u0119kszony fragment \u2014 W'+String(isoWeek(weekStart)).padStart(2,'0');
+    /* If the range covers exactly one whole day, show "Day view – dd.mm.yyyy" */
+    var isFullDay = (dur === 1440 && startMin % 1440 === 0);
+    phTitle.textContent = isFullDay
+      ? 'Widok dnia \u2014 ' + fmtDate(startD)
+      : 'Powi\u0119kszony fragment \u2014 W'+String(isoWeek(weekStart)).padStart(2,'0');
 
     var phRange = document.createElement('span');
     phRange.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.85);';
@@ -546,8 +572,8 @@
 
     var svgSb = document.createElement('div');
     svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
-    svgSb.innerHTML = '<div style="font-size:9px;color:#1565C0;font-weight:700;margin-bottom:2px;">POWI\u0118KSZENIE</div>' +
-      '<div style="font-size:9px;color:#5A6070;">'+hm(dur)+'</div>';
+    svgSb.innerHTML = '<div style="font-size:9px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay ? 'DZIE\u0143' : 'POWI\u0118KSZENIE')+'</div>' +
+      '<div style="font-size:9px;color:#5A6070;">'+(isFullDay ? fmtDate(startD) : hm(dur))+'</div>';
 
     var zoomSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
     var dayViols = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
@@ -666,7 +692,7 @@
     });
     var stLg = document.createElement('div');
     stLg.style.cssText = 'margin-left:auto;font-size:10px;color:#9AA0AA;white-space:nowrap;';
-    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
+    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
@@ -674,7 +700,7 @@
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
     hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
-      '<div style="flex:1;padding:5px 12px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment | kliknij na aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
+      '<div style="flex:1;padding:5px 12px;font-size:9px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
     container.appendChild(hdr);
 
     /* Chart area */
