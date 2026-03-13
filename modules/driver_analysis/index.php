@@ -60,10 +60,10 @@ if ($selectedFile) {
     $dbRows = $dbDays->fetchAll();
 
     if ($dbRows) {
-        /* Check if crossing data is missing (files uploaded before this feature) */
-        $needsCrossings = array_reduce($dbRows, function ($carry, $row) {
-            return $carry && $row['border_crossings'] === null;
-        }, true);
+        /* Check if any row is missing crossing data (files uploaded before this feature) */
+        $needsCrossings = array_reduce($dbRows, function (bool $carry, array $row): bool {
+            return $carry || $row['border_crossings'] === null;
+        }, false);
 
         /* Re-parse binary file to backfill border_crossings for legacy rows */
         $reparsedCrossings = [];
@@ -74,14 +74,14 @@ if ($selectedFile) {
                 if ($rawData !== false) {
                     $curYear = (int)gmdate('Y');
                     $reparsedCrossings = parseBorderCrossings($rawData, $curYear - 3, $curYear + 1);
-                    /* Persist so we won't need to re-parse again */
-                    if (!empty($reparsedCrossings)) {
-                        $updCross = $db->prepare(
-                            'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
-                        );
-                        foreach ($reparsedCrossings as $dt => $crs) {
-                            $updCross->execute([json_encode($crs), $fileId, $dt]);
-                        }
+                    /* Persist crossings for rows that were NULL so future loads use the DB */
+                    $updCross = $db->prepare(
+                        'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
+                    );
+                    foreach ($dbRows as $r) {
+                        if ($r['border_crossings'] !== null) continue; /* already set */
+                        $crs = $reparsedCrossings[$r['date']] ?? [];
+                        $updCross->execute([json_encode($crs), $fileId, $r['date']]);
                     }
                 }
             }

@@ -354,12 +354,19 @@ function parseDddFile(string $path): array {
 /**
  * Parse border-crossing records from a driver-card DDD binary blob.
  *
- * Scans for EF_CardPlacesOfDailyWorkPeriod (TLV tag 0x05 0x22).
+ * Scans for EF_CardPlacesOfDailyWorkPeriod using multiple known TLV tags:
+ *   0x05 0x0E  – Gen 2 / most common Gen 1+ implementation
+ *   0x05 0x0B  – Older Gen 1 (Regulation 3821/85)
+ *   0x05 0x22  – Some manufacturer-specific implementations
  *
  * EU Tachograph Regulation Annex IC §3.15 record layout:
  *   PlaceRecord (12 bytes) = entryTime(4) + entryTypeDailyWorkPeriod(1)
  *                          + NationNumeric(1) + NationAlpha(3) + OdometerShort(3)
- *   CardPlaceDailyWorkPeriod (121 bytes) = noOfUsedPlaceRecords(1) + PlaceRecord×10
+ *   CardPointerPlaceRecord (121 bytes) = noOfUsedPlaceRecords(1) + PlaceRecord×10
+ *   TLV body = noOfUsedPointerPlaces(1) + CardPointerPlaceRecord × N
+ *
+ * Falls back to a linear scan of the TLV block if the structured parse finds
+ * nothing, to handle variant record sizes (10-byte Gen 1 without NationAlpha).
  *
  * Returns: array keyed by 'Y-m-d' date → [{ts, tmin, type, country}]
  */
@@ -381,74 +388,145 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
         46 => 'SLO', 47 => 'TM',  48 => 'TR',  49 => 'UA',  50 => 'V',
     ];
 
-    /* EU spec fixed sizes */
-    $recBytes = 12;   // bytes per PlaceRecord
-    $ptrBytes = 121;  // bytes per CardPlaceDailyWorkPeriod (1 + 10*12)
+    /* Known TLV tag byte-pairs for EF_CardPlacesOfDailyWorkPeriod, tried in order */
+    $tryTags = [
+        [0x05, 0x0E],   /* Gen 2 / Gen 1+ (most common)          */
+        [0x05, 0x0B],   /* Older Gen 1 (Reg 3821/85 EF_Places)   */
+        [0x05, 0x22],   /* Some manufacturer implementations      */
+    ];
+
+    /* PlaceRecord sizes to try: 12 bytes (with NationAlpha), 10 bytes (without) */
+    $tryRecSizes = [12, 10];
 
     $crossings = [];
 
-    for ($i = 0; $i < $len - 6; $i++) {
-        /* EF_CardPlacesOfDailyWorkPeriod TLV tag: 0x05 0x22 */
-        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x22) {
-            continue;
-        }
-
-        /* 4-byte TLV header: tag(2) + length(2, big-endian) */
-        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-        if ($bl < $ptrBytes || $bl > 50000 || $i + 4 + $bl > $len) {
-            continue;
-        }
-
-        $base  = $i + 4;
-        $noPtr = ord($data[$base]);       // noOfUsedPointerPlaces
-        if ($noPtr === 0 || $noPtr > 100) {
-            continue;
-        }
-
-        $found = [];
-
-        for ($pi = 0; $pi < $noPtr; $pi++) {
-            /* Each CardPlaceDailyWorkPeriod has a fixed stride of 121 bytes */
-            $pBase = $base + 1 + $pi * $ptrBytes;
-            if ($pBase + $ptrBytes > $base + $bl + 1) {
-                break;
-            }
-
-            $noRec = ord($data[$pBase]);  // noOfUsedPlaceRecords (0–10)
-            if ($noRec === 0 || $noRec > 10) {
+    foreach ($tryTags as [$tb0, $tb1]) {
+        for ($i = 0; $i < $len - 6; $i++) {
+            if (ord($data[$i]) !== $tb0 || ord($data[$i + 1]) !== $tb1) {
                 continue;
             }
 
-            for ($ri = 0; $ri < $noRec; $ri++) {
-                $rp = $pBase + 1 + $ri * $recBytes;
-                if ($rp + $recBytes > $len) {
-                    break;
-                }
+            /* 4-byte TLV header: tag(2) + length(2, big-endian) */
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl < 10 || $bl > 100000 || $i + 4 + $bl > $len) {
+                continue;
+            }
 
-                $ts   = unpack('N', substr($data, $rp, 4))[1];
-                $year = (int)gmdate('Y', $ts);
-                if ($year < $yearMin || $year > $yearMax) {
+            $base = $i + 4;
+
+            /* ── Method 1: structured parse ────────────────────────────────
+             * TLV body = noOfUsedPointerPlaces(1) + CardPointerPlaceRecord×N
+             * Each CardPointerPlaceRecord = noOfUsedPlaceRecords(1) + PlaceRecord×10 */
+            foreach ($tryRecSizes as $recBytes) {
+                $ptrBytes = 1 + 10 * $recBytes;   /* CardPointerPlaceRecord size */
+
+                $noPtr = ord($data[$base]);        /* noOfUsedPointerPlaces       */
+                if ($noPtr === 0 || $noPtr > 365) {
                     continue;
                 }
 
-                $type          = ord($data[$rp + 4]);           // EntryTypeDailyWorkPeriod
-                $nationNumeric = ord($data[$rp + 5]);            // NationNumeric
-                $nationAlpha   = strtoupper(                      // NationAlpha (IA5String×3)
-                    trim(str_replace("\0", '', substr($data, $rp + 6, 3)))
-                );
+                $found = [];
 
-                /* Prefer NationAlpha (directly readable), fall back to numeric map */
-                if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
-                    $country = $nationAlpha;
-                } elseif (isset($nationCodes[$nationNumeric])) {
-                    $country = $nationCodes[$nationNumeric];
-                } else {
-                    continue;
+                for ($pi = 0; $pi < $noPtr; $pi++) {
+                    $pBase = $base + 1 + $pi * $ptrBytes;
+                    if ($pBase + $ptrBytes > $base + $bl + 1) {
+                        break;
+                    }
+
+                    $noRec = ord($data[$pBase]);   /* noOfUsedPlaceRecords (0–10) */
+                    if ($noRec === 0 || $noRec > 10) {
+                        continue;
+                    }
+
+                    for ($ri = 0; $ri < $noRec; $ri++) {
+                        $rp = $pBase + 1 + $ri * $recBytes;
+                        if ($rp + $recBytes > $len) {
+                            break;
+                        }
+
+                        $ts   = unpack('N', substr($data, $rp, 4))[1];
+                        $year = (int)gmdate('Y', $ts);
+                        if ($year < $yearMin || $year > $yearMax) {
+                            continue;
+                        }
+
+                        $type          = ord($data[$rp + 4]);
+                        $nationNumeric = ord($data[$rp + 5]);
+                        if ($recBytes >= 12) {
+                            $nationAlpha = strtoupper(
+                                trim(str_replace("\0", '', substr($data, $rp + 6, 3)))
+                            );
+                        } else {
+                            /* 10-byte record: 2-char NationAlpha at offset 6 */
+                            $nationAlpha = strtoupper(
+                                trim(str_replace("\0", '', substr($data, $rp + 6, 2)))
+                            );
+                        }
+
+                        if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                            $country = $nationAlpha;
+                        } elseif (isset($nationCodes[$nationNumeric])) {
+                            $country = $nationCodes[$nationNumeric];
+                        } else {
+                            continue;
+                        }
+
+                        if ($type <= 2) {
+                            $date  = gmdate('Y-m-d', $ts);
+                            $tmin  = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+                            $found[$date][] = [
+                                'ts'      => $ts,
+                                'tmin'    => $tmin,
+                                'type'    => $type,
+                                'country' => $country,
+                            ];
+                        }
+                    }
                 }
 
-                if ($type <= 2) {   // 0=begin, 1=end, 2=beginAndEnd
-                    $date          = gmdate('Y-m-d', $ts);
-                    $tmin          = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+                if (!empty($found)) {
+                    return $found; /* Structured parse succeeded — return immediately */
+                }
+            }
+
+            /* ── Method 2: linear fallback scan ────────────────────────────
+             * Walk the TLV block byte-by-byte (aligned to 12 then 10) looking
+             * for valid PlaceRecord patterns when the structured parse failed. */
+            foreach ($tryRecSizes as $recBytes) {
+                $found = [];
+                for ($rp = $base; $rp + $recBytes <= $base + $bl; $rp += $recBytes) {
+                    $ts   = unpack('N', substr($data, $rp, 4))[1];
+                    $year = (int)gmdate('Y', $ts);
+                    if ($year < $yearMin || $year > $yearMax) {
+                        continue;
+                    }
+
+                    $type = ord($data[$rp + 4]);
+                    if ($type > 2) {
+                        continue;
+                    }
+
+                    $nationNumeric = ord($data[$rp + 5]);
+                    if ($recBytes >= 12) {
+                        $nationAlpha = strtoupper(
+                            trim(str_replace("\0", '', substr($data, $rp + 6, 3)))
+                        );
+                    } else {
+                        $nationAlpha = strtoupper(
+                            trim(str_replace("\0", '', substr($data, $rp + 6, 2)))
+                        );
+                    }
+
+                    if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                        $country = $nationAlpha;
+                    } elseif (isset($nationCodes[$nationNumeric])) {
+                        $country = $nationCodes[$nationNumeric];
+                    } else {
+                        continue;
+                    }
+
+                    $date  = gmdate('Y-m-d', $ts);
+                    $tmin  = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
                     $found[$date][] = [
                         'ts'      => $ts,
                         'tmin'    => $tmin,
@@ -456,12 +534,11 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                         'country' => $country,
                     ];
                 }
-            }
-        }
 
-        if (!empty($found)) {
-            $crossings = $found;
-            break; /* use first valid block found */
+                if (!empty($found)) {
+                    return $found;
+                }
+            }
         }
     }
 
