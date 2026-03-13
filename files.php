@@ -26,16 +26,11 @@ if ($typeFilter === 'driver' || $typeFilter === 'vehicle') {
     $params[':type'] = $typeFilter;
 }
 if ($search) {
-    $where .= ' AND (f.original_name LIKE :q OR CONCAT(d.first_name,\' \',d.last_name) LIKE :q OR v.registration LIKE :q)';
+    $where .= ' AND f.original_name LIKE :q';
     $params[':q'] = '%' . $search . '%';
 }
 
-$cntStmt = $db->prepare(
-    "SELECT COUNT(*) FROM ddd_files f
-     LEFT JOIN drivers d ON d.id = f.driver_id
-     LEFT JOIN vehicles v ON v.id = f.vehicle_id
-     $where"
-);
+$cntStmt = $db->prepare("SELECT COUNT(*) FROM ddd_files f $where");
 $cntStmt->execute($params);
 $total = (int)$cntStmt->fetchColumn();
 $pag   = paginate($total, $perPage, $page);
@@ -44,14 +39,9 @@ $params[':limit']  = $pag['perPage'];
 $params[':offset'] = $pag['offset'];
 
 $listStmt = $db->prepare(
-    "SELECT f.*,
-            d.first_name, d.last_name,
-            v.registration,
-            u.username AS uploader
+    "SELECT f.*, u.username AS uploader
      FROM ddd_files f
-     LEFT JOIN drivers d  ON d.id = f.driver_id
-     LEFT JOIN vehicles v ON v.id = f.vehicle_id
-     LEFT JOIN users u    ON u.id = f.uploaded_by
+     LEFT JOIN users u ON u.id = f.uploaded_by
      $where
      ORDER BY f.uploaded_at DESC
      LIMIT :limit OFFSET :offset"
@@ -69,7 +59,7 @@ include __DIR__ . '/templates/header.php';
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <form method="GET" class="d-flex gap-2 flex-wrap flex-grow-1">
     <input type="search" name="q" class="form-control form-control-sm" style="max-width:280px"
-           placeholder="Szukaj pliku, kierowcy, pojazdu…" value="<?= e($search) ?>">
+           placeholder="Szukaj pliku…" value="<?= e($search) ?>">
     <select name="type" class="form-select form-select-sm" style="width:auto">
       <option value="">Wszystkie typy</option>
       <option value="driver"<?= $typeFilter==='driver'?' selected':'' ?>>Karta kierowcy</option>
@@ -106,8 +96,6 @@ include __DIR__ . '/templates/header.php';
           <tr>
             <th>Plik</th>
             <th>Typ</th>
-            <th>Kierowca / Pojazd</th>
-            <th>Nr karty</th>
             <th>Data pobrania</th>
             <th>Rozmiar</th>
             <th>Wgrano przez</th>
@@ -129,20 +117,6 @@ include __DIR__ . '/templates/header.php';
                 <span class="badge bg-success">Pojazd</span>
               <?php endif; ?>
             </td>
-            <td>
-              <?php if ($f['file_type']==='driver'): ?>
-                <?= e($f['first_name'] . ' ' . $f['last_name']) ?>
-              <?php else: ?>
-                <?= e($f['registration'] ?? '—') ?>
-              <?php endif; ?>
-            </td>
-            <td>
-              <?php if ($f['file_type']==='driver' && !empty($f['card_number'])): ?>
-                <code class="small"><?= e($f['card_number']) ?></code>
-              <?php else: ?>
-                <span class="text-muted">—</span>
-              <?php endif; ?>
-            </td>
             <td><?= fmtDate($f['download_date']) ?></td>
             <td><?= $f['file_size'] ? formatBytes((int)$f['file_size']) : '—' ?></td>
             <td><?= e($f['uploader'] ?? '—') ?></td>
@@ -151,7 +125,13 @@ include __DIR__ . '/templates/header.php';
                 <?= htmlspecialchars(substr($f['uploaded_at'],0,16), ENT_QUOTES, 'UTF-8') ?>
               </small>
             </td>
-            <td class="text-end">
+            <td class="text-end text-nowrap">
+              <button class="btn btn-xs btn-outline-info me-1"
+                      data-analyze-file="<?= $f['id'] ?>"
+                      data-csrf="<?= e($csrf) ?>"
+                      title="Analizuj">
+                <i class="bi bi-graph-up"></i>
+              </button>
               <a href="/api/files.php?action=download&id=<?= $f['id'] ?>&csrf=<?= urlencode($csrf) ?>"
                  class="btn btn-xs btn-outline-primary me-1" title="Pobierz">
                 <i class="bi bi-download"></i>
@@ -169,7 +149,7 @@ include __DIR__ . '/templates/header.php';
           <?php endforeach; ?>
           <?php if (!$files): ?>
           <tr>
-            <td colspan="9">
+            <td colspan="7">
               <div class="tp-empty-state">
                 <i class="bi bi-archive"></i>
                 Brak plików DDD. Wgraj pierwszy plik klikając "Wgraj DDD".
@@ -191,5 +171,26 @@ include __DIR__ . '/templates/header.php';
   <?php endif; ?>
 </div>
 
+<!-- ── DDD Analyze modal ─────────────────────────────────────── -->
+<div class="modal fade" id="dddAnalyzeModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-graph-up me-2"></i>Analiza pliku DDD</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="dddAnalyzeBody">
+        <div class="text-center py-4">
+          <div class="spinner-border text-primary"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Zamknij</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>.btn-xs{padding:.2rem .5rem;font-size:.8rem;}</style>
 <?php include __DIR__ . '/templates/footer.php'; ?>
+

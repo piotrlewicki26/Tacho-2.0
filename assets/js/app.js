@@ -207,65 +207,141 @@
 
     if (isDriver) {
       const name = (info.first_name || info.last_name)
-        ? escHtml((info.first_name || '') + ' ' + (info.last_name || '')).trim()
-        : '<span class="text-danger fw-semibold">Brak danych</span>';
+        ? escHtml((info.last_name || '') + ' ' + (info.first_name || '')).trim()
+        : '<span class="text-muted fst-italic">Nie rozpoznano (analiza dostępna po wgraniu)</span>';
       html += row('Kierowca', name);
 
-      const card = info.card_number
-        ? `<code>${escHtml(info.card_number)}</code>`
-        : '<span class="text-danger fw-semibold">Nie znaleziono</span>';
-      html += row('Nr karty', card);
-
-      if (info.existing_driver_name) {
-        html += row('Powiązanie', `<span class="badge bg-success">Istniejący kierowca: ${escHtml(info.existing_driver_name)}</span>`);
-      } else if (info.action_hint === 'auto_create') {
-        html += row('Powiązanie', '<span class="badge bg-info text-dark">Nowy kierowca zostanie utworzony automatycznie</span>');
-      }
-
-      if (info.violations > 0) {
-        html += row('Naruszenia', `<span class="badge bg-warning text-dark">${info.violations} naruszeń EU</span>`);
+      if (info.card_number) {
+        html += row('Nr karty', `<code>${escHtml(info.card_number)}</code>`);
       }
     } else {
       const reg = info.registration
         ? `<code>${escHtml(info.registration)}</code>`
-        : '<span class="text-danger fw-semibold">Nie znaleziono</span>';
+        : '<span class="text-muted fst-italic">Nie rozpoznano (analiza dostępna po wgraniu)</span>';
       html += row('Nr rejestracyjny', reg);
-
-      if (info.existing_vehicle_reg) {
-        html += row('Powiązanie', `<span class="badge bg-success">Istniejący pojazd: ${escHtml(info.existing_vehicle_reg)}</span>`);
-      } else if (info.action_hint === 'auto_create') {
-        html += row('Powiązanie', '<span class="badge bg-info text-dark">Nowy pojazd zostanie utworzony automatycznie</span>');
-      }
-
-      if (info.total_km != null) {
-        html += row('Łącznie km', escHtml(String(info.total_km)) + ' km');
-      }
     }
 
-    if (info.period_start && info.period_end) {
-      html += row('Okres danych', escHtml(info.period_start) + ' – ' + escHtml(info.period_end));
-    }
-    if (info.day_count != null) {
-      html += row('Liczba dni', escHtml(String(info.day_count)));
-    }
-    if (isDriver && info.drive_total_h != null) {
-      html += row('Łącznie jazda', escHtml(String(info.drive_total_h)) + ' h');
-    }
-
-    html += `</tbody></table>`;
+    html += `</tbody></table>
+    <p class="text-muted small mb-0"><i class="bi bi-info-circle me-1"></i>Pełna analiza aktywności dostępna po wgraniu pliku – kliknij <strong>Analizuj</strong> na liście plików.</p>`;
     return html;
   }
 
-  function row(label, value) {
-    return `<tr><th class="text-nowrap" style="width:40%">${escHtml(label)}</th><td>${value}</td></tr>`;
+})();
+
+/* ── Shared table-row / byte-format helpers ─────────────────── */
+function row(label, value) {
+  return `<tr><th class="text-nowrap" style="width:40%">${escHtml(label)}</th><td>${value}</td></tr>`;
+}
+
+function fmtBytes(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024)    return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+/* ── DDD on-demand analysis ─────────────────────────────────── */
+document.addEventListener('click', async function (e) {
+  const btn = e.target.closest('[data-analyze-file]');
+  if (!btn) return;
+
+  const fileId = btn.dataset.analyzeFile;
+  const csrf   = btn.dataset.csrf;
+
+  const modalEl = document.getElementById('dddAnalyzeModal');
+  if (!modalEl) return;
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  const body  = document.getElementById('dddAnalyzeBody');
+
+  body.innerHTML = `<div class="text-center py-4">
+    <div class="spinner-border text-primary" role="status"></div>
+    <p class="mt-2 text-muted">Analizowanie pliku…</p>
+  </div>`;
+  modal.show();
+
+  try {
+    const resp = await fetch(
+      `/api/files.php?action=analyze&id=${encodeURIComponent(fileId)}&csrf=${encodeURIComponent(csrf)}`
+    );
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) {
+      body.innerHTML = `<div class="alert alert-danger">Nieoczekiwana odpowiedź serwera (kod ${resp.status}).</div>`;
+      return;
+    }
+    if (data.error) {
+      body.innerHTML = `<div class="alert alert-danger">${escHtml(data.error)}</div>`;
+      return;
+    }
+    body.innerHTML = buildAnalysisHtml(data);
+  } catch (err) {
+    body.innerHTML = '<div class="alert alert-danger">Błąd połączenia z serwerem. Sprawdź połączenie i spróbuj ponownie.</div>';
+  }
+});
+
+function buildAnalysisHtml(data) {
+  const info     = data.info     || {};
+  const warnings = data.warnings || [];
+  const isDriver = info.file_type === 'driver';
+  let html = '';
+
+  // ── Warnings ─────────────────────────────────────────────
+  if (warnings.length) {
+    html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3">
+      <i class="bi bi-exclamation-triangle-fill flex-shrink-0 fs-5 mt-1"></i>
+      <div><strong>Uwagi:</strong><ul class="mb-0 mt-1">`;
+    for (const w of warnings) {
+      html += `<li>${escHtml(w)}</li>`;
+    }
+    html += `</ul></div></div>`;
   }
 
-  function fmtBytes(n) {
-    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
-    if (n >= 1024)    return (n / 1024).toFixed(1) + ' KB';
-    return n + ' B';
+  // ── Data table ───────────────────────────────────────────
+  html += `<table class="table table-sm table-bordered mb-3"><tbody>`;
+  html += row('Plik',    escHtml(info.file_name || '—'));
+  html += row('Rozmiar', info.file_size ? fmtBytes(info.file_size) : '—');
+  html += row('Typ',     isDriver ? 'Karta kierowcy' : 'Pojazd');
+
+  if (isDriver) {
+    const name = (info.last_name || info.first_name)
+      ? escHtml((info.last_name || '') + ' ' + (info.first_name || '')).trim()
+      : '<span class="text-danger fw-semibold">Brak danych</span>';
+    html += row('Kierowca', name);
+
+    const card = info.card_number
+      ? `<code>${escHtml(info.card_number)}</code>`
+      : '<span class="text-danger fw-semibold">Nie znaleziono</span>';
+    html += row('Nr karty', card);
+
+    if (info.violations != null) {
+      const badge = info.violations > 0
+        ? `<span class="badge bg-warning text-dark">${info.violations} naruszeń EU</span>`
+        : '<span class="badge bg-success">Brak naruszeń</span>';
+      html += row('Naruszenia', badge);
+    }
+  } else {
+    const reg = info.registration
+      ? `<code>${escHtml(info.registration)}</code>`
+      : '<span class="text-danger fw-semibold">Nie znaleziono</span>';
+    html += row('Nr rejestracyjny', reg);
+
+    if (info.total_km != null) {
+      html += row('Łącznie km', escHtml(String(info.total_km)) + ' km');
+    }
   }
-})();
+
+  if (info.period_start && info.period_end) {
+    html += row('Okres danych', escHtml(info.period_start) + ' – ' + escHtml(info.period_end));
+  }
+  if (info.day_count != null) {
+    html += row('Liczba dni', escHtml(String(info.day_count)));
+  }
+  if (isDriver && info.drive_total_h != null) {
+    html += row('Łącznie jazda', escHtml(String(info.drive_total_h)) + ' h');
+  }
+
+  html += `</tbody></table>`;
+  return html;
+}
 
 /* ── File delete confirmation ───────────────────────────────── */
 document.addEventListener('click', async function (e) {

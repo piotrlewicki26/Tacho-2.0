@@ -253,7 +253,9 @@ function dddSanitizeDirName(string $name): string {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Upload
+// Upload  –  store the physical file + a minimal DB record only.
+// No binary parsing, no driver/vehicle auto-creation, no activity
+// days storage.  Full analysis is performed on-demand (see 'analyze').
 // ══════════════════════════════════════════════════════════════
 if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
@@ -325,85 +327,15 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $fileHash = hash_file('sha256', $destPath);
         $fileSize = filesize($destPath);
 
-        // ── Parse binary content for auto-create ─────────────────
-        $binaryData      = file_get_contents($destPath);
-        $linkedDriverId  = null;
-        $linkedVehicleId = null;
-        $parsedCardNumber = null;
-        $autoCreated     = null;   // info message back to UI
-
-        if ($fileType === 'driver') {
-            $parsed = dddParseDriverInfo($binaryData);
-            if ($parsed) {
-                $lastName         = $parsed['last_name'];
-                $firstName        = $parsed['first_name'];
-                $parsedCardNumber = $parsed['card_number'];
-
-                // Try to find existing driver by card number first, then by name
-                $stmt = $db->prepare(
-                    'SELECT id FROM drivers
-                     WHERE company_id=? AND is_active=1
-                       AND (
-                         (? <> \'\' AND card_number=?)
-                         OR (LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?))
-                       )
-                     LIMIT 1'
-                );
-                $stmt->execute([$companyId, $parsedCardNumber, $parsedCardNumber, $lastName, $firstName]);
-                $existing = $stmt->fetchColumn();
-
-                if ($existing) {
-                    $linkedDriverId = (int)$existing;
-                    // Update card number on existing driver if not yet set
-                    if ($parsedCardNumber) {
-                        $db->prepare(
-                            'UPDATE drivers SET card_number=? WHERE id=? AND (card_number IS NULL OR card_number=\'\')'
-                        )->execute([$parsedCardNumber, $linkedDriverId]);
-                    }
-                } else {
-                    // Auto-create driver with card number
-                    $db->prepare(
-                        'INSERT INTO drivers (company_id, first_name, last_name, card_number) VALUES (?,?,?,?)'
-                    )->execute([$companyId, $firstName, $lastName, $parsedCardNumber ?: null]);
-                    $linkedDriverId = (int)$db->lastInsertId();
-                    $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
-                }
-            }
-        } elseif ($fileType === 'vehicle') {
-            $reg = dddParseVehicleReg($binaryData);
-            if ($reg) {
-                $stmt = $db->prepare(
-                    'SELECT id FROM vehicles
-                     WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
-                     LIMIT 1'
-                );
-                $stmt->execute([$companyId, $reg]);
-                $existing = $stmt->fetchColumn();
-
-                if ($existing) {
-                    $linkedVehicleId = (int)$existing;
-                } else {
-                    // Auto-create vehicle
-                    $db->prepare(
-                        'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
-                    )->execute([$companyId, strtoupper($reg)]);
-                    $linkedVehicleId = (int)$db->lastInsertId();
-                    $autoCreated = "Automatycznie utworzono pojazd: {$reg}";
-                }
-            }
-        }
-
-        // ── Save record to DB ─────────────────────────────────────
+        // ── Save minimal record to DB (no parsed data) ────────────
         $stmt = $db->prepare(
             'INSERT INTO ddd_files
-             (company_id, driver_id, vehicle_id, file_type, original_name, stored_name,
-              stored_subdir, file_size, file_hash, download_date, uploaded_by, card_number)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             (company_id, file_type, original_name, stored_name,
+              stored_subdir, file_size, file_hash, download_date, uploaded_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $companyId,
-            $linkedDriverId,
-            $linkedVehicleId,
             $fileType,
             $file['name'],
             $storedName,
@@ -412,67 +344,13 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $fileHash,
             $downloadDate ?: date('Y-m-d'),
             $userId,
-            $parsedCardNumber ?: null,
         ]);
-        $newFileId = (int)$db->lastInsertId();
-
-        // ── Parse activity data and persist to ddd_activity_days ─────
-        try {
-            $actResult = ($fileType === 'driver')
-                ? parseDddFile($destPath)
-                : parseVehicleDdd($destPath);
-
-            if (!empty($actResult['days'])) {
-                $dates       = array_column($actResult['days'], 'date');
-                sort($dates);
-                $periodStart = $dates[0];
-                $periodEnd   = end($dates);
-
-                // Update period_start / period_end in ddd_files
-                $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
-                   ->execute([$periodStart, $periodEnd, $newFileId]);
-
-                // Persist per-day activity data (driver files only – full slot data)
-                if ($fileType === 'driver') {
-                    $insDay = $db->prepare(
-                        'INSERT IGNORE INTO ddd_activity_days
-                         (file_id, date, drive_min, work_min, avail_min, rest_min, dist_km,
-                          violations, segments)
-                         VALUES (?,?,?,?,?,?,?,?,?)'
-                    );
-                    foreach ($actResult['days'] as $day) {
-                        $insDay->execute([
-                            $newFileId,
-                            $day['date'],
-                            $day['drive'] ?? 0,
-                            $day['work']  ?? 0,
-                            $day['avail'] ?? 0,
-                            $day['rest']  ?? 0,
-                            $day['dist']  ?? 0,
-                            json_encode($day['viol'] ?? []),
-                            json_encode($day['segs'] ?? []),
-                        ]);
-                    }
-                }
-            }
-        } catch (Throwable $actErr) {
-            // Non-fatal: activity parsing failed but the file itself was saved
-            error_log('DDD activity parse error (file_id=' . $newFileId . '): ' . $actErr->getMessage());
-        }
-
-        $msg = 'Plik został wgrany do archiwum.';
-        if ($autoCreated) $msg .= ' ' . $autoCreated . '.';
 
         echo json_encode([
-            'success'      => true,
-            'message'      => $msg,
-            'driver_id'    => $linkedDriverId,
-            'vehicle_id'   => $linkedVehicleId,
-            'card_number'  => $parsedCardNumber,
-            'auto_created' => $autoCreated,
+            'success' => true,
+            'message' => 'Plik został wgrany do archiwum. Kliknij "Analizuj" na liście, aby zobaczyć szczegółową analizę.',
         ]);
     } catch (Throwable $e) {
-        // Clean up partially saved file if something went wrong after saving
         if (!empty($destPath) && is_file($destPath)) {
             @unlink($destPath);
         }
@@ -568,7 +446,9 @@ if ($action === 'download' && $_SERVER['REQUEST_METHOD'] === 'GET') {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Preview (parse in-memory, do NOT save – returns compliance info)
+// Preview  –  quick format validation + basic identification only.
+// Does NOT run the full activity parser.  Full analysis is on-demand
+// via 'analyze'.
 // ══════════════════════════════════════════════════════════════
 if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
@@ -610,27 +490,24 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $binaryData = file_get_contents($file['tmp_name']);
         if ($binaryData === false || strlen($binaryData) < 100) {
-            echo json_encode(['ok' => false, 'issues' => ['Plik jest zbyt mały lub nie można go odczytać.'], 'file_size' => $file['size']]); exit;
+            echo json_encode(['ok' => false, 'issues' => ['Plik jest zbyt mały lub nie można go odczytać.'], 'info' => []]); exit;
         }
 
-        $issues   = [];   // compliance problems – non-empty means invalid
-        $warnings = [];   // advisory notices that do not block upload
-        $info     = [];   // extracted data fields for display
-
-        $info['file_name'] = $file['name'];
-        $info['file_size'] = $file['size'];
-        $info['file_type'] = $fileType;
+        $issues   = [];
+        $warnings = [];
+        $info     = [
+            'file_name' => $file['name'],
+            'file_size' => $file['size'],
+            'file_type' => $fileType,
+        ];
 
         if ($fileType === 'driver') {
-            // ── Parse driver name + card number ────────────────────
             $parsed = dddParseDriverInfo($binaryData);
-
             if ($parsed) {
                 $info['last_name']   = $parsed['last_name'];
                 $info['first_name']  = $parsed['first_name'];
                 $info['card_number'] = $parsed['card_number'];
 
-                // Validate name characters (A-Z, a-z, Polish diacritics, hyphen, space)
                 $namePattern = '/^[\p{L}\s\-]+$/u';
                 if (!preg_match($namePattern, $parsed['last_name'])) {
                     $warnings[] = 'Nazwisko zawiera nieoczekiwane znaki: "' . $parsed['last_name'] . '"';
@@ -638,40 +515,87 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!preg_match($namePattern, $parsed['first_name'])) {
                     $warnings[] = 'Imię zawiera nieoczekiwane znaki: "' . $parsed['first_name'] . '"';
                 }
-                if (!empty($parsed['card_number'])) {
-                    if (!preg_match('/^[A-Z0-9]{8,16}$/i', $parsed['card_number'])) {
-                        $warnings[] = 'Numer karty ma nieoczekiwany format: "' . $parsed['card_number'] . '"';
-                    }
-                } else {
+                if (empty($parsed['card_number'])) {
                     $warnings[] = 'Nie znaleziono numeru karty kierowcy w pliku.';
                 }
-
-                // Check if driver already exists in this company
-                $stmt = $db->prepare(
-                    'SELECT id, first_name, last_name, card_number FROM drivers
-                     WHERE company_id=? AND is_active=1
-                       AND (
-                         (? <> \'\' AND card_number=?)
-                         OR (LOWER(last_name)=LOWER(?) AND LOWER(first_name)=LOWER(?))
-                       )
-                     LIMIT 1'
-                );
-                $stmt->execute([$companyId, $parsed['card_number'], $parsed['card_number'],
-                                $parsed['last_name'], $parsed['first_name']]);
-                $existing = $stmt->fetch();
-                if ($existing) {
-                    $info['existing_driver_id']   = (int)$existing['id'];
-                    $info['existing_driver_name'] = $existing['first_name'] . ' ' . $existing['last_name'];
-                    $info['action_hint']          = 'linked';
-                } else {
-                    $info['action_hint'] = 'auto_create';
-                }
             } else {
-                $warnings[] = 'Nie można automatycznie odczytać danych kierowcy z pliku. Plik zostanie wgrany do archiwum, ale nie zostanie automatycznie przypisany do kierowcy.';
+                $warnings[] = 'Nie można automatycznie odczytać danych kierowcy z pliku. Plik zostanie wgrany do archiwum bez przypisania do kierowcy.';
+            }
+        } else {
+            $reg = dddParseVehicleReg($binaryData);
+            if ($reg) {
+                $info['registration'] = $reg;
+            } else {
+                $warnings[] = 'Nie można automatycznie odczytać numeru rejestracyjnego pojazdu.';
+            }
+        }
+
+        echo json_encode([
+            'ok'       => empty($issues),
+            'issues'   => $issues,
+            'warnings' => $warnings,
+            'info'     => $info,
+        ]);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Błąd podczas analizy pliku: ' . $e->getMessage()]);
+    }
+    exit;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Analyze  –  on-demand full parse of an already-stored DDD file.
+// Reads the physical file and returns driver/vehicle data plus
+// full activity summary.  Never modifies the database.
+// ══════════════════════════════════════════════════════════════
+if ($action === 'analyze' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $csrf   = $_GET['csrf'] ?? '';
+    $fileId = (int)($_GET['id'] ?? 0);
+
+    if (!validateCsrf($csrf)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Nieprawidłowy token CSRF.']); exit;
+    }
+    if (!$fileId) {
+        echo json_encode(['error' => 'Nieprawidłowy identyfikator pliku.']); exit;
+    }
+
+    try {
+        $stmt = $db->prepare('SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0');
+        $stmt->execute([$fileId, $companyId]);
+        $f = $stmt->fetch();
+
+        if (!$f) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Plik nie został znaleziony.']); exit;
+        }
+
+        $physPath = dddPhysPath($f, $companyId);
+        if (!is_file($physPath)) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Plik fizyczny nie istnieje na serwerze.']); exit;
+        }
+
+        $binaryData = file_get_contents($physPath);
+        $fileType   = $f['file_type'];
+        $warnings   = [];
+        $info       = [
+            'file_name' => $f['original_name'],
+            'file_size' => $f['file_size'],
+            'file_type' => $fileType,
+        ];
+
+        if ($fileType === 'driver') {
+            $parsed = dddParseDriverInfo($binaryData);
+            if ($parsed) {
+                $info['last_name']   = $parsed['last_name'];
+                $info['first_name']  = $parsed['first_name'];
+                $info['card_number'] = $parsed['card_number'];
+            } else {
+                $warnings[] = 'Nie można automatycznie odczytać danych kierowcy z pliku.';
             }
 
-            // ── Parse activity data ────────────────────────────────
-            $actResult = parseDddFile($file['tmp_name']);
+            $actResult = parseDddFile($physPath);
             if (empty($actResult['error']) && !empty($actResult['days'])) {
                 $dates = array_column($actResult['days'], 'date');
                 sort($dates);
@@ -686,35 +610,15 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $warnings[] = 'Nie znaleziono rekordów aktywności w pliku (plik może być pusty lub mieć inny format).';
             }
-
         } else {
-            // ── Parse vehicle registration ─────────────────────────
             $reg = dddParseVehicleReg($binaryData);
-
             if ($reg) {
                 $info['registration'] = $reg;
-
-                // Check if vehicle already exists
-                $stmt = $db->prepare(
-                    'SELECT id, registration FROM vehicles
-                     WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
-                     LIMIT 1'
-                );
-                $stmt->execute([$companyId, $reg]);
-                $existing = $stmt->fetch();
-                if ($existing) {
-                    $info['existing_vehicle_id']  = (int)$existing['id'];
-                    $info['existing_vehicle_reg'] = $existing['registration'];
-                    $info['action_hint']          = 'linked';
-                } else {
-                    $info['action_hint'] = 'auto_create';
-                }
             } else {
-                $warnings[] = 'Nie można automatycznie odczytać numeru rejestracyjnego pojazdu. Plik zostanie wgrany do archiwum, ale nie zostanie automatycznie przypisany do pojazdu.';
+                $warnings[] = 'Nie można automatycznie odczytać numeru rejestracyjnego pojazdu.';
             }
 
-            // ── Parse vehicle activity data ────────────────────────
-            $actResult = parseVehicleDdd($file['tmp_name']);
+            $actResult = parseVehicleDdd($physPath);
             if (empty($actResult['error']) && !empty($actResult['days'])) {
                 $dates = array_column($actResult['days'], 'date');
                 sort($dates);
@@ -728,8 +632,7 @@ if ($action === 'preview' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         echo json_encode([
-            'ok'       => empty($issues),
-            'issues'   => $issues,
+            'ok'       => true,
             'warnings' => $warnings,
             'info'     => $info,
         ]);
