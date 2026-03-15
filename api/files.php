@@ -480,8 +480,8 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $day['dist']  ?? 0,
                             json_encode($day['viol']      ?? []),
                             json_encode($day['segs']      ?? []),
-                            /* null sentinel = confirmed-empty from current parser (not stale '[]') */
-                            json_encode(!empty($day['crossings']) ? $day['crossings'] : null),
+                            /* SQL NULL = never parsed / parser found nothing; re-parse attempted on first view */
+                            !empty($day['crossings']) ? json_encode($day['crossings']) : null,
                         ]);
                     }
                 }
