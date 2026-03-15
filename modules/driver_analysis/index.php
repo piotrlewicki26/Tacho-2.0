@@ -90,7 +90,12 @@ if ($selectedFile) {
                         fn($y) => $y >= 1990
                     );
                     if ($dbYears) {
-                        $dbYearMin = max(1990, min($dbYears) - 1);
+                        /* Cap the year floor at most 2 years before the latest date.
+                         * Using min($dbYears)-1 can over-extend the window when outlier
+                         * spurious activity records are present, causing parseBorderCrossings
+                         * to find stale timestamps in non-place blocks and return early
+                         * with false-positive crossings (same fix as in parseDddFile). */
+                        $dbYearMin = max(1990, max(min($dbYears) - 1, max($dbYears) - 2));
                         $dbYearMax = max($dbYears) + 1;
                     } else {
                         $curYear   = (int)gmdate('Y');

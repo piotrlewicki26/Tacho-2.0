@@ -468,7 +468,12 @@ function parseDddFile(string $path): array {
      * window (e.g. old files or files downloaded near the year boundary). */
     if ($days) {
         $actYears  = array_map(fn($d) => (int)substr($d['date'], 0, 4), $days);
-        $bcYrMin   = max(1990, min($actYears) - 1);
+        /* Cap the year floor at most 2 years before the latest activity date.
+         * Using min(actYears)-1 can over-extend the window when spurious activity
+         * records from outlier years (e.g. 2024 in a 2026-era card) are present,
+         * causing parseBorderCrossings to match stale timestamps in non-place data
+         * blocks and return false-positive crossings or miss the real ones. */
+        $bcYrMin   = max(1990, max(min($actYears) - 1, max($actYears) - 2));
         $bcYrMax   = max($actYears) + 1;
     } else {
         $bcYrMin = $yrMin;
@@ -610,6 +615,19 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                         continue;
                     }
                     $noPtr = $derivedPtr;
+                } else {
+                    /* Plausibility check: when noPtr comes from the raw first byte
+                     * (not derived from bl), the expected CardPointerPlaceRecord
+                     * structure size must cover at least 70 % of the TLV block.
+                     * A block whose structured size is much smaller than bl is very
+                     * likely NOT in CardPointerPlaceRecord format — the first byte
+                     * is coincidental data.  Skipping here lets Method 2 (linear
+                     * stride scan) handle it correctly instead of triggering an
+                     * early false-positive return. */
+                    $expectedSize = 1 + $noPtr * $ptrBytes;
+                    if ($expectedSize < (int)($bl * 0.7)) {
+                        continue;
+                    }
                 }
 
                 $found = [];
