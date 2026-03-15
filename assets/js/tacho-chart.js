@@ -185,9 +185,8 @@
       });
     }
 
-    /* Activity track background */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF', rx:2}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#E0E4EC', 'stroke-width':1, rx:2}));
+    /* Activity track background – no border lines, pure white */
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF'}));
 
     /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
     weekDays.forEach(function(day, di) {
@@ -254,43 +253,92 @@
       });
     }
 
-    /* Daily / weekly rest track */
+    /* Daily / weekly rest track – pure white background, no border */
     var DAILY_REST_MIN  = 9  * 60;  /* 540 min = minimum daily rest       */
     var WEEKLY_REST_MIN = 45 * 60;  /* 2700 min = regular weekly rest     */
     var REDUCED_WEEKLY  = 24 * 60;  /* 1440 min = reduced weekly rest     */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF', rx:2}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#00BCD4', 'stroke-width':1, rx:2}));
-    weekDays.forEach(function(day, di) {
-      if (!day || !day.segs) return;
-      day.segs.forEach(function(s) {
-        if (s.act !== 0 || s.dur < DAILY_REST_MIN) return;
-        var absS = di*1440+s.start, absE = di*1440+s.end;
-        if (absE <= rangeMin || absS >= rangeMax) return;
-        var x1 = clampX(Math.max(absS,rangeMin)), x2 = clampX(Math.min(absE,rangeMax)), bw = x2-x1;
-        if (bw < 0.4) return;
-        var isWeekly = s.dur >= WEEKLY_REST_MIN;
-        var isReducedWeekly = !isWeekly && s.dur >= REDUCED_WEEKLY;
-        /* Vivid: cyan for daily rest, vivid blue shades for weekly rest */
-        var restFill = isWeekly ? '#1565C0' : isReducedWeekly ? '#1E88E5' : '#00BCD4';
-        var g = mkSVG('g');
-        g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:restFill, rx:2}));
-        if (bw > 22) {
-          /* ⊢ icon at top of rest block */
-          var ico = mkSVG('text', {x:x1+bw/2, y:T2Y+14, 'text-anchor':'middle', fill:'#fff', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
-          ico.textContent = '\u22A2'; g.appendChild(ico);
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
+
+    /* Build merged rest spans that cross midnight:
+     * each entry = {absStart, absEnd, dur}  (absolute minutes 0..7*1440) */
+    var restSpans = [];
+    var pending = null;   /* rest span being built (might cross midnight) */
+    for (var rdi = 0; rdi < 7; rdi++) {
+      var rday = weekDays[rdi];
+      var rsegs = rday && rday.segs ? rday.segs : [];
+      /* Collect rest segments for this day */
+      for (var rsi = 0; rsi < rsegs.length; rsi++) {
+        var rs = rsegs[rsi];
+        if (rs.act !== 0) { if (pending) { restSpans.push(pending); pending = null; } continue; }
+        var aS = rdi * 1440 + rs.start, aE = rdi * 1440 + rs.end;
+        if (pending && aS <= pending.absEnd + 1) {
+          /* continuation of previous rest (cross-midnight merge) */
+          pending.absEnd = aE;
+          pending.dur = pending.absEnd - pending.absStart;
+        } else {
+          if (pending) { restSpans.push(pending); }
+          pending = {absStart: aS, absEnd: aE, dur: aE - aS};
         }
-        if (bw > 35) {
-          /* Duration centered */
-          var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-          t.textContent = hhmm(s.dur); g.appendChild(t);
-        }
-        if ((isWeekly || isReducedWeekly) && bw > 55) {
-          /* Weekly rest label at bottom */
-          var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.9)', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-          wl.textContent = isWeekly ? 'TYGODNIOWY' : 'SKR\u00d3CONY'; g.appendChild(wl);
-        }
-        svgEl.appendChild(g);
-      });
+      }
+      /* If day has no segs at all, the rest span ends here */
+      if (!rsegs.length && pending) { restSpans.push(pending); pending = null; }
+    }
+    if (pending) { restSpans.push(pending); }
+
+    /* Render merged rest spans */
+    restSpans.forEach(function(rs) {
+      if (rs.dur < DAILY_REST_MIN) return;
+      if (rs.absEnd <= rangeMin || rs.absStart >= rangeMax) return;
+      var x1 = clampX(Math.max(rs.absStart, rangeMin));
+      var x2 = clampX(Math.min(rs.absEnd, rangeMax));
+      var bw = x2 - x1; if (bw < 0.4) return;
+      var isWeekly = rs.dur >= WEEKLY_REST_MIN;
+      var isReducedWeekly = !isWeekly && rs.dur >= REDUCED_WEEKLY;
+      /* Vivid: cyan for daily rest, vivid blue shades for weekly rest */
+      var restFill = isWeekly ? '#1565C0' : isReducedWeekly ? '#1E88E5' : '#00BCD4';
+      var g = mkSVG('g');
+      g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:restFill, rx:2}));
+      if (bw > 22) {
+        var ico = mkSVG('text', {x:x1+bw/2, y:T2Y+14, 'text-anchor':'middle', fill:'#fff', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+        ico.textContent = '\u22A2'; g.appendChild(ico);
+      }
+      if (bw > 35) {
+        var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+        t.textContent = hhmm(rs.dur); g.appendChild(t);
+      }
+      if ((isWeekly || isReducedWeekly) && bw > 55) {
+        var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.9)', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+        wl.textContent = isWeekly ? 'TYGODNIOWY' : 'SKR\u00d3CONY'; g.appendChild(wl);
+      }
+      /* Clickable tooltip for rest span */
+      (function(span) {
+        var hit = mkSVG('rect', {x:x1, y:T2Y, width:bw, height:T2H, fill:'transparent', cursor:'pointer'});
+        hit.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          ev._tachoSeg = true;
+          var tip = getTip();
+          var label = span.dur >= WEEKLY_REST_MIN ? 'Odpoczynek tygodniowy' :
+                      span.dur >= REDUCED_WEEKLY  ? 'Odpoczynek skrócony tygodniowy' :
+                                                    'Odpoczynek dobowy';
+          var startDay = Math.floor(span.absStart / 1440);
+          var startMin = span.absStart % 1440;
+          var endDay   = Math.floor(span.absEnd   / 1440);
+          var endMin   = span.absEnd   % 1440;
+          tip.innerHTML =
+            '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
+              '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
+              '<strong style="font-size:15px;color:#ECEFF1;">' + label + '</strong>' +
+            '</div>' +
+            '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(startMin) + (endDay > startDay ? ' (D' + (startDay+1) + ')' : '') +
+              '&nbsp;\u2192&nbsp;' + hhmm(endMin) + (endDay !== startDay ? ' (D' + (endDay+1) + ')' : '') + '</div>' +
+            '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + hhmm(span.dur) + '</div>';
+          tip.style.display = 'block';
+          tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 260) + 'px';
+          tip.style.top  = Math.min(ev.clientY + 15, window.innerHeight - 120) + 'px';
+        });
+        g.appendChild(hit);
+      })(rs);
+      svgEl.appendChild(g);
     });
 
     /* Border crossing markers (EF_CardPlacesOfDailyWorkPeriod 0x0522)
@@ -384,13 +432,40 @@
         var xd = px(d2*1440);
         if (xd > 0 && xd < cw) svgEl.appendChild(mkSVG('line', {x1:xd, y1:T1Y-8, x2:xd, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.8, 'stroke-dasharray':'4,3', opacity:0.5}));
       }
-      /* Subtle vertical grid lines only (no axis line, no time labels) */
+      /* Subtle vertical grid lines + clickable time labels in zoomed view */
       var firstTick = Math.ceil(rangeMin / step) * step;
       for (var tk = firstTick; tk <= rangeMax; tk += step) {
         var xt = px(tk); if (xt < 10 || xt > cw-10) continue;
         if (tk % 1440 !== 0) {
+          /* Light vertical guide */
           svgEl.appendChild(mkSVG('line', {x1:xt, y1:T1Y, x2:xt, y2:T2Y+T2H, stroke:'#E8EAF0', 'stroke-width':1, opacity:0.7}));
         }
+        /* Clickable time label below the chart */
+        (function(absMin, xPos) {
+          var dIdx = Math.floor(absMin / 1440);
+          var minOfDay = absMin % 1440;
+          var timeStr = hhmm(minOfDay);
+          var isDay = (absMin % 1440 === 0);
+          var tg = mkSVG('g');
+          tg.setAttribute('style', 'cursor:pointer;');
+          tg.appendChild(mkSVG('rect', {x:xPos-18, y:AXY+2, width:36, height:20, fill:'transparent', rx:3}));
+          var tl = mkSVG('text', {x:xPos, y:AXY+17, 'text-anchor':'middle', fill:isDay?'#1565C0':'#546E7A', 'font-size':isDay?13:12, 'font-family':'Inter,sans-serif', 'font-weight':isDay?700:400});
+          tl.textContent = isDay ? fmtDate(addD(weekStart, dIdx)) : timeStr;
+          tg.appendChild(tl);
+          tg.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            ev._tachoSeg = true;
+            var tip = getTip();
+            var dObj = addD(weekStart, dIdx);
+            tip.innerHTML =
+              '<div style="font-size:15px;color:#ECEFF1;font-weight:700;margin-bottom:4px;">' + fmtDate(dObj) + '</div>' +
+              '<div style="font-size:22px;font-weight:800;color:#29B6F6;letter-spacing:1px;">' + timeStr + '</div>';
+            tip.style.display = 'block';
+            tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 180) + 'px';
+            tip.style.top  = Math.min(ev.clientY + 15, window.innerHeight - 90) + 'px';
+          });
+          svgEl.appendChild(tg);
+        })(tk, xt);
       }
     } else {
       /* Normal full-week separators + day labels (no axis line) */
