@@ -13,10 +13,38 @@ require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/license_check.php';
 
 requireLogin();
-requireModule('driver_analysis');
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
+
+// Auto-create the driver_activity_calendar table if migration 018 has not been applied yet.
+try {
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS `driver_activity_calendar` (
+          `id`               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          `company_id`       INT UNSIGNED NOT NULL,
+          `driver_id`        INT UNSIGNED NOT NULL,
+          `date`             DATE         NOT NULL,
+          `drive_min`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          `work_min`         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          `avail_min`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          `rest_min`         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          `dist_km`          SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          `violations`       JSON DEFAULT NULL,
+          `segments`         JSON DEFAULT NULL,
+          `border_crossings` JSON DEFAULT NULL,
+          `source_file_id`   INT UNSIGNED DEFAULT NULL,
+          `updated_at`       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_driver_date (`driver_id`, `date`),
+          INDEX idx_driver_date (`driver_id`, `date`),
+          INDEX idx_company_driver (`company_id`, `driver_id`),
+          FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
+          FOREIGN KEY (`driver_id`)  REFERENCES `drivers`(`id`)  ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+} catch (Throwable $tableErr) {
+    error_log('driver_calendar: could not ensure driver_activity_calendar table: ' . $tableErr->getMessage());
+}
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
@@ -53,46 +81,51 @@ if ($driverId) {
     $driverInfo = $dStmt->fetch();
 
     if ($driverInfo) {
-        $rows = $db->prepare(
-            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km,
-                    violations, segments, border_crossings, source_file_id
-             FROM driver_activity_calendar
-             WHERE driver_id=? AND date BETWEEN ? AND ?
-             ORDER BY date ASC'
-        );
-        $rows->execute([$driverId, $dateFrom, $dateTo]);
-        foreach ($rows->fetchAll() as $row) {
-            $viols    = json_decode($row['violations']        ?? '[]', true) ?: [];
-            $segs     = json_decode($row['segments']          ?? '[]', true) ?: [];
-            $crossings= json_decode($row['border_crossings']  ?? '[]', true) ?: [];
-            if (is_int($crossings)) $crossings = [];   // sentinel '0'
+        try {
+            $rows = $db->prepare(
+                'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km,
+                        violations, segments, border_crossings, source_file_id
+                 FROM driver_activity_calendar
+                 WHERE driver_id=? AND date BETWEEN ? AND ?
+                 ORDER BY date ASC'
+            );
+            $rows->execute([$driverId, $dateFrom, $dateTo]);
+            foreach ($rows->fetchAll() as $row) {
+                $viols    = json_decode($row['violations']        ?? '[]', true) ?: [];
+                $segs     = json_decode($row['segments']          ?? '[]', true) ?: [];
+                $crossings= json_decode($row['border_crossings']  ?? '[]', true) ?: [];
+                if (is_int($crossings)) $crossings = [];   // sentinel '0'
 
-            $calDays[$row['date']] = [
-                'date'      => $row['date'],
-                'drive'     => (int)$row['drive_min'],
-                'work'      => (int)$row['work_min'],
-                'avail'     => (int)$row['avail_min'],
-                'rest'      => (int)$row['rest_min'],
-                'dist'      => (int)$row['dist_km'],
-                'segs'      => $segs,
-                'crossings' => $crossings,
-                'viol'      => $viols,
-                'file_id'   => $row['source_file_id'],
-            ];
+                $calDays[$row['date']] = [
+                    'date'      => $row['date'],
+                    'drive'     => (int)$row['drive_min'],
+                    'work'      => (int)$row['work_min'],
+                    'avail'     => (int)$row['avail_min'],
+                    'rest'      => (int)$row['rest_min'],
+                    'dist'      => (int)$row['dist_km'],
+                    'segs'      => $segs,
+                    'crossings' => $crossings,
+                    'viol'      => $viols,
+                    'file_id'   => $row['source_file_id'],
+                ];
 
-            $summary['drive'] += (int)$row['drive_min'];
-            $summary['work']  += (int)$row['work_min'];
-            $summary['rest']  += (int)$row['rest_min'];
-            $summary['avail'] += (int)$row['avail_min'];
-            $summary['dist']  += (int)$row['dist_km'];
-            $summary['violations'] += count(array_filter($viols, fn($v) => ($v['type'] ?? '') === 'error'));
+                $summary['drive'] += (int)$row['drive_min'];
+                $summary['work']  += (int)$row['work_min'];
+                $summary['rest']  += (int)$row['rest_min'];
+                $summary['avail'] += (int)$row['avail_min'];
+                $summary['dist']  += (int)$row['dist_km'];
+                $summary['violations'] += count(array_filter($viols, fn($v) => ($v['type'] ?? '') === 'error'));
 
-            $chartDays[] = [
-                'date'      => $row['date'],
-                'segs'      => $segs,
-                'dist'      => (int)$row['dist_km'],
-                'crossings' => $crossings,
-            ];
+                $chartDays[] = [
+                    'date'      => $row['date'],
+                    'segs'      => $segs,
+                    'dist'      => (int)$row['dist_km'],
+                    'crossings' => $crossings,
+                ];
+            }
+        } catch (Throwable $calErr) {
+            error_log('driver_calendar: query error for driver ' . $driverId . ': ' . $calErr->getMessage());
+            // $calDays remains empty – the "no data" empty state will be shown
         }
     }
 }
