@@ -44,6 +44,8 @@
 -- NOTE: MySQL does not allow a correlated subquery that references the DELETE
 -- target table directly (error #1093).  We work around this by pre-aggregating
 -- the MAX(date) per file_id into a derived table and joining to it instead.
+-- All rows for matching files are deleted (not just the truncated ones) so the
+-- fixed parser can rebuild the entire activity window on the next visit.
 DELETE dad
 FROM   ddd_activity_days dad
 JOIN   ddd_files f ON f.id = dad.file_id
