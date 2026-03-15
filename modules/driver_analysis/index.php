@@ -113,16 +113,32 @@ if ($selectedFile) {
                      * Store JSON 0 ('0') as the "confirmed empty after active re-parse"
                      * sentinel – json_decode('0', true) returns 0 which ?: [] gives [] for
                      * the UI.  '0' is NOT in the re-parse trigger list so it prevents
-                     * infinite re-parsing for cards that genuinely have no crossings. */
+                     * infinite re-parsing for cards that genuinely have no crossings.
+                     * Also propagate the refreshed border_crossings to the continuous
+                     * driver_activity_calendar so the calendar view stays in sync. */
                     $updCross = $db->prepare(
                         'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
                     );
+                    $linkedDriver = isset($selectedFile['driver_id']) ? (int)$selectedFile['driver_id'] : 0;
+                    $updCal = $linkedDriver ? $db->prepare(
+                        'UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?'
+                    ) : null;
                     foreach ($dbRows as $r) {
                         $bc = $r['border_crossings'];
                         if ($bc !== null && $bc !== '[]' && $bc !== 'null' && $bc !== 'false' && $bc !== '0') continue;
                         $crs     = $reparsedCrossings[$r['date']] ?? false;
                         $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
                         $updCross->execute([$newJson, $fileId, $r['date']]);
+                        /* Mirror to driver_activity_calendar: store the crossings JSON when
+                         * found, or NULL to keep the row in a re-parseable state for future
+                         * parser improvements (never store the '0' sentinel there). */
+                        if ($updCal) {
+                            $updCal->execute([
+                                $crs !== false ? json_encode($crs) : null,
+                                $linkedDriver,
+                                $r['date'],
+                            ]);
+                        }
                     }
                 }
             }

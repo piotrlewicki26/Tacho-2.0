@@ -585,6 +585,15 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
 
     $crossings = [];
 
+    /* Track the best result (most crossing records) found across all tags and
+     * blocks.  Some DDD files contain spurious TLV blocks that coincidentally
+     * match an early tag and return only 1–2 fake crossings before the real
+     * data block (typically tagged 0x050B and several kilobytes long) is ever
+     * reached.  By accumulating the richest result instead of returning on the
+     * first hit, we always surface the most complete crossing set. */
+    $best      = [];
+    $bestScore = 0;
+
     foreach ($tryTags as [$tb0, $tb1]) {
         for ($i = 0; $i < $len - 6; $i++) {
             if (ord($data[$i]) !== $tb0 || ord($data[$i + 1]) !== $tb1) {
@@ -602,6 +611,7 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             /* ── Method 1: structured parse ────────────────────────────────
              * TLV body = noOfUsedPointerPlaces(1) + CardPointerPlaceRecord×N
              * Each CardPointerPlaceRecord = noOfUsedPlaceRecords(1) + PlaceRecord×10 */
+            $m1found = false;
             foreach ($tryRecSizes as $recBytes) {
                 $ptrBytes = 1 + 10 * $recBytes;   /* CardPointerPlaceRecord size */
 
@@ -698,8 +708,18 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                 }
 
                 if (!empty($found)) {
-                    return $found; /* Structured parse succeeded — return immediately */
+                    $score = array_sum(array_map('count', $found));
+                    if ($score > $bestScore) {
+                        $best      = $found;
+                        $bestScore = $score;
+                    }
+                    $m1found = true;
+                    break; /* best recBytes found — skip remaining sizes */
                 }
+            }
+
+            if ($m1found) {
+                continue; /* skip Method 2 for this block; move to next $i */
             }
 
             /* ── Method 2: linear fallback scan ────────────────────────────
@@ -754,10 +774,19 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                 }
 
                 if (!empty($found)) {
-                    return $found;
+                    $score = array_sum(array_map('count', $found));
+                    if ($score > $bestScore) {
+                        $best      = $found;
+                        $bestScore = $score;
+                    }
+                    break; /* best recBytes found — skip remaining sizes */
                 }
             }
         }
+    }
+
+    if (!empty($best)) {
+        return $best;
     }
 
     /* ── Method 3: whole-file unaligned scan (last resort) ─────────────────────
