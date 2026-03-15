@@ -90,6 +90,7 @@ $userId    = (int)$_SESSION['user_id'];
  * Handles ASCII (NameCodeType 0x00) and Latin-1 (NameCodeType 0x02), which
  * are the two most common encodings found in Polish/EU driver cards.
  */
+if (!function_exists('dddNameTrim')) {
 function dddNameTrim(string $raw): string
 {
     $result = '';
@@ -104,7 +105,9 @@ function dddNameTrim(string $raw): string
     }
     return trim($result);
 }
+}
 
+if (!function_exists('dddParseDriverInfo')) {
 /**
  * Parse driver name and card number from an EU tachograph driver-card DDD file.
  *
@@ -231,7 +234,9 @@ function dddParseDriverInfo(string $data): ?array
         'birth_date'  => $birthDate,
     ];
 }
+} /* end if (!function_exists('dddParseDriverInfo')) */
 
+if (!function_exists('dddParseVehicleReg')) {
 /**
  * Parse vehicle registration plate from a vehicle DDD file.
  * Returns the registration string or null.
@@ -246,6 +251,7 @@ function dddParseVehicleReg(string $data): ?string {
     }
     return null;
 }
+} /* end if (!function_exists('dddParseVehicleReg')) */
 
 /**
  * Convert a company name into a safe filesystem directory name.

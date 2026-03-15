@@ -163,6 +163,138 @@ function dddReadStr(string $data, int $offset, int $len): string {
 }
 
 /**
+ * Trim a raw DDD byte string to a clean UTF-8 label.
+ * Printable ASCII passes through; Latin-1 supplement (0xa0–0xff) is
+ * converted to UTF-8; control bytes are silently dropped.
+ */
+function dddNameTrim(string $raw): string
+{
+    $result = '';
+    foreach (str_split($raw) as $ch) {
+        $b = ord($ch);
+        if ($b >= 0x20 && $b <= 0x7e) {
+            $result .= $ch;
+        } elseif ($b >= 0xa0) {
+            $result .= mb_convert_encoding($ch, 'UTF-8', 'ISO-8859-1');
+        }
+    }
+    return trim($result);
+}
+
+/**
+ * Parse driver name, card number, and birth date from a driver-card DDD blob.
+ *
+ * Strategy 1 – JSX tag 0x05 0x20: primary name detection.
+ * Strategy 2 – EF_Identification tag 0x01 0x05: card number + fallback name + birth date.
+ *
+ * @return array{last_name:string, first_name:string, card_number:string, birth_date:?string}|null
+ */
+function dddParseDriverInfo(string $data): ?array
+{
+    $len = strlen($data);
+
+    // ── Strategy 1: tag 0x05 0x20 ────────────────────────────────────────────
+    $driverName = null;
+    for ($i = 0; $i < $len - 4; $i++) {
+        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x20) {
+            continue;
+        }
+        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        if ($bl < 40 || $bl > 3000 || $i + 4 + $bl > $len) {
+            continue;
+        }
+        for ($k = 0; $k < $bl - 72; $k++) {
+            $b = ord($data[$i + 4 + $k]);
+            if ($b < 65 || $b > 90) {
+                continue;
+            }
+            $sn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k, 36)));
+            $fn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36)));
+            if (strlen($sn) >= 3 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $sn)
+                && strlen($fn) >= 2 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $fn)) {
+                $driverName = ['last_name' => $sn, 'first_name' => $fn];
+                break;
+            }
+        }
+        if ($driverName) {
+            break;
+        }
+    }
+
+    // ── Strategy 2: EF_Identification tag 0x01 0x05 ──────────────────────────
+    $cardNumber = null;
+    $birthDate  = null;
+    for ($i = 0; $i < $len - 144; $i++) {
+        if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
+            continue;
+        }
+        if ($i + 6 >= $len) {
+            continue;
+        }
+        $bl = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
+        if ($bl < 130 || $bl > 500 || $i + 6 + $bl > $len) {
+            continue;
+        }
+        $base    = $i + 6;
+        $cardRaw = substr($data, $base + 1, 16);
+        $valid   = true;
+        for ($k = 0; $k < 16; $k++) {
+            $b = ord($cardRaw[$k]);
+            if (($b < 0x30 || $b > 0x39) && ($b < 0x41 || $b > 0x5a) && ($b < 0x61 || $b > 0x7a)) {
+                $valid = false;
+                break;
+            }
+        }
+        if ($valid) {
+            $cardNumber = rtrim($cardRaw);
+        }
+        if (!$driverName) {
+            $sn = dddNameTrim(substr($data, $base + 66, 35));
+            $fn = dddNameTrim(substr($data, $base + 102, 35));
+            if (strlen($sn) >= 2 && strlen($fn) >= 1) {
+                $driverName = ['last_name' => $sn, 'first_name' => $fn];
+            }
+        }
+        if ($bl >= 141 && $i + 6 + 141 <= $len) {
+            $birthTs   = unpack('N', substr($data, $base + 137, 4))[1];
+            $birthYear = (int)gmdate('Y', $birthTs);
+            if ($birthYear >= 1930 && $birthYear <= 2005) {
+                $birthDate = gmdate('Y-m-d', $birthTs);
+            }
+        }
+        if ($cardNumber !== null || $driverName !== null) {
+            break;
+        }
+    }
+
+    if (!$driverName) {
+        return null;
+    }
+
+    return [
+        'last_name'   => $driverName['last_name'],
+        'first_name'  => $driverName['first_name'],
+        'card_number' => $cardNumber ?? '',
+        'birth_date'  => $birthDate,
+    ];
+}
+
+/**
+ * Parse vehicle registration plate from a vehicle DDD binary blob.
+ * Returns the registration string or null if not found.
+ */
+function dddParseVehicleReg(string $data): ?string {
+    $len = strlen($data);
+    for ($i = 0; $i < $len - 14; $i++) {
+        $s = trim(str_replace("\0", '', dddReadStr($data, $i, 14)));
+        if (preg_match('/^[A-Z]{2,4}\s[A-Z0-9]{4,6}$/', $s)) {
+            return $s;
+        }
+    }
+    return null;
+}
+
+/**
  * DDD driver-card activity parser.
  *
  * Record header layout (EU Reg. 165/2014 Annex 1B/1C):
