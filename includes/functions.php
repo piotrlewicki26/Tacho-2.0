@@ -511,6 +511,14 @@ function parseDddFile(string $path): array {
  * Falls back to a linear scan of the TLV block if the structured parse finds
  * nothing, to handle variant record sizes (10-byte Gen 1 without NationAlpha).
  *
+ * NationAlpha validation uses a whitelist of known EU plate codes so that
+ * coincidental printable-ASCII byte sequences (e.g. "ROB") embedded in other
+ * tachograph data blocks cannot be mistaken for a country code.  When
+ * NationAlpha is present it is only accepted if NationNumeric is also within
+ * the plausible EU range (0 = absent, 1–55 = defined codes); a NationNumeric
+ * value above 55 together with any NationAlpha string is a strong indicator
+ * of a false-positive record hit inside a non-place data block.
+ *
  * Returns: array keyed by 'Y-m-d' date → [{ts, tmin, type, country}]
  */
 function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
@@ -531,6 +539,25 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
         46 => 'SLO', 47 => 'TM',  48 => 'TR',  49 => 'UA',  50 => 'V',
     ];
 
+    /* Whitelist of valid EU/EEA vehicle registration plate codes.
+     * Any NationAlpha string that is not in this set is treated as absent —
+     * the parser falls back to NationNumeric.  This prevents printable-ASCII
+     * byte sequences that coincidentally pass /^[A-Z]{1,3}$/ (e.g. "ROB",
+     * "BF", "GM") from being interpreted as country codes. */
+    static $validAlphaCodes = [
+        'A'   => true, 'AL'  => true, 'AND' => true, 'ARM' => true, 'AZ'  => true,
+        'B'   => true, 'BG'  => true, 'BIH' => true, 'BY'  => true, 'CH'  => true,
+        'CY'  => true, 'CZ'  => true, 'D'   => true, 'DK'  => true, 'E'   => true,
+        'EST' => true, 'F'   => true, 'FIN' => true, 'FL'  => true, 'FO'  => true,
+        'GB'  => true, 'GE'  => true, 'GR'  => true, 'H'   => true, 'HR'  => true,
+        'I'   => true, 'IRL' => true, 'IS'  => true, 'KZ'  => true, 'L'   => true,
+        'LT'  => true, 'LV'  => true, 'M'   => true, 'MC'  => true, 'MD'  => true,
+        'MK'  => true, 'MNE' => true, 'N'   => true, 'NL'  => true, 'P'   => true,
+        'PL'  => true, 'RO'  => true, 'RSM' => true, 'RUS' => true, 'S'   => true,
+        'SK'  => true, 'SLO' => true, 'TM'  => true, 'TR'  => true, 'UA'  => true,
+        'V'   => true,
+    ];
+
     /* Known TLV tag byte-pairs for EF_CardPlacesOfDailyWorkPeriod, tried in order.
      * 0x0522 is the primary standard FID per EU Reg. 165/2014 Annex 1B/1C §3.15.
      * Other values are observed in real Gen 1 / manufacturer-specific dumps. */
@@ -543,8 +570,13 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
         [0x05, 0x14],   /* Actia/Smartcard implementations                        */
     ];
 
-    /* PlaceRecord sizes to try: 12 bytes (with NationAlpha), 10 bytes (without) */
-    $tryRecSizes = [12, 10, 13];
+    /* PlaceRecord sizes to try: 10 bytes (without NationAlpha — most common in
+     * the wild), 12 bytes (with NationAlpha per Reg. 165/2014), 13 bytes (rare
+     * extended variant).  10 is listed first because many real-world cards omit
+     * NationAlpha (all-null bytes), and scanning a large block with a 12-byte
+     * stride produces more spurious hits than a 10-byte stride when the actual
+     * records are packed at 10-byte boundaries. */
+    $tryRecSizes = [10, 12, 13];
 
     $crossings = [];
 
@@ -621,7 +653,12 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                             );
                         }
 
-                        if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                        /* Accept NationAlpha only when it is a known EU plate code
+                         * AND NationNumeric is plausible (0 = absent, 1–55 = defined).
+                         * A high NationNumeric together with any alpha string indicates
+                         * a false-positive hit inside a non-place data block. */
+                        if ($nationAlpha !== '' && isset($validAlphaCodes[$nationAlpha])
+                                && ($nationNumeric === 0 || $nationNumeric <= 55)) {
                             $country = $nationAlpha;
                         } elseif (isset($nationCodes[$nationNumeric])) {
                             $country = $nationCodes[$nationNumeric];
@@ -648,8 +685,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             }
 
             /* ── Method 2: linear fallback scan ────────────────────────────
-             * Walk the TLV block byte-by-byte (aligned to 12 then 10) looking
-             * for valid PlaceRecord patterns when the structured parse failed. */
+             * Walk the TLV block stride-aligned looking for valid PlaceRecord
+             * patterns when the structured parse found nothing. */
             foreach ($tryRecSizes as $recBytes) {
                 $found = [];
                 for ($rp = $base; $rp + $recBytes <= $base + $bl; $rp += $recBytes) {
@@ -675,7 +712,12 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                         );
                     }
 
-                    if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                    /* Accept NationAlpha only when it is a known EU plate code
+                     * AND NationNumeric is plausible (0 = absent, 1–55 = defined).
+                     * A high NationNumeric together with any alpha string indicates
+                     * a false-positive hit inside a non-place data block. */
+                    if ($nationAlpha !== '' && isset($validAlphaCodes[$nationAlpha])
+                            && ($nationNumeric === 0 || $nationNumeric <= 55)) {
                         $country = $nationAlpha;
                     } elseif (isset($nationCodes[$nationNumeric])) {
                         $country = $nationCodes[$nationNumeric];
@@ -727,7 +769,10 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                 );
             }
 
-            if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+            /* Accept NationAlpha only when it is a known EU plate code
+             * AND NationNumeric is plausible (0 = absent, 1–55 = defined). */
+            if ($nationAlpha !== '' && isset($validAlphaCodes[$nationAlpha])
+                    && ($nationNumeric === 0 || $nationNumeric <= 55)) {
                 $country = $nationAlpha;
             } elseif (isset($nationCodes[$nationNumeric]) && $nationNumeric >= 1) {
                 $country = $nationCodes[$nationNumeric];
