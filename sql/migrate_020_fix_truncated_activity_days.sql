@@ -40,17 +40,22 @@
 -- Step 1: Delete ddd_activity_days for files whose stored activity period is
 -- truncated (last activity date > 28 days before the file's download date).
 -- This covers the Szczepanski-style bug where the most recent session was cut off.
+--
+-- NOTE: MySQL does not allow a correlated subquery that references the DELETE
+-- target table directly (error #1093).  We work around this by pre-aggregating
+-- the MAX(date) per file_id into a derived table and joining to it instead.
 DELETE dad
 FROM   ddd_activity_days dad
 JOIN   ddd_files f ON f.id = dad.file_id
+JOIN   (
+         SELECT file_id, MAX(date) AS max_date
+         FROM   ddd_activity_days
+         GROUP BY file_id
+       ) AS mx ON mx.file_id = dad.file_id
 WHERE  f.file_type  = 'driver'
   AND  f.is_deleted = 0
   AND  f.download_date IS NOT NULL
-  AND  (
-         SELECT MAX(d2.date)
-         FROM   ddd_activity_days d2
-         WHERE  d2.file_id = dad.file_id
-       ) < DATE_SUB(f.download_date, INTERVAL 28 DAY);
+  AND  mx.max_date < DATE_SUB(f.download_date, INTERVAL 28 DAY);
 
 -- Step 2: Reset period_start / period_end for those files so they are
 -- recalculated on the next analysis pass.
