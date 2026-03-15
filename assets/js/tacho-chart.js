@@ -14,11 +14,11 @@
 (function (NS) {
 
   /* == Activity constants ========================================= */
-  /* rest=light blue, available=light green, work=orange, drive=red */
-  var ACT_FILL   = ['rgba(100,181,246,0.45)','rgba(102,187,106,0.35)','#FB8C00','#E53935'];
-  var ACT_SOLID  = ['#64B5F6','#66BB6A','#EF6C00','#E53935'];
-  var ACT_STROKE = ['#42A5F5','#43A047','#E65100','#C62828'];
-  var ACT_TEXT   = ['#0D47A1','#1B5E20','#fff','#fff'];
+  /* rest=vivid sky-blue, available=vivid green, work=vivid orange, drive=vivid red */
+  var ACT_FILL   = ['rgba(41,182,246,0.55)','rgba(76,175,80,0.5)','rgba(255,152,0,0.82)','rgba(244,67,54,0.9)'];
+  var ACT_SOLID  = ['#29B6F6','#4CAF50','#FF9800','#F44336'];
+  var ACT_STROKE = ['#0288D1','#388E3C','#F57C00','#D32F2F'];
+  var ACT_TEXT   = ['#01579B','#1B5E20','#fff','#fff'];
   var ACT_NAME   = ['Odpoczynek','Dyspozycyjno\u015b\u0107','Praca','Jazda'];
   /* Activity icons: — rest, ◇ available, ⚙ work, ▶ drive */
   var ACT_ICONS  = ['\u2014','\u25C7','\u2699','\u25B6'];
@@ -171,7 +171,7 @@
       var vl = dayViols ? dayViols[di] || [] : [];
       var bg = vl.some(function(v){ return v.sev==='error'; }) ? '#FFF5F5' :
                vl.some(function(v){ return v.sev==='warn';  }) ? '#FFFDE7' :
-               di%2===0 ? '#FFF' : '#F6F7FA';
+               '#FFFFFF';
       svgEl.appendChild(mkSVG('rect', {x:bgX1, y:0, width:bw0, height:RH, fill:bg}));
     }
 
@@ -186,15 +186,8 @@
     }
 
     /* Activity track background */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#F0F4F8', rx:2}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#C8D0DA', 'stroke-width':1, rx:2}));
-
-    /* Subtle reference lines at each activity-height boundary */
-    var barH0 = T1H - 4;
-    [ACT_HEIGHT_FRAC[0], ACT_HEIGHT_FRAC[1], ACT_HEIGHT_FRAC[2]].forEach(function(frac) {
-      var refY = T1Y + 2 + Math.round(barH0 * (1 - frac));
-      svgEl.appendChild(mkSVG('line', {x1:0, y1:refY, x2:cw, y2:refY, stroke:'#DDE1E8', 'stroke-width':0.8, opacity:0.7}));
-    });
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF', rx:2}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'none', stroke:'#E0E4EC', 'stroke-width':1, rx:2}));
 
     /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
     weekDays.forEach(function(day, di) {
@@ -265,8 +258,8 @@
     var DAILY_REST_MIN  = 9  * 60;  /* 540 min = minimum daily rest       */
     var WEEKLY_REST_MIN = 45 * 60;  /* 2700 min = regular weekly rest     */
     var REDUCED_WEEKLY  = 24 * 60;  /* 1440 min = reduced weekly rest     */
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#E0F7FA', rx:2}));
-    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#80DEEA', 'stroke-width':1, rx:2}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF', rx:2}));
+    svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'none', stroke:'#00BCD4', 'stroke-width':1, rx:2}));
     weekDays.forEach(function(day, di) {
       if (!day || !day.segs) return;
       day.segs.forEach(function(s) {
@@ -277,8 +270,8 @@
         if (bw < 0.4) return;
         var isWeekly = s.dur >= WEEKLY_REST_MIN;
         var isReducedWeekly = !isWeekly && s.dur >= REDUCED_WEEKLY;
-        /* Turquoise for daily rest, blue shades for weekly rest */
-        var restFill = isWeekly ? '#1E88E5' : isReducedWeekly ? '#42A5F5' : '#4DD0E1';
+        /* Vivid: cyan for daily rest, vivid blue shades for weekly rest */
+        var restFill = isWeekly ? '#1565C0' : isReducedWeekly ? '#1E88E5' : '#00BCD4';
         var g = mkSVG('g');
         g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:restFill, rx:2}));
         if (bw > 22) {
@@ -391,29 +384,20 @@
         var xd = px(d2*1440);
         if (xd > 0 && xd < cw) svgEl.appendChild(mkSVG('line', {x1:xd, y1:T1Y-8, x2:xd, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.8, 'stroke-dasharray':'4,3', opacity:0.5}));
       }
-      svgEl.appendChild(mkSVG('line', {x1:0, y1:AXY, x2:cw, y2:AXY, stroke:'#E0E2E8', 'stroke-width':1.5}));
-
-      /* Time tick labels */
+      /* Subtle vertical grid lines only (no axis line, no time labels) */
       var firstTick = Math.ceil(rangeMin / step) * step;
       for (var tk = firstTick; tk <= rangeMax; tk += step) {
         var xt = px(tk); if (xt < 10 || xt > cw-10) continue;
-        /* vertical grid line */
-        svgEl.appendChild(mkSVG('line', {x1:xt, y1:T1Y, x2:xt, y2:AXY, stroke:'#DDE1E6', 'stroke-width':1.2, opacity:0.6}));
-        /* label: day-of-week + time */
-        var dIdx = Math.floor(tk/1440);
-        var timeStr = hhmm(tk % 1440);
-        var dObj2 = addD(weekStart, dIdx);
-        var lbl = (tk % 1440 === 0) ? fmtDate(dObj2) : timeStr;
-        var tl = mkSVG('text', {x:xt, y:AXY+18, 'text-anchor':'middle', fill:'#1565C0', 'font-size':14, 'font-family':'Inter,sans-serif', 'font-weight':tk%1440===0?700:400});
-        tl.textContent = lbl; svgEl.appendChild(tl);
+        if (tk % 1440 !== 0) {
+          svgEl.appendChild(mkSVG('line', {x1:xt, y1:T1Y, x2:xt, y2:T2Y+T2H, stroke:'#E8EAF0', 'stroke-width':1, opacity:0.7}));
+        }
       }
     } else {
-      /* Normal full-week separators + day labels */
+      /* Normal full-week separators + day labels (no axis line) */
       for (var di2=1; di2<7; di2++) {
         var xsep = px(di2*1440);
         if (xsep>=0 && xsep<=cw) svgEl.appendChild(mkSVG('line', {x1:xsep, y1:T1Y-8, x2:xsep, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.8, 'stroke-dasharray':'4,3', opacity:0.5}));
       }
-      svgEl.appendChild(mkSVG('line', {x1:0, y1:AXY, x2:cw, y2:AXY, stroke:'#E0E2E8', 'stroke-width':1.5}));
       for (var di3=0; di3<7; di3++) {
         var xm = px(di3*1440+720); if (xm<22||xm>cw-22) continue;
         var dLbl = addD(weekStart, di3);
@@ -1262,9 +1246,9 @@
     /* Legend */
     var legend = document.createElement('div');
     legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
-    [{fill:'#80DEEA',bd:'#00838F',lbl:'Odpoczynek'},{fill:'#EF9A9A',bd:'#C62828',lbl:'Jazda'},
-     {fill:'#FFCC80',bd:'#BF360C',lbl:'Praca'},{fill:'#9FA8DA',bd:'#3949AB',lbl:'Dyspozycyjno\u015b\u0107'},
-     {fill:'#90CAF9',bd:'#1E88E5',lbl:'Odpocz. \u22659h'}].forEach(function(it) {
+    [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek'},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda'},
+     {fill:'#FF9800',bd:'#F57C00',lbl:'Praca'},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107'},
+     {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
       d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
