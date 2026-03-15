@@ -746,6 +746,8 @@ function TachographPanel({tachoData,setTachoData}) {
   const fileRef=useRef(null);
   const rootRef=useRef(null);
   const [cw,setCw]=useState(900);
+  const vsRef=useRef(0);vsRef.current=vs;
+  const veRef=useRef(7*1440);veRef.current=ve;
 
   useEffect(()=>{
     if(!rootRef.current)return;
@@ -757,9 +759,9 @@ function TachographPanel({tachoData,setTachoData}) {
 
   useEffect(()=>{
     const el=chartRef.current;if(!el)return;
-    const fn=e=>{e.preventDefault();const rect=el.getBoundingClientRect();const mx=e.clientX-rect.left-LW;if(mx<0||mx>chartWidth)return;const mMin=vs+(mx/chartWidth)*dur;const fac=e.deltaY>0?1.3:0.77;let nd=clamp(dur*fac,360,7*1440);let ns=mMin-(mx/chartWidth)*nd,ne=ns+nd;if(ns<0){ns=0;ne=nd;}if(ne>7*1440){ne=7*1440;ns=7*1440-nd;}setVs(ns);setVe(ne);};
+    const fn=e=>{e.preventDefault();const rect=el.getBoundingClientRect();const mx=e.clientX-rect.left-LW;if(mx<0||mx>chartWidth)return;const cv=vsRef.current,ce=veRef.current,cd=ce-cv;const mMin=cv+(mx/chartWidth)*cd;const fac=e.deltaY>0?1.3:0.77;let nd=clamp(cd*fac,360,7*1440);let ns=mMin-(mx/chartWidth)*nd,ne=ns+nd;if(ns<0){ns=0;ne=nd;}if(ne>7*1440){ne=7*1440;ns=7*1440-nd;}setVs(Math.round(ns));setVe(Math.round(ne));};
     el.addEventListener("wheel",fn,{passive:false});return()=>el.removeEventListener("wheel",fn);
-  },[vs,ve,dur,chartWidth]);
+  },[chartWidth]);
 
   const onMouseDown=e=>{if(e.button!==0)return;e.preventDefault();const rect=chartRef.current.getBoundingClientRect();const mx=e.clientX-rect.left-LW;if(mx<0||mx>chartWidth)return;if(mode==="pan")setPanStart({clientX:e.clientX,vs,ve});else{setSelStart(mx);setSelEnd(mx);}};
   const onMouseMove=e=>{if(!chartRef.current)return;const rect=chartRef.current.getBoundingClientRect();const mx=clamp(e.clientX-rect.left-LW,0,chartWidth);if(mode==="pan"&&panStart){const dx=e.clientX-panStart.clientX;const shift=(dx/chartWidth)*dur*-1;let ns=panStart.vs+shift,ne=panStart.ve+shift;if(ns<0){ns=0;ne=ne-ns;}if(ne>7*1440){ne=7*1440;ns=ns-(ne-7*1440);}setVs(clamp(ns,0,7*1440));setVe(clamp(ne,0,7*1440));}else if(mode==="select"&&selStart!==null){setSelEnd(mx);}};
