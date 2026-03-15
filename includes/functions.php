@@ -329,14 +329,17 @@ function parseDddFile(string $path): array {
 
     // ── Step 1: Collect candidate record headers ───────────────────────────────
     // Dynamic 5-year window so the parser keeps working for future card downloads.
+    // tsMax caps candidates at 90 days into the future to prevent coincidental
+    // binary patterns with far-future timestamps from being treated as real records.
     $curYear = (int)gmdate('Y');
     $yrMin   = $curYear - 3;
     $yrMax   = $curYear + 1;
+    $tsMax   = time() + 90 * 86400;   // at most 90 days ahead of today
     $cands   = [];
     for ($i = 0; $i < $len - 8; $i += 2) {
         $ts   = unpack('N', substr($data, $i, 4))[1];
         $yr   = (int)gmdate('Y', $ts);
-        if ($yr < $yrMin || $yr > $yrMax) continue;
+        if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
 
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
@@ -362,6 +365,12 @@ function parseDddFile(string $path): array {
     usort($deduped, fn($a,$b) => $a['pres'] - $b['pres']);
 
     // ── Step 4: IQR outlier filtering ─────────────────────────────────────────
+    // Only the lower fence is applied: records with presenceCounter below p_min
+    // are genuinely stale data from previous card use periods on different
+    // tachographs and should be dropped.  Records above p_max are the MOST
+    // RECENT activity – a driver who switched to a vehicle with a higher-counter
+    // tachograph will produce records outside the main cluster on the high side.
+    // Removing those would silently discard the latest weeks of driving data.
     $presVals = array_column($deduped, 'pres');
     sort($presVals);
     $n = count($presVals);
@@ -370,8 +379,7 @@ function parseDddFile(string $path): array {
         $p75 = $presVals[(int)($n * 0.75)];
         $iqr = $p75 - $p25;
         $pMin = $p25 - 3 * $iqr;
-        $pMax = $p75 + 3 * $iqr;
-        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin && $c['pres'] <= $pMax));
+        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin));
     } else {
         $filtered = $deduped;
     }
@@ -872,12 +880,13 @@ function parseVehicleDdd(string $path): array {
     $curYear = (int)gmdate('Y');
     $yrMin   = $curYear - 3;
     $yrMax   = $curYear + 1;
+    $tsMax   = time() + 90 * 86400;
 
     $cands = [];
     for ($i = 0; $i < $len - 8; $i += 2) {
         $ts   = unpack('N', substr($data, $i, 4))[1];
         $yr   = (int)gmdate('Y', $ts);
-        if ($yr < $yrMin || $yr > $yrMax) continue;
+        if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
 
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
@@ -901,7 +910,7 @@ function parseVehicleDdd(string $path): array {
     }
     usort($deduped, fn($a,$b) => $a['pres'] - $b['pres']);
 
-    // IQR outlier filtering
+    // IQR outlier filtering – lower fence only (see parseDddFile for rationale)
     $presVals = array_column($deduped, 'pres');
     sort($presVals);
     $n = count($presVals);
@@ -910,8 +919,7 @@ function parseVehicleDdd(string $path): array {
         $p75 = $presVals[(int)($n * 0.75)];
         $iqr = $p75 - $p25;
         $pMin = $p25 - 3 * $iqr;
-        $pMax = $p75 + 3 * $iqr;
-        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin && $c['pres'] <= $pMax));
+        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin));
     } else {
         $filtered = $deduped;
     }

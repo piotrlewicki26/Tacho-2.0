@@ -186,6 +186,41 @@ if ($selectedFile) {
             foreach ($days as $day) {
                 $chartDays[] = ['date' => $day['date'], 'segs' => $day['segs'] ?? [], 'dist' => $day['dist'] ?? 0, 'crossings' => $day['crossings'] ?? []];
             }
+
+            // Persist fresh data to ddd_activity_days so future loads use the
+            // fast DB path instead of re-parsing the binary every time.
+            if (!empty($days) && $fileId) {
+                try {
+                    $insDay = $db->prepare(
+                        'INSERT IGNORE INTO ddd_activity_days
+                         (file_id, date, drive_min, work_min, avail_min, rest_min, dist_km,
+                          violations, segments, border_crossings)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)'
+                    );
+                    foreach ($days as $day) {
+                        $insDay->execute([
+                            $fileId,
+                            $day['date'],
+                            $day['drive']  ?? 0,
+                            $day['work']   ?? 0,
+                            $day['avail']  ?? 0,
+                            $day['rest']   ?? 0,
+                            $day['dist']   ?? 0,
+                            json_encode($day['viol']      ?? []),
+                            json_encode($day['segs']      ?? []),
+                            !empty($day['crossings']) ? json_encode($day['crossings']) : json_encode(0),
+                        ]);
+                    }
+                    // Update period_start / period_end in ddd_files
+                    $freshDates = array_column($days, 'date');
+                    sort($freshDates);
+                    $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
+                       ->execute([$freshDates[0], end($freshDates), $fileId]);
+                } catch (\Throwable $e) {
+                    // Non-fatal: data is already displayed in-memory; DB write failure
+                    // just means future loads will re-parse again.
+                }
+            }
         } else {
             $parseError = 'Plik fizyczny nie istnieje w archiwum. Prześlij plik ponownie.';
         }
