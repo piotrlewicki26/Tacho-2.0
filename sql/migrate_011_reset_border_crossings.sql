@@ -1,5 +1,5 @@
 -- Migration 011: reset stale border_crossings data so next page-load re-parses
--- with the corrected parser (multi-tag: 05 0E / 05 0B / 05 22).
+-- with the corrected parser (primary tag: 05 22 / also tries 05 20 / 05 0E / 05 0B / 05 04 / 05 14).
 --
 -- Rows that hold '[]' were parsed by an earlier version that searched for the
 -- wrong TLV tag and never found any crossings.  Setting them to NULL lets the

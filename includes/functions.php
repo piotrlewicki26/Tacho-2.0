@@ -388,15 +388,20 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
         46 => 'SLO', 47 => 'TM',  48 => 'TR',  49 => 'UA',  50 => 'V',
     ];
 
-    /* Known TLV tag byte-pairs for EF_CardPlacesOfDailyWorkPeriod, tried in order */
+    /* Known TLV tag byte-pairs for EF_CardPlacesOfDailyWorkPeriod, tried in order.
+     * 0x0522 is the primary standard FID per EU Reg. 165/2014 Annex 1B/1C §3.15.
+     * Other values are observed in real Gen 1 / manufacturer-specific dumps. */
     $tryTags = [
-        [0x05, 0x0E],   /* Gen 2 / Gen 1+ (most common)          */
-        [0x05, 0x0B],   /* Older Gen 1 (Reg 3821/85 EF_Places)   */
-        [0x05, 0x22],   /* Some manufacturer implementations      */
+        [0x05, 0x22],   /* Standard EF_CardPlacesOfDailyWorkPeriod (Reg 165/2014) */
+        [0x05, 0x20],   /* Some Gen 1+ implementations                            */
+        [0x05, 0x0E],   /* Some Gen 2 / Stoneridge SE5000                         */
+        [0x05, 0x0B],   /* Older Gen 1 (Reg 3821/85 EF_Places)                   */
+        [0x05, 0x04],   /* Very old Gen 1                                          */
+        [0x05, 0x14],   /* Actia/Smartcard implementations                        */
     ];
 
     /* PlaceRecord sizes to try: 12 bytes (with NationAlpha), 10 bytes (without) */
-    $tryRecSizes = [12, 10];
+    $tryRecSizes = [12, 10, 13];
 
     $crossings = [];
 
@@ -421,8 +426,15 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                 $ptrBytes = 1 + 10 * $recBytes;   /* CardPointerPlaceRecord size */
 
                 $noPtr = ord($data[$base]);        /* noOfUsedPointerPlaces       */
+                /* Accept 0 < noPtr <= 365 (one pointer per day), also try
+                 * guessing the count from TLV block length if byte looks wrong. */
                 if ($noPtr === 0 || $noPtr > 365) {
-                    continue;
+                    /* Try derived count from block length */
+                    $derivedPtr = (int)(($bl - 1) / $ptrBytes);
+                    if ($derivedPtr < 1 || $derivedPtr > 365) {
+                        continue;
+                    }
+                    $noPtr = $derivedPtr;
                 }
 
                 $found = [];
@@ -538,6 +550,67 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                 if (!empty($found)) {
                     return $found;
                 }
+            }
+        }
+    }
+
+    /* ── Method 3: whole-file unaligned scan (last resort) ─────────────────────
+     * When no TLV block is found (unrecognised manufacturer serialisation),
+     * walk the entire binary byte-by-byte looking for valid PlaceRecord
+     * sequences: timestamp in range + type(0-2) + known nationNumeric or Alpha.
+     * Require ≥2 hits to avoid spurious single-byte coincidences. */
+    for ($trySize = 10; $trySize <= 13; $trySize++) {
+        $hits = [];
+        for ($p = 0; $p + $trySize <= $len; $p++) {
+            if ($len - $p < 4) break;
+            $ts   = unpack('N', substr($data, $p, 4))[1];
+            $year = (int)gmdate('Y', $ts);
+            if ($year < $yearMin || $year > $yearMax) continue;
+
+            $type          = ord($data[$p + 4]);
+            $nationNumeric = ord($data[$p + 5]);
+            if ($type > 2) continue;
+
+            if ($trySize >= 12) {
+                $nationAlpha = strtoupper(
+                    trim(str_replace("\0", '', substr($data, $p + 6, 3)))
+                );
+            } else {
+                $nationAlpha = strtoupper(
+                    trim(str_replace("\0", '', substr($data, $p + 6, 2)))
+                );
+            }
+
+            if (preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                $country = $nationAlpha;
+            } elseif (isset($nationCodes[$nationNumeric]) && $nationNumeric >= 1) {
+                $country = $nationCodes[$nationNumeric];
+            } else {
+                continue;
+            }
+
+            $date = gmdate('Y-m-d', $ts);
+            $tmin = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+            $hits[$date][] = ['ts' => $ts, 'tmin' => $tmin, 'type' => $type, 'country' => $country];
+        }
+
+        /* Require at least 2 crossing records total to reduce false positives */
+        $totalHits = array_sum(array_map('count', $hits));
+        if ($totalHits >= 2) {
+            /* Deduplicate: keep unique (date, tmin, country) triples per day */
+            $deduped = [];
+            foreach ($hits as $date => $recs) {
+                $seen = [];
+                foreach ($recs as $rec) {
+                    $key = $rec['tmin'] . '|' . $rec['country'] . '|' . $rec['type'];
+                    if (!isset($seen[$key])) {
+                        $seen[$key] = true;
+                        $deduped[$date][] = $rec;
+                    }
+                }
+            }
+            if (!empty($deduped)) {
+                return $deduped;
             }
         }
     }
