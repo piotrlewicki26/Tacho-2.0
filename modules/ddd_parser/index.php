@@ -764,7 +764,7 @@ function TachographPanel({tachoData,setTachoData}) {
   },[chartWidth]);
 
   const onMouseDown=e=>{if(e.button!==0)return;e.preventDefault();const rect=chartRef.current.getBoundingClientRect();const mx=e.clientX-rect.left-LW;if(mx<0||mx>chartWidth)return;if(mode==="pan")setPanStart({clientX:e.clientX,vs,ve});else{setSelStart(mx);setSelEnd(mx);}};
-  const onMouseMove=e=>{if(!chartRef.current)return;const rect=chartRef.current.getBoundingClientRect();const mx=clamp(e.clientX-rect.left-LW,0,chartWidth);if(mode==="pan"&&panStart){const dx=e.clientX-panStart.clientX;const shift=(dx/chartWidth)*dur*-1;let ns=panStart.vs+shift,ne=panStart.ve+shift;if(ns<0){ns=0;ne=ne-ns;}if(ne>7*1440){ne=7*1440;ns=ns-(ne-7*1440);}setVs(clamp(ns,0,7*1440));setVe(clamp(ne,0,7*1440));}else if(mode==="select"&&selStart!==null){setSelEnd(mx);}};
+  const onMouseMove=e=>{if(!chartRef.current)return;const rect=chartRef.current.getBoundingClientRect();const mx=clamp(e.clientX-rect.left-LW,0,chartWidth);if(mode==="pan"&&panStart){const dx=e.clientX-panStart.clientX;const d0=panStart.ve-panStart.vs;const shift=(dx/chartWidth)*d0*-1;let ns=panStart.vs+shift,ne=panStart.ve+shift;if(ns<0){ns=0;ne=d0;}if(ne>7*1440){ne=7*1440;ns=7*1440-d0;}setVs(ns);setVe(ne);}else if(mode==="select"&&selStart!==null){setSelEnd(mx);}};
   const onMouseUp=()=>{if(mode==="pan"){setPanStart(null);}else if(selStart!==null){const a=Math.min(selStart,selEnd||selStart);const b=Math.max(selStart,selEnd||selStart);if(b-a>10){const ns=vs+(a/chartWidth)*dur;const ne=vs+(b/chartWidth)*dur;setVs(ns);setVe(ne);}setSelStart(null);setSelEnd(null);}};
   const onMouseLeave=()=>{setPanStart(null);setSelStart(null);setSelEnd(null);};
   const selX=selStart!==null&&selEnd!==null?Math.min(selStart,selEnd):null;
