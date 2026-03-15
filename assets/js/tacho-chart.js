@@ -311,7 +311,6 @@
         var absMin = di * 1440 + cr.tmin;
         if (absMin < rangeMin || absMin > rangeMax) return;
         var x = px(absMin);
-        if (x < 2 || x > cw - 2) return;
 
         /* Solid vertical line from top of activity band through rest band */
         svgEl.appendChild(mkSVG('line', {

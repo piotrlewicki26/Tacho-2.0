@@ -446,8 +446,11 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                     }
 
                     $noRec = ord($data[$pBase]);   /* noOfUsedPlaceRecords (0–10) */
-                    if ($noRec === 0 || $noRec > 10) {
-                        continue;
+                    if ($noRec === 0) {
+                        continue;   /* No place records for this work period */
+                    }
+                    if ($noRec > 10) {
+                        $noRec = 10;  /* Cap to spec max; don't skip on firmware quirk */
                     }
 
                     for ($ri = 0; $ri < $noRec; $ri++) {
