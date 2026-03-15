@@ -68,10 +68,14 @@ if ($selectedFile) {
          *                have missed crossings; re-try with the current improved parser
          *                (parseBorderCrossings now accepts single crossings and derives the
          *                year window from actual activity dates).  Once the new parse runs,
-         *                result is stored back so subsequent loads skip re-parsing. */
+         *                result is stored back so subsequent loads skip re-parsing.
+         *  - '0'       : upload-time parser found nothing; re-try because the parser may
+         *                have been improved since the file was uploaded.  After the re-parse
+         *                the row is updated to either the actual crossings JSON or '0'
+         *                (confirmed empty by the current parser). */
         $needsCrossings = array_reduce($dbRows, function (bool $carry, array $row): bool {
             $bc = $row['border_crossings'];
-            return $carry || $bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false';
+            return $carry || $bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false' || $bc === '0';
         }, false);
 
         /* Re-parse binary file to backfill border_crossings for rows that need it */
@@ -106,7 +110,7 @@ if ($selectedFile) {
 
                     /* Persist the result so future page loads skip re-parsing.
                      * Store actual JSON array if crossings were found.
-                     * Store JSON 0 ('0') as the "confirmed empty after active re-parse v2"
+                     * Store JSON 0 ('0') as the "confirmed empty after active re-parse"
                      * sentinel – json_decode('0', true) returns 0 which ?: [] gives [] for
                      * the UI.  '0' is NOT in the re-parse trigger list so it prevents
                      * infinite re-parsing for cards that genuinely have no crossings. */
@@ -115,7 +119,7 @@ if ($selectedFile) {
                     );
                     foreach ($dbRows as $r) {
                         $bc = $r['border_crossings'];
-                        if ($bc !== null && $bc !== '[]' && $bc !== 'null' && $bc !== 'false') continue;
+                        if ($bc !== null && $bc !== '[]' && $bc !== 'null' && $bc !== 'false' && $bc !== '0') continue;
                         $crs     = $reparsedCrossings[$r['date']] ?? false;
                         $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
                         $updCross->execute([$newJson, $fileId, $r['date']]);

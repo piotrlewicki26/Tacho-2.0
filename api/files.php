@@ -486,12 +486,13 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $day['dist']  ?? 0,
                             json_encode($day['viol']      ?? []),
                             json_encode($day['segs']      ?? []),
-                            /* Store actual crossings JSON if found, or JSON 0 ('0') as the
-                             * "confirmed empty after upload-time parse" sentinel.
-                             * '0' is NOT in the driver_analysis re-parse trigger list, so
-                             * files with no crossings won't be needlessly re-parsed on every view.
-                             * SQL NULL is only written for rows where the key is entirely absent. */
-                            !empty($day['crossings']) ? json_encode($day['crossings']) : json_encode(0),
+                            /* Store actual crossings JSON if found, or SQL NULL when the
+                             * upload-time parser found nothing.  NULL keeps the row in the
+                             * driver_analysis "needs re-parse" list so the improved parser
+                             * gets a chance to run on first page view.  The sentinel '0'
+                             * (json_encode(0)) is only written by the driver_analysis re-parse
+                             * path once it has confirmed there really are no crossings. */
+                            !empty($day['crossings']) ? json_encode($day['crossings']) : null,
                         ]);
                     }
                 }
