@@ -486,14 +486,49 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $day['dist']  ?? 0,
                             json_encode($day['viol']      ?? []),
                             json_encode($day['segs']      ?? []),
-                            /* Store actual crossings JSON if found, or SQL NULL when the
-                             * upload-time parser found nothing.  NULL keeps the row in the
-                             * driver_analysis "needs re-parse" list so the improved parser
-                             * gets a chance to run on first page view.  The sentinel '0'
-                             * (json_encode(0)) is only written by the driver_analysis re-parse
-                             * path once it has confirmed there really are no crossings. */
+                            /* Store actual crossings JSON if found at upload time,
+                             * or SQL NULL as a placeholder for days where the
+                             * integrated parseDddFile call found nothing.  The NULL
+                             * placeholder is immediately resolved by the backfill
+                             * block below, so driver_analysis is not needed. */
                             !empty($day['crossings']) ? json_encode($day['crossings']) : null,
                         ]);
+                    }
+
+                    /* ── Immediate border-crossings backfill ───────────────────
+                     * Call parseBorderCrossings directly on the saved file to
+                     * resolve any NULL border_crossings rows right here at upload
+                     * time.  This ensures every newly uploaded driver card has
+                     * complete crossing data without requiring a driver_analysis
+                     * page visit first.
+                     *
+                     * Days with crossings already got JSON from the INSERT above
+                     * (parseDddFile's integrated call) and are not touched here
+                     * (WHERE border_crossings IS NULL filter).  Days with no
+                     * crossings receive the '0' sentinel (confirmed empty by the
+                     * current parser). */
+                    $rawDataForBC = file_get_contents($destPath);
+                    if ($rawDataForBC !== false) {
+                        $bcYrs = array_filter(
+                            array_map(fn($d) => (int)substr($d['date'], 0, 4), $actResult['days']),
+                            fn($y) => $y >= 1990
+                        );
+                        if ($bcYrs) {
+                            $bcMin      = max(1990, max(min($bcYrs) - 1, max($bcYrs) - 2));
+                            $bcMax      = max($bcYrs) + 1;
+                            $uploadedBC = parseBorderCrossings($rawDataForBC, $bcMin, $bcMax);
+                            $updBC      = $db->prepare(
+                                'UPDATE ddd_activity_days SET border_crossings=?
+                                  WHERE file_id=? AND date=? AND border_crossings IS NULL'
+                            );
+                            foreach ($actResult['days'] as $day) {
+                                $crs     = $uploadedBC[$day['date']] ?? false;
+                                $newJson = ($crs !== false && !empty($crs))
+                                           ? json_encode($crs)
+                                           : json_encode(0);
+                                $updBC->execute([$newJson, $newFileId, $day['date']]);
+                            }
+                        }
                     }
                 }
             }
