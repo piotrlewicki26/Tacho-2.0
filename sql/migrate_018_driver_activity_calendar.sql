@@ -39,47 +39,54 @@ CREATE TABLE IF NOT EXISTS `driver_activity_calendar` (
 -- For each (driver_id, date) we take the row with the most activity data
 -- (highest drive_min + work_min) from all non-deleted driver DDD files.
 -- ON DUPLICATE KEY UPDATE keeps the row with more total activity minutes.
+-- The SELECT is wrapped in a derived table (alias nr) so that the new-row
+-- values can be referenced as nr.col without ambiguity (MySQL 8.0.20+
+-- deprecated the VALUES() function in ON DUPLICATE KEY UPDATE).
 INSERT INTO `driver_activity_calendar`
   (company_id, driver_id, date, drive_min, work_min, avail_min, rest_min,
    dist_km, violations, segments, border_crossings, source_file_id)
-SELECT
-  f.company_id,
-  f.driver_id,
-  d.date,
-  d.drive_min,
-  d.work_min,
-  d.avail_min,
-  d.rest_min,
-  d.dist_km,
-  d.violations,
-  d.segments,
-  d.border_crossings,
-  d.file_id
-FROM `ddd_activity_days` d
-JOIN `ddd_files` f ON f.id = d.file_id
-WHERE f.file_type = 'driver'
-  AND f.driver_id IS NOT NULL
-  AND f.is_deleted = 0
-ORDER BY (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC
+SELECT company_id, driver_id, date, drive_min, work_min, avail_min, rest_min,
+       dist_km, violations, segments, border_crossings, source_file_id
+FROM (
+  SELECT
+    f.company_id,
+    f.driver_id,
+    d.date,
+    d.drive_min,
+    d.work_min,
+    d.avail_min,
+    d.rest_min,
+    d.dist_km,
+    d.violations,
+    d.segments,
+    d.border_crossings,
+    d.file_id AS source_file_id
+  FROM `ddd_activity_days` d
+  JOIN `ddd_files` f ON f.id = d.file_id
+  WHERE f.file_type = 'driver'
+    AND f.driver_id IS NOT NULL
+    AND f.is_deleted = 0
+  ORDER BY (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC
+) AS nr
 ON DUPLICATE KEY UPDATE
-  drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+  drive_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                         > drive_min+work_min+avail_min+rest_min,
-                        VALUES(drive_min),  drive_min),
-  work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                        nr.drive_min,  drive_min),
+  work_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                         > drive_min+work_min+avail_min+rest_min,
-                        VALUES(work_min),   work_min),
-  avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                        nr.work_min,   work_min),
+  avail_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                         > drive_min+work_min+avail_min+rest_min,
-                        VALUES(avail_min),  avail_min),
-  rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                        nr.avail_min,  avail_min),
+  rest_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                         > drive_min+work_min+avail_min+rest_min,
-                        VALUES(rest_min),   rest_min),
-  dist_km          = GREATEST(dist_km, VALUES(dist_km)),
-  violations       = IF(VALUES(violations) IS NOT NULL AND VALUES(violations) != '[]',
-                        VALUES(violations),       violations),
-  segments         = IF(VALUES(segments)  IS NOT NULL AND VALUES(segments)  != '[]',
-                        VALUES(segments),          segments),
-  border_crossings = IF(VALUES(border_crossings) IS NOT NULL
-                        AND VALUES(border_crossings) NOT IN ('0','[]','null','false'),
-                        VALUES(border_crossings),  border_crossings),
-  source_file_id   = VALUES(source_file_id);
+                        nr.rest_min,   rest_min),
+  dist_km          = GREATEST(dist_km, nr.dist_km),
+  violations       = IF(nr.violations IS NOT NULL AND nr.violations != '[]',
+                        nr.violations,       violations),
+  segments         = IF(nr.segments   IS NOT NULL AND nr.segments   != '[]',
+                        nr.segments,          segments),
+  border_crossings = IF(nr.border_crossings IS NOT NULL
+                        AND nr.border_crossings NOT IN ('0','[]','null','false'),
+                        nr.border_crossings,  border_crossings),
+  source_file_id   = nr.source_file_id;
