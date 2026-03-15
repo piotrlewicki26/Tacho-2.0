@@ -217,6 +217,43 @@ CREATE TABLE IF NOT EXISTS `ddd_activity_days` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ─────────────────────────────────────────────
+-- Driver Activity Calendar
+-- Continuous per-driver per-day timeline built by merging every uploaded
+-- DDD file for that driver.  Keyed by (driver_id, date) so subsequent
+-- file uploads update existing rows rather than duplicating them.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS `driver_activity_calendar` (
+  `id`               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `company_id`       INT UNSIGNED NOT NULL,
+  `driver_id`        INT UNSIGNED NOT NULL,
+  `date`             DATE         NOT NULL,
+  `drive_min`        SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total driving minutes (activity=3)',
+  `work_min`         SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total work/other-work minutes (activity=2)',
+  `avail_min`        SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total availability minutes (activity=1)',
+  `rest_min`         SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Total rest minutes (activity=0)',
+  `dist_km`          SMALLINT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Distance in km',
+  `violations`       JSON DEFAULT NULL
+    COMMENT 'EU regulation violation list for this day',
+  `segments`         JSON DEFAULT NULL
+    COMMENT 'Array of {act,start,end,dur} slot objects for timeline rendering',
+  `border_crossings` JSON DEFAULT NULL
+    COMMENT 'Array of {ts,tmin,type,country} border-crossing records',
+  `source_file_id`   INT UNSIGNED DEFAULT NULL
+    COMMENT 'Most recent ddd_files.id that contributed data for this day',
+  `updated_at`       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_driver_date (`driver_id`, `date`),
+  INDEX idx_driver_date (`driver_id`, `date`),
+  INDEX idx_company_driver (`company_id`, `driver_id`),
+  FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`driver_id`)  REFERENCES `drivers`(`id`)  ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─────────────────────────────────────────────
 -- Delegations
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `delegations` (

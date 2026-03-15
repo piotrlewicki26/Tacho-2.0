@@ -530,6 +530,75 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         }
                     }
+
+                    /* ── Upsert into driver_activity_calendar ──────────────────
+                     * Build a continuous per-driver activity calendar that
+                     * accumulates data from every uploaded DDD card.
+                     * When the same date already exists for this driver we keep
+                     * whichever record has more total activity minutes (more
+                     * complete data wins).  Border crossings, violations and
+                     * segments are also updated when the new file has richer
+                     * data. */
+                    if ($linkedDriverId) {
+                        // Reload the freshly-written ddd_activity_days rows so
+                        // we include the resolved border_crossings values.
+                        $calRows = $db->prepare(
+                            'SELECT date, drive_min, work_min, avail_min, rest_min,
+                                    dist_km, violations, segments, border_crossings
+                             FROM ddd_activity_days WHERE file_id=? ORDER BY date'
+                        );
+                        $calRows->execute([$newFileId]);
+                        $calData = $calRows->fetchAll(\PDO::FETCH_ASSOC);
+
+                        $upsertCal = $db->prepare(
+                            'INSERT INTO driver_activity_calendar
+                               (company_id, driver_id, date, drive_min, work_min, avail_min,
+                                rest_min, dist_km, violations, segments, border_crossings,
+                                source_file_id)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                             ON DUPLICATE KEY UPDATE
+                               drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     > drive_min+work_min+avail_min+rest_min,
+                                                     VALUES(drive_min), drive_min),
+                               work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     > drive_min+work_min+avail_min+rest_min,
+                                                     VALUES(work_min), work_min),
+                               avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     > drive_min+work_min+avail_min+rest_min,
+                                                     VALUES(avail_min), avail_min),
+                               rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     > drive_min+work_min+avail_min+rest_min,
+                                                     VALUES(rest_min), rest_min),
+                               dist_km          = GREATEST(dist_km, VALUES(dist_km)),
+                               violations       = IF(VALUES(violations) IS NOT NULL
+                                                     AND VALUES(violations) != \'[]\',
+                                                     VALUES(violations), violations),
+                               segments         = IF(VALUES(segments) IS NOT NULL
+                                                     AND VALUES(segments) != \'[]\',
+                                                     VALUES(segments), segments),
+                               border_crossings = IF(VALUES(border_crossings) IS NOT NULL
+                                                     AND VALUES(border_crossings) NOT IN (\'0\',\'[]\',\'null\',\'false\'),
+                                                     VALUES(border_crossings), border_crossings),
+                               source_file_id   = VALUES(source_file_id)'
+                        );
+
+                        foreach ($calData as $row) {
+                            $upsertCal->execute([
+                                $companyId,
+                                $linkedDriverId,
+                                $row['date'],
+                                (int)$row['drive_min'],
+                                (int)$row['work_min'],
+                                (int)$row['avail_min'],
+                                (int)$row['rest_min'],
+                                (int)$row['dist_km'],
+                                $row['violations']       ?? json_encode([]),
+                                $row['segments']         ?? json_encode([]),
+                                $row['border_crossings'] ?? null,
+                                $newFileId,
+                            ]);
+                        }
+                    }
                 }
             }
         } catch (Throwable $actErr) {

@@ -133,6 +133,12 @@ $_hdrPlanLabel = match($_hdrPlan) {
       </a>
     </li>
 
+    <li class="tp-nav-item<?= ($activePage??'')==='driver_calendar' ? ' active':'' ?>">
+      <a href="/modules/driver_calendar/" class="tp-nav-link">
+        <i class="bi bi-calendar3"></i><span>Kalendarz kierowcy</span>
+      </a>
+    </li>
+
     <li class="tp-nav-item<?= ($activePage??'')==='vehicle_analysis' ? ' active':'' ?>">
       <a href="/modules/vehicle_analysis/" class="tp-nav-link">
         <i class="bi bi-truck-front"></i><span>Analiza pojazdów</span>
