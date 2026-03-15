@@ -463,7 +463,18 @@ function parseDddFile(string $path): array {
     $days = array_values($days);
 
     /* ── Border crossings (EF_CardPlacesOfDailyWorkPeriod 0x0522) ─── */
-    $bcrossings = parseBorderCrossings($data, $yrMin, $yrMax);
+    /* Derive year window from actual activity data dates so crossings are
+     * not missed when the card contains data outside the default ±3-year
+     * window (e.g. old files or files downloaded near the year boundary). */
+    if ($days) {
+        $actYears  = array_map(fn($d) => (int)substr($d['date'], 0, 4), $days);
+        $bcYrMin   = max(1990, min($actYears) - 1);
+        $bcYrMax   = max($actYears) + 1;
+    } else {
+        $bcYrMin = $yrMin;
+        $bcYrMax = $yrMax;
+    }
+    $bcrossings = parseBorderCrossings($data, $bcYrMin, $bcYrMax);
     foreach ($days as &$day) {
         $day['crossings'] = $bcrossings[$day['date']] ?? [];
     }
@@ -729,9 +740,11 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             $hits[$date][] = ['ts' => $ts, 'tmin' => $tmin, 'type' => $type, 'country' => $country];
         }
 
-        /* Require at least 2 crossing records total to reduce false positives */
+        /* Allow a single crossing record – a driver may cross only one border
+         * during the 28-day card window.  Deduplication still runs to collapse
+         * spurious repeated hits at the same (date, tmin, country). */
         $totalHits = array_sum(array_map('count', $hits));
-        if ($totalHits >= 2) {
+        if ($totalHits >= 1) {
             /* Deduplicate: keep unique (date, tmin, country) triples per day */
             $deduped = [];
             foreach ($hits as $date => $recs) {

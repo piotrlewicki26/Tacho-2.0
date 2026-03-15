@@ -210,11 +210,6 @@ $_hdrPlanLabel = match($_hdrPlan) {
         <i class="bi bi-shield-lock-fill"></i><span>Panel zarządzania</span>
       </a>
     </li>
-    <li class="tp-nav-item<?= ($activePage??'')==='ddd_parser' ? ' active':'' ?>">
-      <a href="/modules/ddd_parser/" class="tp-nav-link" style="color:#ef4444">
-        <i class="bi bi-cpu"></i><span>Parser DDD</span>
-      </a>
-    </li>
     <?php endif; ?>
 
   </ul>

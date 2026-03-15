@@ -62,14 +62,16 @@ if ($selectedFile) {
     if ($dbRows) {
         /* Trigger re-parse when:
          *  - SQL NULL  : row was never parsed (new upload or DB had no value)
-         *  - 'null'    : JSON null written by older code as "confirmed empty" – re-try in case
-         *                parser has been fixed since the file was first uploaded
+         *  - 'null'    : JSON null written by older code – re-try in case parser was fixed
          *  - '[]'      : stale empty written by an even older parser version
-         * Do NOT re-parse when border_crossings is a real JSON array or 'false'
-         * (JSON false = explicitly confirmed empty after an active re-parse attempt). */
+         *  - 'false'   : "confirmed empty" sentinel written by an older parser that may
+         *                have missed crossings; re-try with the current improved parser
+         *                (parseBorderCrossings now accepts single crossings and derives the
+         *                year window from actual activity dates).  Once the new parse runs,
+         *                result is stored back so subsequent loads skip re-parsing. */
         $needsCrossings = array_reduce($dbRows, function (bool $carry, array $row): bool {
             $bc = $row['border_crossings'];
-            return $carry || $bc === null || $bc === '[]' || $bc === 'null';
+            return $carry || $bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false';
         }, false);
 
         /* Re-parse binary file to backfill border_crossings for rows that need it */
@@ -99,18 +101,18 @@ if ($selectedFile) {
 
                     /* Persist the result so future page loads skip re-parsing.
                      * Store actual JSON array if crossings were found.
-                     * Store JSON false ('false') as the "confirmed empty after active re-parse"
-                     * sentinel. json_decode('false',true) returns PHP false which ?: [] gives []
-                     * for the UI. Crucially 'false' is NOT in the trigger list above, so this
-                     * prevents infinite re-parsing for cards that genuinely have no crossings. */
+                     * Store JSON 0 ('0') as the "confirmed empty after active re-parse v2"
+                     * sentinel – json_decode('0', true) returns 0 which ?: [] gives [] for
+                     * the UI.  '0' is NOT in the re-parse trigger list so it prevents
+                     * infinite re-parsing for cards that genuinely have no crossings. */
                     $updCross = $db->prepare(
                         'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
                     );
                     foreach ($dbRows as $r) {
                         $bc = $r['border_crossings'];
-                        if ($bc !== null && $bc !== '[]' && $bc !== 'null') continue;
+                        if ($bc !== null && $bc !== '[]' && $bc !== 'null' && $bc !== 'false') continue;
                         $crs     = $reparsedCrossings[$r['date']] ?? false;
-                        $newJson = $crs !== false ? json_encode($crs) : json_encode(false);
+                        $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
                         $updCross->execute([$newJson, $fileId, $r['date']]);
                     }
                 }
