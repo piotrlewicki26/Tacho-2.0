@@ -90,11 +90,85 @@ if ($driverId) {
                  ORDER BY date ASC'
             );
             $rows->execute([$driverId, $dateFrom, $dateTo]);
-            foreach ($rows->fetchAll() as $row) {
+            $rawRows = $rows->fetchAll();
+
+            /* ── Re-parse border crossings for stale/null rows ─────────
+             * Group rows that need re-parsing by source_file_id, then
+             * run parseBorderCrossings once per file and update both
+             * ddd_activity_days and driver_activity_calendar so future
+             * loads skip re-parsing. */
+            $needsReparse = [];   // source_file_id => [date => true]
+            foreach ($rawRows as $r) {
+                $bc = $r['border_crossings'];
+                if ($bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false' || $bc === '0') {
+                    $fid = (int)($r['source_file_id'] ?? 0);
+                    if ($fid) {
+                        $needsReparse[$fid][$r['date']] = true;
+                    }
+                }
+            }
+
+            $reparsedByFile = [];   // file_id => [date => crossings_array]
+            if ($needsReparse) {
+                $fileStmt = $db->prepare(
+                    "SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0"
+                );
+                foreach (array_keys($needsReparse) as $fid) {
+                    $fileStmt->execute([$fid, $companyId]);
+                    $fRow = $fileStmt->fetch();
+                    if (!$fRow) continue;
+                    $fp = dddPhysPath($fRow, $companyId);
+                    if (!is_file($fp)) continue;
+                    $rawData = file_get_contents($fp);
+                    if ($rawData === false) continue;
+
+                    /* Derive year window from dates in the re-parse set */
+                    $reparseDates = array_keys($needsReparse[$fid]);
+                    $reYears = array_filter(
+                        array_map(fn($d) => (int)substr($d, 0, 4), $reparseDates),
+                        fn($y) => $y >= 1990
+                    );
+                    if ($reYears) {
+                        $reYrMin = max(1990, max(min($reYears) - 1, max($reYears) - 2));
+                        $reYrMax = max($reYears) + 1;
+                    } else {
+                        $cy      = (int)gmdate('Y');
+                        $reYrMin = $cy - 5;
+                        $reYrMax = $cy + 1;
+                    }
+                    $crossingsForFile = parseBorderCrossings($rawData, $reYrMin, $reYrMax);
+                    $reparsedByFile[$fid] = $crossingsForFile;
+
+                    /* Persist back to ddd_activity_days and driver_activity_calendar */
+                    $updDays = $db->prepare(
+                        'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
+                    );
+                    $updCal  = $db->prepare(
+                        'UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?'
+                    );
+                    foreach (array_keys($needsReparse[$fid]) as $d) {
+                        $crs     = $crossingsForFile[$d] ?? false;
+                        $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
+                        $updDays->execute([$newJson, $fid, $d]);
+                        $updCal->execute([
+                            $crs !== false ? json_encode($crs) : null,
+                            $driverId,
+                            $d,
+                        ]);
+                    }
+                }
+            }
+
+            foreach ($rawRows as $row) {
                 $viols    = json_decode($row['violations']        ?? '[]', true) ?: [];
                 $segs     = json_decode($row['segments']          ?? '[]', true) ?: [];
                 $crossings= json_decode($row['border_crossings']  ?? '[]', true) ?: [];
                 if (is_int($crossings)) $crossings = [];   // sentinel '0'
+                /* Merge freshly re-parsed crossings if DB had none */
+                $fid = (int)($row['source_file_id'] ?? 0);
+                if (empty($crossings) && $fid && isset($reparsedByFile[$fid][$row['date']])) {
+                    $crossings = $reparsedByFile[$fid][$row['date']];
+                }
 
                 $calDays[$row['date']] = [
                     'date'      => $row['date'],

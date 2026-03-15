@@ -227,6 +227,18 @@ if ($selectedFile) {
     }
 }
 
+// ── Timeline date range filter ────────────────────────────────
+$tlFrom = isset($_GET['tl_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_from']) ? $_GET['tl_from'] : '';
+$tlTo   = isset($_GET['tl_to'])   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_to'])   ? $_GET['tl_to']   : '';
+if ($tlFrom && $tlTo && $tlFrom > $tlTo) [$tlFrom, $tlTo] = [$tlTo, $tlFrom];
+
+$filteredChartDays = $chartDays;
+if ($tlFrom || $tlTo) {
+    $filteredChartDays = array_values(array_filter($chartDays, function ($d) use ($tlFrom, $tlTo) {
+        return (!$tlFrom || $d['date'] >= $tlFrom) && (!$tlTo || $d['date'] <= $tlTo);
+    }));
+}
+
 $pageTitle  = 'Analiza czasu pracy kierowcy';
 $activePage = 'driver_analysis';
 
@@ -345,15 +357,37 @@ include __DIR__ . '/../../templates/header.php';
   <div class="tp-card-header">
     <i class="bi bi-activity text-primary"></i>
     <span class="tp-card-title">Oś czasu aktywności tachografu</span>
-    <span class="badge bg-secondary ms-2"><?= count($days) ?> dni</span>
+    <span class="badge bg-secondary ms-2"><?= count($filteredChartDays) ?> dni</span>
   </div>
   <div class="tp-card-body">
+    <!-- Date range selector for the timeline -->
+    <form method="GET" class="d-flex gap-2 mb-3 align-items-end flex-wrap" novalidate>
+      <input type="hidden" name="driver_id" value="<?= $driverId ?>">
+      <input type="hidden" name="file_id"   value="<?= $fileId ?>">
+      <div>
+        <label class="form-label fw-600 mb-1 small">Od</label>
+        <input type="date" name="tl_from" class="form-control form-control-sm"
+               value="<?= e($tlFrom ?: ($chartDays ? $chartDays[0]['date'] : '')) ?>">
+      </div>
+      <div>
+        <label class="form-label fw-600 mb-1 small">Do</label>
+        <input type="date" name="tl_to" class="form-control form-control-sm"
+               value="<?= e($tlTo ?: ($chartDays ? end($chartDays)['date'] : '')) ?>">
+      </div>
+      <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-funnel me-1"></i>Filtruj
+      </button>
+      <?php if ($tlFrom || $tlTo): ?>
+      <a href="?driver_id=<?= $driverId ?>&amp;file_id=<?= $fileId ?>"
+         class="btn btn-sm btn-outline-secondary">Resetuj</a>
+      <?php endif; ?>
+    </form>
     <div id="tachoTimeline" style="width:100%;overflow-x:auto;"></div>
   </div>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  var days = <?= json_encode($chartDays, JSON_UNESCAPED_UNICODE) ?>;
+  var days = <?= json_encode($filteredChartDays, JSON_UNESCAPED_UNICODE) ?>;
   if (window.TachoChart) TachoChart.render('tachoTimeline', days);
 });
 </script>
