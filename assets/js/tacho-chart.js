@@ -504,6 +504,91 @@
     var selLabelTxt = mkSVG('text', {x:0, y:T1Y-11, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none', visibility:'hidden'});
     svgEl.appendChild(selRect); svgEl.appendChild(selLabelBg); svgEl.appendChild(selLabelTxt);
 
+    /* Inline zoom panel – shown in-place when user drag-selects a range */
+    var inlineZoom = document.createElement('div');
+    inlineZoom.style.cssText = 'display:none;border-top:2px solid #1E88E5;font-family:Inter,sans-serif;';
+
+    function clearInlineZoom() {
+      inlineZoom.style.display = 'none';
+      inlineZoom.innerHTML = '';
+      selRect.setAttribute('visibility','hidden');
+      selLabelBg.setAttribute('visibility','hidden');
+      selLabelTxt.setAttribute('visibility','hidden');
+    }
+
+    function buildInlineZoom(startMin, endMin) {
+      var dur = endMin - startMin;
+      var startD = addD(weekStart, Math.floor(startMin / 1440));
+      var endD   = addD(weekStart, Math.floor(endMin / 1440));
+      var startT = hhmm(startMin % 1440), endT = hhmm(endMin % 1440);
+      var isFullDay = (dur === 1440 && startMin % 1440 === 0);
+
+      /* Activity totals within selection */
+      var selTotals = {0:0,1:0,2:0,3:0};
+      weekDays.forEach(function(day, di) {
+        if (!day || !day.segs) return;
+        var base = di * 1440;
+        day.segs.forEach(function(s) {
+          var absS = base+s.start, absE = base+s.end;
+          var iS = Math.max(absS, startMin), iE = Math.min(absE, endMin);
+          if (iE > iS) selTotals[s.act] = (selTotals[s.act]||0) + (iE-iS);
+        });
+      });
+
+      inlineZoom.innerHTML = '';
+
+      /* Info bar */
+      var infoBar = document.createElement('div');
+      infoBar.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 12px;background:#1E88E5;';
+      var titlePart = document.createElement('span');
+      titlePart.style.cssText = 'font-size:14px;font-weight:700;color:#fff;white-space:nowrap;';
+      titlePart.textContent = isFullDay
+        ? ('Widok dnia \u2014 '+fmtDate(startD))
+        : 'Powi\u0119kszony fragment';
+      var rangePart = document.createElement('span');
+      rangePart.style.cssText = 'font-size:13px;color:rgba(255,255,255,0.85);';
+      rangePart.innerHTML = fmtDate(startD)+' <b>'+startT+'</b> \u2192 '+fmtDate(endD)+' <b>'+endT+'</b>';
+      var durBadge = document.createElement('span');
+      durBadge.style.cssText = 'background:rgba(255,255,255,0.25);border-radius:4px;padding:2px 10px;font-size:14px;font-weight:700;color:#fff;white-space:nowrap;';
+      durBadge.textContent = hm(dur);
+      var closeBtn2 = document.createElement('button');
+      closeBtn2.type = 'button'; closeBtn2.textContent = '\u00D7 Zamknij';
+      closeBtn2.style.cssText = 'margin-left:auto;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:3px 10px;font-size:13px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;font-weight:600;white-space:nowrap;';
+      closeBtn2.addEventListener('click', clearInlineZoom);
+      infoBar.appendChild(titlePart); infoBar.appendChild(rangePart);
+      infoBar.appendChild(durBadge); infoBar.appendChild(closeBtn2);
+      inlineZoom.appendChild(infoBar);
+
+      /* Zoomed SVG row */
+      var zRow = document.createElement('div');
+      zRow.style.cssText = 'display:flex;align-items:stretch;background:#FFF;border-bottom:1px solid #BBDEFB;';
+      var zSb = document.createElement('div');
+      zSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
+      zSb.innerHTML = '<div style="font-size:12px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay?'DZIE\u0143':'ZOOM')+'</div>'+
+        '<div style="font-size:12px;color:#5A6070;">'+(isFullDay?fmtDate(startD):hm(dur))+'</div>';
+      var zSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
+      fillChartSVG(zSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols);
+      zRow.appendChild(zSb); zRow.appendChild(zSvg);
+      inlineZoom.appendChild(zRow);
+
+      /* Activity breakdown */
+      var breakdown = document.createElement('div');
+      breakdown.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px;background:#fff;border-top:1px solid #BBDEFB;';
+      [3,2,1,0].forEach(function(k) {
+        var val = selTotals[k]||0;
+        var card = document.createElement('div');
+        card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:5px 10px;background:#F8FBFF;';
+        card.innerHTML = '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>'+
+          '<span style="font-size:13px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+
+          ' <span style="color:#9AA0AA;font-size:12px;">('+pct(val,dur)+'%)</span></span>';
+        breakdown.appendChild(card);
+      });
+      inlineZoom.appendChild(breakdown);
+
+      inlineZoom.style.display = 'block';
+      inlineZoom.scrollIntoView({behavior:'smooth', block:'nearest'});
+    }
+
     /* Selection drag interaction */
     svgEl.addEventListener('mousedown', function(e) {
       if (e.button!==0) return; e.preventDefault();
@@ -513,6 +598,8 @@
         selRect.setAttribute('visibility','hidden');
         selLabelBg.setAttribute('visibility','hidden');
         selLabelTxt.setAttribute('visibility','hidden');
+        inlineZoom.style.display = 'none';
+        inlineZoom.innerHTML = '';
       };
       var startX = Math.max(0, Math.min(cw, e.clientX - svgEl.getBoundingClientRect().left));
 
@@ -535,12 +622,13 @@
           selRect.setAttribute('visibility','hidden'); selLabelBg.setAttribute('visibility','hidden'); selLabelTxt.setAttribute('visibility','hidden'); return;
         }
         var startMin=Math.round((x1/cw)*TOTAL_MIN), endMin=Math.round((x2/cw)*TOTAL_MIN);
-        if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:startMin, endMin:endMin});
+        buildInlineZoom(startMin, endMin);
       }
       document.addEventListener('mousemove',onMove); document.addEventListener('mouseup',onUp);
     });
 
     mainRow.appendChild(sb); mainRow.appendChild(svgEl); wrapper.appendChild(mainRow);
+    wrapper.appendChild(inlineZoom);
 
     /* Footer */
     var footer=document.createElement('div');
@@ -1184,7 +1272,7 @@
     });
     var stLg = document.createElement('div');
     stLg.style.cssText = 'margin-left:auto;font-size:12px;color:#9AA0AA;white-space:nowrap;';
-    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
+    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie (inline) | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
@@ -1192,7 +1280,7 @@
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
     hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:12px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
-      '<div style="flex:1;padding:5px 12px;font-size:11px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
+      '<div style="flex:1;padding:5px 12px;font-size:11px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment (inline) | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
     container.appendChild(hdr);
 
     /* Chart area */
@@ -1216,8 +1304,6 @@
             var d = addD(info.weekStart, Math.floor(info.startMin / 1440));
             var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
             showDayModal(dateStr, daysData);
-          } else {
-            showRangeModal(info);
           }
         });
       });
