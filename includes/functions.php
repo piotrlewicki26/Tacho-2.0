@@ -947,3 +947,79 @@ function parseVehicleDdd(string $path): array {
     ksort($days);
     return ['days' => array_values($days), 'summary' => $summary];
 }
+
+/**
+ * Backfill driver_activity_calendar for a specific driver by copying data
+ * from ddd_activity_days (joined with ddd_files).  Only runs when the calendar
+ * table has no rows for this driver, so it is safe to call on every page load.
+ *
+ * @param  \PDO $db
+ * @param  int  $companyId
+ * @param  int  $driverId
+ * @return int  Number of rows inserted/updated (0 if calendar already has data)
+ */
+function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId): int
+{
+    if (!$driverId) return 0;
+
+    // Fast check – skip backfill if we already have any row for this driver
+    $existing = $db->prepare(
+        'SELECT 1 FROM driver_activity_calendar WHERE driver_id=? LIMIT 1'
+    );
+    $existing->execute([$driverId]);
+    if ($existing->fetchColumn() !== false) return 0;
+
+    // Count available source rows
+    $countStmt = $db->prepare(
+        "SELECT COUNT(*) FROM ddd_activity_days d
+         JOIN ddd_files f ON f.id = d.file_id
+         WHERE f.company_id=? AND f.driver_id=?
+           AND f.file_type='driver' AND f.is_deleted=0"
+    );
+    $countStmt->execute([$companyId, $driverId]);
+    if ((int)$countStmt->fetchColumn() === 0) return 0;
+
+    // Run the backfill (identical to the INSERT in migrate_018, scoped to one driver)
+    $db->prepare(
+        "INSERT INTO driver_activity_calendar
+           (company_id, driver_id, date, drive_min, work_min, avail_min, rest_min,
+            dist_km, violations, segments, border_crossings, source_file_id)
+         SELECT f.company_id, f.driver_id, d.date,
+                d.drive_min, d.work_min, d.avail_min, d.rest_min,
+                d.dist_km, d.violations, d.segments, d.border_crossings, d.file_id
+         FROM ddd_activity_days d
+         JOIN ddd_files f ON f.id = d.file_id
+         WHERE f.company_id=? AND f.driver_id=?
+           AND f.file_type='driver' AND f.is_deleted=0
+         ORDER BY (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC
+         ON DUPLICATE KEY UPDATE
+           drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                 > drive_min+work_min+avail_min+rest_min,
+                                 VALUES(drive_min), drive_min),
+           work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                 > drive_min+work_min+avail_min+rest_min,
+                                 VALUES(work_min), work_min),
+           avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                 > drive_min+work_min+avail_min+rest_min,
+                                 VALUES(avail_min), avail_min),
+           rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                 > drive_min+work_min+avail_min+rest_min,
+                                 VALUES(rest_min), rest_min),
+           dist_km          = GREATEST(dist_km, VALUES(dist_km)),
+           violations       = IF(VALUES(violations) IS NOT NULL AND VALUES(violations) != '[]',
+                                 VALUES(violations), violations),
+           segments         = IF(VALUES(segments)   IS NOT NULL AND VALUES(segments)   != '[]',
+                                 VALUES(segments),   segments),
+           border_crossings = IF(VALUES(border_crossings) IS NOT NULL
+                                 AND VALUES(border_crossings) NOT IN ('0','[]','null','false'),
+                                 VALUES(border_crossings), border_crossings),
+           source_file_id   = VALUES(source_file_id)"
+    )->execute([$companyId, $driverId]);
+
+    // Return the number of rows now in the calendar for this driver
+    $check = $db->prepare(
+        'SELECT COUNT(*) FROM driver_activity_calendar WHERE driver_id=?'
+    );
+    $check->execute([$driverId]);
+    return (int)$check->fetchColumn();
+}

@@ -133,6 +133,9 @@ if ($action === 'profile' && $editDriver) {
     $chartFrom = (new DateTime('today'))->modify('-28 days')->format('Y-m-d');
     $chartTo   = (new DateTime('today'))->format('Y-m-d');
     try {
+        // Auto-backfill calendar from ddd_activity_days when calendar is empty
+        backfillDriverActivityCalendar($db, $companyId, $driverId);
+
         $chartStmt = $db->prepare(
             'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
              FROM driver_activity_calendar

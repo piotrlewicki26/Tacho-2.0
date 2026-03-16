@@ -81,6 +81,13 @@ if ($driverId) {
     $driverInfo = $dStmt->fetch();
 
     if ($driverInfo) {
+        // Auto-backfill calendar from ddd_activity_days when calendar is empty
+        try {
+            backfillDriverActivityCalendar($db, $companyId, $driverId);
+        } catch (Throwable $bfErr) {
+            error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
+        }
+
         try {
             $rows = $db->prepare(
                 'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km,
@@ -344,6 +351,31 @@ include __DIR__ . '/../../templates/header.php';
 <!-- ══════════════════════════════════════════════
      CALENDAR VIEW
      ══════════════════════════════════════════════ -->
+
+<!-- SVG Activity Timeline (last 4 weeks) -->
+<?php
+$last4wFrom = (new DateTime())->modify('-28 days')->format('Y-m-d');
+$timelineDays = array_values(array_filter($chartDays, fn($d) => $d['date'] >= $last4wFrom));
+?>
+<?php if ($timelineDays): ?>
+<div class="tp-card mb-4">
+  <div class="tp-card-header">
+    <i class="bi bi-activity text-primary"></i>
+    <span class="tp-card-title">Oś czasu aktywności tachografu</span>
+    <span class="badge bg-secondary ms-2">ostatnie 4 tygodnie</span>
+  </div>
+  <div class="tp-card-body p-3">
+    <div id="calTachoTimeline" style="width:100%;overflow-x:auto;"></div>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var days = <?= json_encode($timelineDays, JSON_UNESCAPED_UNICODE) ?>;
+  if (days.length && window.TachoChart) TachoChart.render('calTachoTimeline', days);
+});
+</script>
+<?php endif; ?>
+
 <div class="tp-card mb-4">
   <div class="tp-card-header">
     <i class="bi bi-calendar3 text-primary"></i>
