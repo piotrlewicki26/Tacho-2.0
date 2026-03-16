@@ -177,9 +177,15 @@
         setTimeout(() => {
           const bsModal = bootstrap.Modal.getInstance(document.getElementById('dddUploadModal'));
           bsModal?.hide();
-          // After uploading a driver card, redirect to the driver calendar for that driver
+          // After uploading a driver card, redirect to the driver calendar for that driver.
+          // Include the file's data period so the calendar opens on the correct date range
+          // and the user immediately sees the newly parsed activity data.
           if (data.driver_id && fileTypeEl.value === 'driver') {
-            window.location.href = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=timeline';
+            let url = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=calendar';
+            if (data.period_start && data.period_end) {
+              url += '&from=' + encodeURIComponent(data.period_start) + '&to=' + encodeURIComponent(data.period_end);
+            }
+            window.location.href = url;
           } else if (window.location.pathname === '/files.php') {
             window.location.reload();
           }

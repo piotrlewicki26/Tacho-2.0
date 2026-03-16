@@ -995,6 +995,171 @@ function parseVehicleDdd(string $path): array {
 }
 
 /**
+ * Parse EF_CardVehiclesUsed records from a driver-card DDD binary blob.
+ *
+ * EU Regulation 165/2014 Annex IC – EF_CardVehiclesUsed structure:
+ *   TLV tag (2 bytes) + length (2 bytes big-endian) + value:
+ *     noOfVehicleUsed:          WORD (2 bytes)
+ *     vehiclePointerNewestRecord: WORD (2 bytes)
+ *     cardVehicleRecord[]:
+ *       vehicleRegistrationNation: nationNumeric (1 byte) + nationAlpha (3 bytes)
+ *       vehicleRegistrationNumber: codePage (1 byte) + regNumber (13 bytes)
+ *       vehicleFirstUse:  TimeReal (4 bytes big-endian Unix timestamp)
+ *       vehicleLastUse:   TimeReal (4 bytes big-endian Unix timestamp)
+ *       vehicleOdometerBegin: OdometerShort (3 bytes big-endian, km)
+ *       vehicleOdometerEnd:   OdometerShort (3 bytes big-endian, km)
+ *       = 32 bytes per record
+ *
+ * Tries common TLV tags 0x0504, 0x0528 and validates all records before
+ * accepting a block.  Falls back to a whole-file scan when no TLV block
+ * passes validation.
+ *
+ * @return array[] List of vehicle usage records sorted by first_use date:
+ *   ['reg','nation','first_use','last_use','odo_begin','odo_end','distance']
+ */
+function parseDriverCardVehicles(string $data): array
+{
+    $len = strlen($data);
+    if ($len < 40) return [];
+
+    $curYear = (int)gmdate('Y');
+    $tsMin   = mktime(0, 0, 0, 1, 1, $curYear - 6);
+    $tsMax   = time() + 90 * 86400;
+
+    /* NationNumeric → EU plate code (same table as parseBorderCrossings) */
+    static $nationCodes = [
+         1 => 'A',    2 => 'AL',   3 => 'AND',  4 => 'ARM',  5 => 'AZ',
+         6 => 'B',    7 => 'BG',   8 => 'BIH',  9 => 'BY',  10 => 'CH',
+        11 => 'CY',  12 => 'CZ',  13 => 'D',   14 => 'DK',  15 => 'E',
+        16 => 'EST', 17 => 'F',   18 => 'FIN', 19 => 'FL',  20 => 'FO',
+        21 => 'GB',  22 => 'GE',  23 => 'GR',  24 => 'H',   25 => 'HR',
+        26 => 'I',   27 => 'IRL', 28 => 'IS',  29 => 'KZ',  30 => 'L',
+        31 => 'LT',  32 => 'LV',  33 => 'M',   34 => 'MC',  35 => 'MD',
+        36 => 'MK',  37 => 'N',   38 => 'NL',  39 => 'P',   40 => 'PL',
+        41 => 'RO',  42 => 'RSM', 43 => 'RUS', 44 => 'S',   45 => 'SK',
+        46 => 'SLO', 47 => 'TM',  48 => 'TR',  49 => 'UA',  50 => 'V',
+    ];
+
+    /* Helper: try to parse N vehicle records starting at $pos within $data[0..$limit-1].
+     * Returns validated records array (empty = block is not vehicle data). */
+    $parseBlock = function (int $pos, int $maxRecs, int $limit) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
+        $parsed = [];
+        for ($v = 0; $v < $maxRecs && $v < 200; $v++) {
+            if ($pos + 32 > $limit) break;
+
+            /* Record layout (32 bytes):
+             *  +0  nationNumeric (1 byte)
+             *  +1  nationAlpha   (3 bytes, IA5, 0x00/0xFF-padded)
+             *  +4  codePage      (1 byte)
+             *  +5  regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
+             *  +18 vehicleFirstUse (TimeReal 4 bytes)
+             *  +22 vehicleLastUse  (TimeReal 4 bytes)
+             *  +26 vehicleOdometerBegin (3 bytes)
+             *  +29 vehicleOdometerEnd   (3 bytes)
+             */
+            $nationNum  = ord($data[$pos]);
+            $nationRaw  = substr($data, $pos + 1, 3);
+            $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
+
+            $regRaw  = substr($data, $pos + 5, 13);
+            $reg     = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
+            $reg     = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
+            $reg     = trim($reg);
+
+            $firstUse = unpack('N', substr($data, $pos + 18, 4))[1];
+            $lastUse  = unpack('N', substr($data, $pos + 22, 4))[1];
+
+            $odoB = (ord($data[$pos + 26]) << 16) | (ord($data[$pos + 27]) << 8) | ord($data[$pos + 28]);
+            $odoE = (ord($data[$pos + 29]) << 16) | (ord($data[$pos + 30]) << 8) | ord($data[$pos + 31]);
+
+            $pos += 32;
+
+            if ($firstUse < $tsMin || $firstUse > $tsMax) continue;
+            if ($lastUse  < $tsMin || $lastUse  > $tsMax) continue;
+            if ($lastUse  < $firstUse)                    continue;
+            if (strlen($reg) < 2)                          continue;
+            if ($odoB > 9_999_999 || $odoE > 9_999_999)   continue;
+
+            /* Determine nation string */
+            $nation = '';
+            if ($nationAlpha !== '' && preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+                $nation = $nationAlpha;
+            } elseif ($nationNum >= 1 && $nationNum <= 50) {
+                $nation = $nationCodes[$nationNum] ?? '';
+            }
+
+            $parsed[] = [
+                'reg'        => $reg,
+                'nation'     => $nation,
+                'first_use'  => gmdate('Y-m-d', $firstUse),
+                'last_use'   => gmdate('Y-m-d', $lastUse),
+                'odo_begin'  => $odoB,
+                'odo_end'    => $odoE,
+                'distance'   => ($odoE >= $odoB) ? ($odoE - $odoB) : 0,
+            ];
+        }
+        return $parsed;
+    };
+
+    /* ── Phase 1: Structured TLV scan ───────────────────────────────────────── */
+    /* Known TLV tag byte-pairs for EF_CardVehiclesUsed (Gen 1: 0x0504, variants: 0x0528) */
+    $tryTags = [[0x05, 0x04], [0x05, 0x28]];
+
+    foreach ($tryTags as [$t1, $t2]) {
+        for ($i = 0; $i < $len - 36; $i++) {
+            if (ord($data[$i]) !== $t1 || ord($data[$i + 1]) !== $t2) continue;
+
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl < 36 || $bl > 65000 || $i + 4 + $bl > $len) continue;
+
+            $base      = $i + 4;
+            $noOfVeh   = (ord($data[$base]) << 8) | ord($data[$base + 1]);
+            $totalRecs = (int)(($bl - 4) / 32);
+
+            /* noOfVehicleUsed must be non-negative and not exceed block capacity */
+            if ($noOfVeh < 0 || $noOfVeh > $totalRecs || $totalRecs < 1) continue;
+
+            /* Parse up to max(noOfVeh, totalRecs) records from base+4 */
+            $maxRecs = max($noOfVeh, 1);
+            $parsed  = $parseBlock($base + 4, $maxRecs, $i + 4 + $bl);
+
+            if (!empty($parsed)) {
+                usort($parsed, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+                return $parsed;
+            }
+        }
+    }
+
+    /* ── Phase 2: Whole-file fallback scan ───────────────────────────────────── */
+    /* Some manufacturers don't use standard TLV tags.  Scan the entire file for
+     * contiguous groups of valid 32-byte vehicle records (≥ 2 records required
+     * to avoid single-record false positives). */
+    $result = [];
+    $seen   = [];
+    for ($i = 0; $i <= $len - 64; $i++) {
+        /* Check if two consecutive 32-byte records look valid */
+        $recs = $parseBlock($i, 2, $len);
+        if (count($recs) < 2) continue;
+
+        /* Extend as far as consecutive records remain valid */
+        $recs = $parseBlock($i, 200, $len);
+        if (count($recs) < 2) continue;
+
+        foreach ($recs as $r) {
+            $key = $r['reg'] . '_' . $r['first_use'];
+            if (isset($seen[$key])) continue;
+            $seen[$key] = true;
+            $result[]   = $r;
+        }
+        /* Skip past this block */
+        $i += count($recs) * 32 - 1;
+    }
+
+    usort($result, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+    return $result;
+}
+
+/**
  * Backfill driver_activity_calendar for a specific driver by copying data
  * from ddd_activity_days (joined with ddd_files).  Runs on every page load
  * so newly uploaded DDD files are automatically reflected in the calendar.

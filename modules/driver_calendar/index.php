@@ -47,7 +47,7 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$activeTab = in_array($_GET['tab'] ?? '', ['calendar','violations','files'])
+$activeTab = in_array($_GET['tab'] ?? '', ['calendar','violations','files','pojazdy'])
     ? $_GET['tab'] : 'calendar';
 
 $stmt = $db->prepare(
@@ -229,7 +229,7 @@ if ($driverId) {
         // Load DDD files for this driver
         try {
             $fStmt = $db->prepare(
-                "SELECT id, original_name, download_date, period_start, period_end, file_size
+                "SELECT id, original_name, stored_name, stored_subdir, download_date, period_start, period_end, file_size
                  FROM ddd_files
                  WHERE company_id=? AND driver_id=? AND file_type='driver' AND is_deleted=0
                  ORDER BY download_date DESC"
@@ -240,6 +240,34 @@ if ($driverId) {
             error_log('driver_calendar: files query error: ' . $e->getMessage());
         }
     }
+}
+
+// ── Parse vehicle usage records from driver DDD files (for Pojazdy tab) ──
+$vehicleRecords = [];
+if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
+    foreach ($driverFiles as $fRow) {
+        $fp = dddPhysPath($fRow, $companyId);
+        if (!is_file($fp)) continue;
+        $rawData = file_get_contents($fp);
+        if ($rawData === false) continue;
+        $recs = parseDriverCardVehicles($rawData);
+        foreach ($recs as $r) {
+            // Filter by selected date range (vehicle used within range)
+            if ($r['last_use']  < $dateFrom) continue;
+            if ($r['first_use'] > $dateTo)   continue;
+            $vehicleRecords[] = array_merge($r, ['source_file' => $fRow['original_name']]);
+        }
+    }
+    // Deduplicate by (reg, first_use), keep record with highest distance
+    $vUniq = [];
+    foreach ($vehicleRecords as $r) {
+        $key = $r['reg'] . '|' . $r['first_use'];
+        if (!isset($vUniq[$key]) || $r['distance'] > $vUniq[$key]['distance']) {
+            $vUniq[$key] = $r;
+        }
+    }
+    usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+    $vehicleRecords = array_values($vUniq);
 }
 
 // ── The timeline uses the same from/to date range as the calendar ──
@@ -469,7 +497,7 @@ include __DIR__ . '/../../templates/header.php';
           </li>
           <li class="nav-item" role="presentation">
             <a class="nav-link<?= $activeTab==='files'?' active':'' ?>"
-               href="?driver_id=<?= $driverId ?>&tab=files"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=files"
                role="tab">
               <i class="bi bi-folder2-open me-1"></i>Pliki DDD
               <?php if ($driverFiles): ?>
@@ -477,12 +505,19 @@ include __DIR__ . '/../../templates/header.php';
               <?php endif; ?>
             </a>
           </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='pojazdy'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=pojazdy"
+               role="tab">
+              <i class="bi bi-truck me-1"></i>Pojazdy
+            </a>
+          </li>
         </ul>
       </div>
 
       <div class="tp-card-body">
 
-        <?php if (empty($calDays) && $activeTab !== 'files'): ?>
+        <?php if (empty($calDays) && $activeTab !== 'files' && $activeTab !== 'pojazdy'): ?>
         <!-- No data state -->
         <div class="tp-empty-state py-5">
           <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#94a3b8"></i>
@@ -848,6 +883,87 @@ include __DIR__ . '/../../templates/header.php';
             Nie wgrano jeszcze żadnego pliku DDD dla tego kierowcy.
             <a href="/files.php">Wgraj plik DDD</a>.
           </p>
+        </div>
+        <?php endif; ?>
+
+        <?php elseif ($activeTab === 'pojazdy'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: POJAZDY (vehicles used – parsed from DDD binary)
+             ════════════════════════════════════════════════════ -->
+        <?php if (!$driverFiles): ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-truck" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak plików DDD</p>
+          <p class="text-muted small">
+            Nie wgrano jeszcze żadnego pliku DDD dla tego kierowcy.
+            <a href="/files.php">Wgraj plik DDD</a>, aby pobrać listę używanych pojazdów.
+          </p>
+        </div>
+        <?php elseif (empty($vehicleRecords)): ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-truck" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak danych o pojazdach</p>
+          <p class="text-muted small">
+            Nie znaleziono rekordów używanych pojazdów w plikach DDD kierowcy dla wybranego zakresu dat.
+            <?php if ($dataDateMin): ?>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>&tab=pojazdy">Pokaż pełny zakres danych</a>
+            (<?= fmtDate($dataDateMin) ?> – <?= fmtDate($dataDateMax) ?>).
+            <?php endif; ?>
+          </p>
+        </div>
+        <?php else: ?>
+        <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+          <i class="bi bi-info-circle text-muted"></i>
+          <small class="text-muted">Dane odczytane bezpośrednio z binarnych plików DDD karty kierowcy (EF_CardVehiclesUsed).</small>
+          <span class="badge bg-primary ms-auto"><?= count($vehicleRecords) ?> pojazd<?= count($vehicleRecords) === 1 ? '' : (count($vehicleRecords) < 5 ? 'y' : 'ów') ?></span>
+        </div>
+        <div class="table-responsive">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Rejestracja</th>
+                <th>Kraj</th>
+                <th>Pierwsze użycie</th>
+                <th>Ostatnie użycie</th>
+                <th class="text-end">Przebieg (pocz.)</th>
+                <th class="text-end">Przebieg (końc.)</th>
+                <th class="text-end">Dystans</th>
+                <th>Źródło</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($vehicleRecords as $vr): ?>
+              <tr>
+                <td>
+                  <i class="bi bi-truck text-primary me-1"></i>
+                  <strong><?= e($vr['reg']) ?></strong>
+                </td>
+                <td><?= e($vr['nation'] ?: '—') ?></td>
+                <td class="text-nowrap"><?= fmtDate($vr['first_use']) ?></td>
+                <td class="text-nowrap"><?= fmtDate($vr['last_use']) ?></td>
+                <td class="text-end text-nowrap"><?= $vr['odo_begin'] > 0 ? number_format($vr['odo_begin']) . ' km' : '—' ?></td>
+                <td class="text-end text-nowrap"><?= $vr['odo_end'] > 0 ? number_format($vr['odo_end']) . ' km' : '—' ?></td>
+                <td class="text-end text-nowrap">
+                  <?php if ($vr['distance'] > 0): ?>
+                  <span class="fw-600 text-primary"><?= number_format($vr['distance']) ?> km</span>
+                  <?php else: ?>
+                  <span class="text-muted">—</span>
+                  <?php endif; ?>
+                </td>
+                <td class="text-muted small"><?= e($vr['source_file']) ?></td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+            <tfoot>
+              <tr class="fw-600">
+                <td colspan="6" class="text-end">Łączny dystans:</td>
+                <td class="text-end text-primary">
+                  <?= number_format(array_sum(array_column($vehicleRecords, 'distance'))) ?> km
+                </td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
         <?php endif; ?>
         <?php endif; ?>

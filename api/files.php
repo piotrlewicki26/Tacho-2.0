@@ -467,7 +467,9 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $userId,
             $parsedCardNumber ?: null,
         ]);
-        $newFileId = (int)$db->lastInsertId();
+        $newFileId   = (int)$db->lastInsertId();
+        $periodStart = null;
+        $periodEnd   = null;
 
         // ── Parse activity data and persist to ddd_activity_days ─────
         try {
@@ -669,6 +671,8 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'vehicle_id'   => $linkedVehicleId,
             'card_number'  => $parsedCardNumber,
             'auto_created' => $autoCreated,
+            'period_start' => $periodStart,
+            'period_end'   => $periodEnd,
         ]);
     } catch (Throwable $e) {
         // Clean up partially saved file if something went wrong after saving
