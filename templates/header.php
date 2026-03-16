@@ -127,13 +127,7 @@ $_hdrPlanLabel = match($_hdrPlan) {
 
     <li class="tp-nav-separator"><small>Moduły PRO</small></li>
 
-    <li class="tp-nav-item<?= ($activePage??'')==='driver_analysis' ? ' active':'' ?>">
-      <a href="/modules/driver_analysis/" class="tp-nav-link">
-        <i class="bi bi-bar-chart-line"></i><span>Analiza kierowców</span>
-      </a>
-    </li>
-
-    <li class="tp-nav-item<?= ($activePage??'')==='driver_calendar' ? ' active':'' ?>">
+    <li class="tp-nav-item<?= in_array($activePage??'', ['driver_calendar','driver_analysis']) ? ' active':'' ?>">
       <a href="/modules/driver_calendar/" class="tp-nav-link">
         <i class="bi bi-calendar3"></i><span>Kalendarz kierowcy</span>
       </a>

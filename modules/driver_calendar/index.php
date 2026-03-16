@@ -1,11 +1,10 @@
 <?php
 /**
- * TachoPro 2.0 – Driver Activity Calendar
+ * TachoPro 2.0 – Driver Activity Calendar (unified)
  *
- * Shows a continuous month-by-month activity calendar for a selected driver.
- * Data comes from driver_activity_calendar, which is populated at upload time
- * by merging every uploaded DDD card for that driver – so this view always
- * shows the full history without requiring a per-file analysis.
+ * Combines the calendar view, SVG activity timeline, violations list,
+ * border crossings and per-file analysis into a single professional module.
+ * Data is always kept in sync from every uploaded DDD file automatically.
  */
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/db.php';
@@ -17,7 +16,7 @@ requireLogin();
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 
-// Auto-create the driver_activity_calendar table if migration 018 has not been applied yet.
+// Auto-create the driver_activity_calendar table if not yet applied.
 try {
     $db->exec(
         "CREATE TABLE IF NOT EXISTS `driver_activity_calendar` (
@@ -48,19 +47,8 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$viewMode = in_array($_GET['view'] ?? '', ['calendar', 'list']) ? $_GET['view'] : 'calendar';
-
-// Date range – default: current month + 2 months back
-$today       = new DateTime();
-$defaultFrom = (clone $today)->modify('first day of -2 months')->format('Y-m-d');
-$defaultTo   = $today->format('Y-m-d');
-$dateFrom    = $_GET['from'] ?? $defaultFrom;
-$dateTo      = $_GET['to']   ?? $defaultTo;
-
-// Validate dates
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $defaultFrom;
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $defaultTo;
-if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files'])
+    ? $_GET['tab'] : 'calendar';
 
 $stmt = $db->prepare(
     'SELECT id, first_name, last_name FROM drivers WHERE company_id=? AND is_active=1 ORDER BY last_name,first_name'
@@ -68,26 +56,61 @@ $stmt = $db->prepare(
 $stmt->execute([$companyId]);
 $allDrivers = $stmt->fetchAll();
 
-// ── Load calendar data ────────────────────────────────────────
-$calDays     = [];   // date => row
-$summary     = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'violations' => 0, 'dist' => 0];
-$chartDays   = [];
-$driverInfo  = null;
+// ── Load & sync calendar data ─────────────────────────────────
+$calDays    = [];
+$chartDays  = [];
+$violations = [];
+$summary    = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'dist' => 0, 'violations' => 0];
+$driverInfo = null;
+$driverFiles = [];
+$dataDateMin = null;
+$dataDateMax = null;
 
 if ($driverId) {
-    // Verify driver belongs to this company
     $dStmt = $db->prepare('SELECT id, first_name, last_name, card_number FROM drivers WHERE id=? AND company_id=? AND is_active=1');
     $dStmt->execute([$driverId, $companyId]);
     $driverInfo = $dStmt->fetch();
 
     if ($driverInfo) {
-        // Auto-backfill calendar from ddd_activity_days when calendar is empty
+        // Always sync latest DDD data into the calendar
         try {
             backfillDriverActivityCalendar($db, $companyId, $driverId);
         } catch (Throwable $bfErr) {
             error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
         }
 
+        // Detect actual data range for this driver
+        try {
+            $rangeStmt = $db->prepare(
+                'SELECT MIN(date) AS dmin, MAX(date) AS dmax
+                 FROM driver_activity_calendar WHERE driver_id=?'
+            );
+            $rangeStmt->execute([$driverId]);
+            $rangeRow = $rangeStmt->fetch();
+            if ($rangeRow && $rangeRow['dmin']) {
+                $dataDateMin = $rangeRow['dmin'];
+                $dataDateMax = $rangeRow['dmax'];
+            }
+        } catch (Throwable $e) {
+            error_log('driver_calendar: range query error: ' . $e->getMessage());
+        }
+
+        // Date range – default: full data range, capped at last 6 months or data extent
+        $today = new DateTime();
+        if ($dataDateMin) {
+            $defaultFrom = $dataDateMin;
+            $defaultTo   = $dataDateMax;
+        } else {
+            $defaultFrom = (clone $today)->modify('first day of -5 months')->format('Y-m-d');
+            $defaultTo   = $today->format('Y-m-d');
+        }
+        $dateFrom = $_GET['from'] ?? $defaultFrom;
+        $dateTo   = $_GET['to']   ?? $defaultTo;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $defaultFrom;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $defaultTo;
+        if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+
+        // Re-parse border crossings for stale/null rows
         try {
             $rows = $db->prepare(
                 'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km,
@@ -99,23 +122,16 @@ if ($driverId) {
             $rows->execute([$driverId, $dateFrom, $dateTo]);
             $rawRows = $rows->fetchAll();
 
-            /* ── Re-parse border crossings for stale/null rows ─────────
-             * Group rows that need re-parsing by source_file_id, then
-             * run parseBorderCrossings once per file and update both
-             * ddd_activity_days and driver_activity_calendar so future
-             * loads skip re-parsing. */
-            $needsReparse = [];   // source_file_id => [date => true]
+            $needsReparse = [];
             foreach ($rawRows as $r) {
                 $bc = $r['border_crossings'];
                 if ($bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false' || $bc === '0') {
                     $fid = (int)($r['source_file_id'] ?? 0);
-                    if ($fid) {
-                        $needsReparse[$fid][$r['date']] = true;
-                    }
+                    if ($fid) $needsReparse[$fid][$r['date']] = true;
                 }
             }
 
-            $reparsedByFile = [];   // file_id => [date => crossings_array]
+            $reparsedByFile = [];
             if ($needsReparse) {
                 $fileStmt = $db->prepare(
                     "SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0"
@@ -128,8 +144,6 @@ if ($driverId) {
                     if (!is_file($fp)) continue;
                     $rawData = file_get_contents($fp);
                     if ($rawData === false) continue;
-
-                    /* Derive year window from dates in the re-parse set */
                     $reparseDates = array_keys($needsReparse[$fid]);
                     $reYears = array_filter(
                         array_map(fn($d) => (int)substr($d, 0, 4), $reparseDates),
@@ -145,38 +159,26 @@ if ($driverId) {
                     }
                     $crossingsForFile = parseBorderCrossings($rawData, $reYrMin, $reYrMax);
                     $reparsedByFile[$fid] = $crossingsForFile;
-
-                    /* Persist back to ddd_activity_days and driver_activity_calendar */
-                    $updDays = $db->prepare(
-                        'UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?'
-                    );
-                    $updCal  = $db->prepare(
-                        'UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?'
-                    );
+                    $updDays = $db->prepare('UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?');
+                    $updCal  = $db->prepare('UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?');
                     foreach (array_keys($needsReparse[$fid]) as $d) {
                         $crs     = $crossingsForFile[$d] ?? false;
                         $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
                         $updDays->execute([$newJson, $fid, $d]);
-                        $updCal->execute([
-                            $crs !== false ? json_encode($crs) : null,
-                            $driverId,
-                            $d,
-                        ]);
+                        $updCal->execute([$crs !== false ? json_encode($crs) : null, $driverId, $d]);
                     }
                 }
             }
 
             foreach ($rawRows as $row) {
-                $viols    = json_decode($row['violations']        ?? '[]', true) ?: [];
-                $segs     = json_decode($row['segments']          ?? '[]', true) ?: [];
-                $crossings= json_decode($row['border_crossings']  ?? '[]', true) ?: [];
-                if (is_int($crossings)) $crossings = [];   // sentinel '0'
-                /* Merge freshly re-parsed crossings if DB had none */
+                $viols    = json_decode($row['violations']       ?? '[]', true) ?: [];
+                $segs     = json_decode($row['segments']         ?? '[]', true) ?: [];
+                $crossings= json_decode($row['border_crossings'] ?? '[]', true) ?: [];
+                if (is_int($crossings)) $crossings = [];
                 $fid = (int)($row['source_file_id'] ?? 0);
                 if (empty($crossings) && $fid && isset($reparsedByFile[$fid][$row['date']])) {
                     $crossings = $reparsedByFile[$fid][$row['date']];
                 }
-
                 $calDays[$row['date']] = [
                     'date'      => $row['date'],
                     'drive'     => (int)$row['drive_min'],
@@ -189,32 +191,40 @@ if ($driverId) {
                     'viol'      => $viols,
                     'file_id'   => $row['source_file_id'],
                 ];
-
                 $summary['drive'] += (int)$row['drive_min'];
                 $summary['work']  += (int)$row['work_min'];
                 $summary['rest']  += (int)$row['rest_min'];
                 $summary['avail'] += (int)$row['avail_min'];
                 $summary['dist']  += (int)$row['dist_km'];
-                $summary['violations'] += count(array_filter($viols, fn($v) => ($v['type'] ?? '') === 'error'));
+                $summary['violations'] += count($viols);
+                $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => $crossings];
 
-                $chartDays[] = [
-                    'date'      => $row['date'],
-                    'segs'      => $segs,
-                    'dist'      => (int)$row['dist_km'],
-                    'crossings' => $crossings,
-                ];
+                // Collect all violations with date for violations tab
+                foreach ($viols as $v) {
+                    $violations[] = array_merge($v, ['date' => $row['date']]);
+                }
             }
         } catch (Throwable $calErr) {
             error_log('driver_calendar: query error for driver ' . $driverId . ': ' . $calErr->getMessage());
-            // $calDays remains empty – the "no data" empty state will be shown
+        }
+
+        // Load DDD files for this driver
+        try {
+            $fStmt = $db->prepare(
+                "SELECT id, original_name, download_date, period_start, period_end, file_size
+                 FROM ddd_files
+                 WHERE company_id=? AND driver_id=? AND file_type='driver' AND is_deleted=0
+                 ORDER BY download_date DESC"
+            );
+            $fStmt->execute([$companyId, $driverId]);
+            $driverFiles = $fStmt->fetchAll();
+        } catch (Throwable $e) {
+            error_log('driver_calendar: files query error: ' . $e->getMessage());
         }
     }
 }
 
-// ── Build month grid for calendar view ──────────────────────
-/**
- * Returns an array of [year, month] pairs between $from and $to (inclusive).
- */
+// ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
 {
     $months = [];
@@ -226,8 +236,11 @@ function monthRange(string $from, string $to): array
     }
     return $months;
 }
+$months = ($driverId && $driverInfo && !empty($calDays)) ? monthRange($dateFrom, $dateTo) : [];
 
-$months = monthRange($dateFrom, $dateTo);
+// ── Days driving/working count ────────────────────────────────
+$driveDays = count(array_filter($calDays, fn($d) => $d['drive'] > 0));
+$workDays  = count(array_filter($calDays, fn($d) => ($d['drive'] + $d['work']) > 0));
 
 $pageTitle  = 'Kalendarz kierowcy';
 $activePage = 'driver_calendar';
@@ -235,18 +248,18 @@ include __DIR__ . '/../../templates/header.php';
 ?>
 
 <div class="row g-3 mb-4">
-  <!-- Filters -->
+  <!-- ── Left panel: filters ────────────────────────────────── -->
   <div class="col-lg-3">
     <div class="tp-card">
       <div class="tp-card-header">
-        <i class="bi bi-funnel text-primary"></i>
-        <span class="tp-card-title">Filtry</span>
+        <i class="bi bi-person-badge text-primary"></i>
+        <span class="tp-card-title">Kierowca</span>
       </div>
       <div class="tp-card-body">
-        <form method="GET" novalidate>
+        <form method="GET" novalidate id="filterForm">
+          <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
           <div class="mb-3">
-            <label class="form-label fw-600">Kierowca</label>
-            <select name="driver_id" class="form-select" onchange="this.form.submit()">
+            <select name="driver_id" class="form-select" onchange="this.form.submit()" title="Wybierz kierowcę">
               <option value="">— Wybierz kierowcę —</option>
               <?php foreach ($allDrivers as $d): ?>
               <option value="<?= $d['id'] ?>"<?= $d['id']==$driverId?' selected':'' ?>>
@@ -256,53 +269,108 @@ include __DIR__ . '/../../templates/header.php';
             </select>
           </div>
 
-          <?php if ($driverId): ?>
-          <div class="mb-3">
-            <label class="form-label fw-600">Od</label>
-            <input type="date" name="from" class="form-control" value="<?= e($dateFrom) ?>">
+          <?php if ($driverId && $driverInfo): ?>
+          <!-- Driver info card -->
+          <div class="dc-driver-card mb-3">
+            <div class="dc-driver-avatar">
+              <?= strtoupper(mb_substr($driverInfo['first_name'], 0, 1) . mb_substr($driverInfo['last_name'], 0, 1)) ?>
+            </div>
+            <div>
+              <div class="fw-700"><?= e($driverInfo['last_name'] . ' ' . $driverInfo['first_name']) ?></div>
+              <?php if ($driverInfo['card_number']): ?>
+              <div class="text-muted small"><?= e($driverInfo['card_number']) ?></div>
+              <?php endif; ?>
+              <?php if ($dataDateMin): ?>
+              <div class="text-muted small mt-1">
+                <i class="bi bi-calendar-range me-1"></i>
+                <?= fmtDate($dataDateMin) ?> – <?= fmtDate($dataDateMax) ?>
+              </div>
+              <?php endif; ?>
+            </div>
+          </div>
+
+          <hr class="my-2">
+          <label class="form-label fw-600 small">Zakres dat</label>
+          <div class="mb-2">
+            <input type="date" name="from" class="form-control form-control-sm"
+                   value="<?= e($dateFrom ?? '') ?>"
+                   <?= $dataDateMin ? 'min="'.$dataDateMin.'" max="'.$dataDateMax.'"' : '' ?>>
           </div>
           <div class="mb-3">
-            <label class="form-label fw-600">Do</label>
-            <input type="date" name="to" class="form-control" value="<?= e($dateTo) ?>">
+            <input type="date" name="to" class="form-control form-control-sm"
+                   value="<?= e($dateTo ?? '') ?>"
+                   <?= $dataDateMin ? 'min="'.$dataDateMin.'" max="'.$dataDateMax.'"' : '' ?>>
           </div>
-          <div class="mb-3">
-            <label class="form-label fw-600">Widok</label>
-            <select name="view" class="form-select">
-              <option value="calendar"<?= $viewMode==='calendar'?' selected':'' ?>>Kalendarz</option>
-              <option value="list"<?= $viewMode==='list'?' selected':'' ?>>Lista dni</option>
-            </select>
-          </div>
-          <button type="submit" class="btn btn-primary w-100">
-            <i class="bi bi-search me-1"></i>Pokaż
+          <button type="submit" class="btn btn-primary btn-sm w-100 mb-2">
+            <i class="bi bi-search me-1"></i>Filtruj
           </button>
+          <?php if ($dataDateMin): ?>
+          <a href="?driver_id=<?= $driverId ?>&tab=<?= e($activeTab) ?>"
+             class="btn btn-outline-secondary btn-sm w-100">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Pełny zakres
+          </a>
+          <?php endif; ?>
           <?php endif; ?>
         </form>
       </div>
     </div>
+
+    <!-- Files quick list -->
+    <?php if ($driverFiles): ?>
+    <div class="tp-card mt-3">
+      <div class="tp-card-header">
+        <i class="bi bi-file-earmark-text text-secondary"></i>
+        <span class="tp-card-title">Pliki DDD</span>
+        <span class="badge bg-secondary ms-auto"><?= count($driverFiles) ?></span>
+      </div>
+      <div class="tp-card-body p-0">
+        <ul class="list-group list-group-flush dc-file-list">
+          <?php foreach (array_slice($driverFiles, 0, 5) as $f): ?>
+          <li class="list-group-item list-group-item-action py-2 px-3 small">
+            <div class="fw-600 text-truncate" title="<?= e($f['original_name']) ?>">
+              <i class="bi bi-file-earmark-binary text-primary me-1"></i>
+              <?= e($f['original_name']) ?>
+            </div>
+            <div class="text-muted">
+              <?= fmtDate($f['download_date']) ?>
+              <?php if ($f['period_start'] && $f['period_end']): ?>
+              <span class="ms-1">· <?= fmtDate($f['period_start']) ?>–<?= fmtDate($f['period_end']) ?></span>
+              <?php endif; ?>
+            </div>
+          </li>
+          <?php endforeach; ?>
+          <?php if (count($driverFiles) > 5): ?>
+          <li class="list-group-item text-center py-2">
+            <a href="?driver_id=<?= $driverId ?>&tab=files" class="small text-primary text-decoration-none">
+              + <?= count($driverFiles) - 5 ?> więcej plików
+            </a>
+          </li>
+          <?php endif; ?>
+        </ul>
+      </div>
+    </div>
+    <?php endif; ?>
   </div>
 
-  <!-- Summary stats -->
+  <!-- ── Main area ─────────────────────────────────────────────── -->
   <div class="col-lg-9">
     <?php if (!$driverId): ?>
-    <div class="tp-card h-100 d-flex align-items-center justify-content-center">
+    <!-- Empty state -->
+    <div class="tp-card h-100 d-flex align-items-center justify-content-center" style="min-height:320px">
       <div class="tp-empty-state">
-        <i class="bi bi-calendar3"></i>
-        <p>Wybierz kierowcę, aby wyświetlić kalendarz aktywności.</p>
+        <i class="bi bi-person-lines-fill" style="font-size:3rem;color:#94a3b8"></i>
+        <p class="mt-3 mb-1 fw-600">Wybierz kierowcę</p>
+        <p class="text-muted small">Wybierz kierowcę z listy po lewej, aby wyświetlić jego kalendarz i analizę aktywności.</p>
       </div>
     </div>
+
     <?php elseif (!$driverInfo): ?>
     <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>Kierowca nie istnieje lub brak dostępu.</div>
-    <?php elseif (empty($calDays)): ?>
-    <div class="tp-card h-100 d-flex align-items-center justify-content-center">
-      <div class="tp-empty-state">
-        <i class="bi bi-calendar-x"></i>
-        <p>Brak danych dla wybranego kierowcy w tym okresie.<br>
-           <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić kalendarz.</p>
-      </div>
-    </div>
+
     <?php else: ?>
-    <div class="row g-3">
-      <div class="col-6 col-md-3">
+    <!-- ── Summary stats ───────────────────────────────────── -->
+    <div class="row g-3 mb-3">
+      <div class="col-6 col-sm-3">
         <div class="tp-stat">
           <div class="tp-stat-icon primary"><i class="bi bi-speedometer2"></i></div>
           <div>
@@ -311,7 +379,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-6 col-md-3">
+      <div class="col-6 col-sm-3">
         <div class="tp-stat">
           <div class="tp-stat-icon warning"><i class="bi bi-briefcase"></i></div>
           <div>
@@ -320,19 +388,19 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-6 col-md-3">
+      <div class="col-6 col-sm-3">
         <div class="tp-stat">
-          <div class="tp-stat-icon success"><i class="bi bi-moon"></i></div>
+          <div class="tp-stat-icon success"><i class="bi bi-signpost-split"></i></div>
           <div>
-            <div class="tp-stat-value"><?= floor($summary['rest']/60) ?>h <?= $summary['rest']%60 ?>m</div>
-            <div class="tp-stat-label">Odpoczynek</div>
+            <div class="tp-stat-value"><?= number_format($summary['dist']) ?> km</div>
+            <div class="tp-stat-label">Dystans</div>
           </div>
         </div>
       </div>
-      <div class="col-6 col-md-3">
+      <div class="col-6 col-sm-3">
         <div class="tp-stat">
-          <div class="tp-stat-icon <?= $summary['violations']>0?'danger':'success' ?>">
-            <i class="bi bi-<?= $summary['violations']>0?'exclamation-triangle':'check-circle' ?>"></i>
+          <div class="tp-stat-icon <?= $summary['violations'] > 0 ? 'danger' : 'success' ?>">
+            <i class="bi bi-<?= $summary['violations'] > 0 ? 'exclamation-triangle' : 'shield-check' ?>"></i>
           </div>
           <div>
             <div class="tp-stat-value"><?= $summary['violations'] ?></div>
@@ -341,225 +409,373 @@ include __DIR__ . '/../../templates/header.php';
         </div>
       </div>
     </div>
-    <?php endif; ?>
-  </div>
-</div>
 
-<?php if ($driverId && $driverInfo && !empty($calDays)): ?>
+    <!-- ── Tabs ────────────────────────────────────────────── -->
+    <div class="tp-card">
+      <div class="tp-card-header p-0 border-bottom-0">
+        <ul class="nav nav-tabs dc-tabs w-100 px-3 pt-2" role="tablist">
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='calendar'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=calendar"
+               role="tab"><i class="bi bi-calendar3 me-1"></i>Kalendarz</a>
+          </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='timeline'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=timeline"
+               role="tab"><i class="bi bi-activity me-1"></i>Oś czasu</a>
+          </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='violations'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=violations"
+               role="tab">
+              <i class="bi bi-exclamation-triangle me-1"></i>Naruszenia
+              <?php if ($summary['violations'] > 0): ?>
+              <span class="badge bg-danger ms-1"><?= $summary['violations'] ?></span>
+              <?php endif; ?>
+            </a>
+          </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='files'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&tab=files"
+               role="tab">
+              <i class="bi bi-folder2-open me-1"></i>Pliki DDD
+              <?php if ($driverFiles): ?>
+              <span class="badge bg-secondary ms-1"><?= count($driverFiles) ?></span>
+              <?php endif; ?>
+            </a>
+          </li>
+        </ul>
+      </div>
 
-<?php if ($viewMode === 'calendar'): ?>
-<!-- ══════════════════════════════════════════════
-     CALENDAR VIEW
-     ══════════════════════════════════════════════ -->
+      <div class="tp-card-body">
 
-<!-- SVG Activity Timeline (last 4 weeks) -->
-<?php
-$last4wFrom = (new DateTime())->modify('-28 days')->format('Y-m-d');
-$timelineDays = array_values(array_filter($chartDays, fn($d) => $d['date'] >= $last4wFrom));
-?>
-<?php if ($timelineDays): ?>
-<div class="tp-card mb-4">
-  <div class="tp-card-header">
-    <i class="bi bi-activity text-primary"></i>
-    <span class="tp-card-title">Oś czasu aktywności tachografu</span>
-    <span class="badge bg-secondary ms-2">ostatnie 4 tygodnie</span>
-  </div>
-  <div class="tp-card-body p-3">
-    <div id="calTachoTimeline" style="width:100%;overflow-x:auto;"></div>
-  </div>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-  var days = <?= json_encode($timelineDays, JSON_UNESCAPED_UNICODE) ?>;
-  if (days.length && window.TachoChart) TachoChart.render('calTachoTimeline', days);
-});
-</script>
-<?php endif; ?>
+        <?php if (empty($calDays) && $activeTab !== 'files'): ?>
+        <!-- No data state -->
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak danych aktywności</p>
+          <p class="text-muted small">
+            Brak danych dla wybranego kierowcy w podanym zakresie dat.
+            <?php if (!$driverFiles): ?>
+            <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić kalendarz.
+            <?php else: ?>
+            Spróbuj rozszerzyć zakres dat.
+            <?php endif; ?>
+          </p>
+        </div>
 
-<div class="tp-card mb-4">
-  <div class="tp-card-header">
-    <i class="bi bi-calendar3 text-primary"></i>
-    <span class="tp-card-title">
-      Kalendarz aktywności – <?= e($driverInfo['last_name'] . ' ' . $driverInfo['first_name']) ?>
-    </span>
-    <span class="badge bg-secondary ms-2"><?= count($calDays) ?> dni z danymi</span>
-  </div>
-  <div class="tp-card-body">
+        <?php elseif ($activeTab === 'calendar'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: CALENDAR
+             ════════════════════════════════════════════════════ -->
 
-    <!-- Legend -->
-    <div class="d-flex flex-wrap gap-3 mb-3 small">
-      <span><span class="dc-badge dc-drive"></span> Jazda</span>
-      <span><span class="dc-badge dc-work"></span> Praca</span>
-      <span><span class="dc-badge dc-avail"></span> Dyspozycyjność</span>
-      <span><span class="dc-badge dc-rest"></span> Odpoczynek</span>
-      <span><span class="dc-badge dc-viol"></span> Naruszenie</span>
-      <span><span class="dc-badge dc-no-data"></span> Brak danych</span>
-    </div>
+        <!-- Legend -->
+        <div class="d-flex flex-wrap gap-3 mb-3 small align-items-center">
+          <span><span class="dc-badge dc-drive"></span> Jazda</span>
+          <span><span class="dc-badge dc-work"></span> Praca</span>
+          <span><span class="dc-badge dc-avail"></span> Dyspozycyjność</span>
+          <span><span class="dc-badge dc-rest"></span> Odpoczynek</span>
+          <span><span class="dc-badge dc-viol"></span> Naruszenie</span>
+          <span><span class="dc-badge dc-no-data"></span> Brak danych</span>
+          <span class="ms-auto text-muted"><?= $workDays ?> dni aktywności · <?= count($calDays) ?> dni z danymi</span>
+        </div>
 
-    <?php foreach ($months as [$year, $month]): ?>
-    <?php
-      $monthNames = ['','Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec',
-                     'Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'];
-      $monthLabel = $monthNames[$month] . ' ' . $year;
-
-      $firstDay   = new DateTime("$year-$month-01");
-      $daysInMonth= (int)$firstDay->format('t');
-      $startDow   = (int)$firstDay->format('N'); // 1=Mon … 7=Sun
-    ?>
-    <div class="dc-month mb-4">
-      <div class="dc-month-title"><?= $monthLabel ?></div>
-      <div class="dc-grid">
-        <!-- Day-of-week headers -->
-        <?php foreach (['Pn','Wt','Śr','Cz','Pt','Sb','Nd'] as $dow): ?>
-        <div class="dc-dow"><?= $dow ?></div>
-        <?php endforeach; ?>
-        <!-- Empty cells before first day -->
-        <?php for ($e = 1; $e < $startDow; $e++): ?>
-        <div class="dc-cell dc-empty"></div>
-        <?php endfor; ?>
-        <!-- Day cells -->
-        <?php for ($d = 1; $d <= $daysInMonth; $d++): ?>
+        <?php foreach ($months as [$year, $month]): ?>
         <?php
-          $dateStr  = sprintf('%04d-%02d-%02d', $year, $month, $d);
-          $day      = $calDays[$dateStr] ?? null;
-          $hasError = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
-          $hasWarn  = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
-          $cellCls  = 'dc-cell';
-          if ($day) {
-              $total = $day['drive'] + $day['work'] + $day['avail'] + $day['rest'];
-              $dominantCls = 'dc-rest';
-              if ($total > 0) {
-                  $max = max($day['drive'], $day['work'], $day['avail'], $day['rest']);
-                  if      ($max === $day['drive']) $dominantCls = 'dc-drive';
-                  elseif  ($max === $day['work'])  $dominantCls = 'dc-work';
-                  elseif  ($max === $day['avail']) $dominantCls = 'dc-avail';
-                  else                             $dominantCls = 'dc-rest';
-              }
-              $cellCls .= ' dc-has-data ' . $dominantCls;
-              if ($hasError) $cellCls .= ' dc-viol';
-              elseif ($hasWarn) $cellCls .= ' dc-warn';
-          } else {
-              $cellCls .= ' dc-no-data';
-          }
-          $tooltip = '';
-          if ($day) {
-              $tooltip = htmlspecialchars(
-                  $dateStr . "\n" .
-                  'Jazda: '    . floor($day['drive']/60) . 'h ' . ($day['drive']%60) . 'm' . "\n" .
-                  'Praca: '    . floor($day['work']/60)  . 'h ' . ($day['work']%60)  . 'm' . "\n" .
-                  'Dysp: '     . floor($day['avail']/60) . 'h ' . ($day['avail']%60) . 'm' . "\n" .
-                  'Odpoczynek:'  . floor($day['rest']/60)  . 'h ' . ($day['rest']%60)  . 'm' .
-                  ($day['dist'] ? "\nKm: " . $day['dist'] : '') .
-                  ($hasError ? "\n⚠ Naruszenie!" : ($hasWarn ? "\n⚠ Ostrzeżenie" : ''))
-              );
+          $monthNames = ['','Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec',
+                         'Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'];
+          $monthLabel  = $monthNames[$month] . ' ' . $year;
+          $firstDay    = new DateTime("$year-$month-01");
+          $daysInMonth = (int)$firstDay->format('t');
+          $startDow    = (int)$firstDay->format('N');
+
+          // Count days with data in this month
+          $monthDataDays = 0;
+          for ($di = 1; $di <= $daysInMonth; $di++) {
+              $ds = sprintf('%04d-%02d-%02d', $year, $month, $di);
+              if (isset($calDays[$ds]) && ($calDays[$ds]['drive'] + $calDays[$ds]['work'] + $calDays[$ds]['avail']) > 0) $monthDataDays++;
           }
         ?>
-        <div class="<?= $cellCls ?>"
-             <?= $tooltip ? 'title="' . $tooltip . '"' : '' ?>
-             <?= $day ? 'data-date="' . $dateStr . '"' : '' ?>>
-          <span class="dc-day-num"><?= $d ?></span>
-          <?php if ($day && $day['drive'] > 0): ?>
-          <div class="dc-bar-wrap">
-            <?php
-              $total = max(1, $day['drive'] + $day['work'] + $day['avail'] + $day['rest']);
-              $driveW = round($day['drive'] / $total * 100);
-              $workW  = round($day['work']  / $total * 100);
-              $availW = round($day['avail'] / $total * 100);
-              $restW  = 100 - $driveW - $workW - $availW;
-            ?>
-            <div class="dc-bar dc-bar-drive"  style="width:<?= $driveW ?>%"></div>
-            <div class="dc-bar dc-bar-work"   style="width:<?= $workW  ?>%"></div>
-            <div class="dc-bar dc-bar-avail"  style="width:<?= $availW ?>%"></div>
-            <div class="dc-bar dc-bar-rest"   style="width:<?= $restW  ?>%"></div>
+        <div class="dc-month mb-4">
+          <div class="dc-month-header">
+            <span class="dc-month-title"><?= $monthLabel ?></span>
+            <?php if ($monthDataDays > 0): ?>
+            <span class="badge bg-primary-subtle text-primary-emphasis ms-2"><?= $monthDataDays ?> dni</span>
+            <?php endif; ?>
           </div>
-          <?php endif; ?>
-        </div>
-        <?php endfor; ?>
-      </div><!-- .dc-grid -->
-    </div><!-- .dc-month -->
-    <?php endforeach; ?>
-
-  </div>
-</div>
-
-<?php else: // LIST VIEW ?>
-<!-- ══════════════════════════════════════════════
-     LIST VIEW
-     ══════════════════════════════════════════════ -->
-
-<!-- SVG Timeline -->
-<div class="tp-card mb-4">
-  <div class="tp-card-header">
-    <i class="bi bi-activity text-primary"></i>
-    <span class="tp-card-title">Oś czasu aktywności – <?= e($driverInfo['last_name'] . ' ' . $driverInfo['first_name']) ?></span>
-    <span class="badge bg-secondary ms-2"><?= count($calDays) ?> dni</span>
-  </div>
-  <div class="tp-card-body">
-    <div id="tachoTimeline" style="width:100%;overflow-x:auto;"></div>
-  </div>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-  var days = <?= json_encode(array_values($chartDays), JSON_UNESCAPED_UNICODE) ?>;
-  if (window.TachoChart) TachoChart.render('tachoTimeline', days);
-});
-</script>
-
-<!-- Daily table -->
-<div class="tp-card">
-  <div class="tp-card-header">
-    <i class="bi bi-table text-secondary"></i>
-    <span class="tp-card-title">Podsumowanie dzienne</span>
-  </div>
-  <div class="tp-card-body p-0">
-    <div class="table-responsive">
-      <table class="tp-table">
-        <thead>
-          <tr>
-            <th>Data</th>
-            <th>Jazda</th>
-            <th>Praca</th>
-            <th>Dysp.</th>
-            <th>Odp.</th>
-            <th>Km</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <?php foreach ($calDays as $day): ?>
-          <?php
-            $hasError = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
-            $hasWarn  = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
-          ?>
-          <tr class="<?= $hasError?'table-danger':($hasWarn?'table-warning':'') ?>">
-            <td><?= fmtDate($day['date']) ?></td>
-            <td><?= floor($day['drive']/60) ?>h <?= $day['drive']%60 ?>m</td>
-            <td><?= floor($day['work']/60) ?>h <?= $day['work']%60 ?>m</td>
-            <td><?= floor($day['avail']/60) ?>h <?= $day['avail']%60 ?>m</td>
-            <td><?= floor($day['rest']/60) ?>h <?= $day['rest']%60 ?>m</td>
-            <td><?= $day['dist'] ? $day['dist'] . ' km' : '—' ?></td>
-            <td>
-              <?php if ($hasError): ?>
-                <span class="violation-error">Naruszenie</span>
-              <?php elseif ($hasWarn): ?>
-                <span class="violation-warn">Ostrzeżenie</span>
-              <?php else: ?>
-                <span class="violation-ok">OK</span>
+          <div class="dc-grid">
+            <?php foreach (['Pn','Wt','Śr','Cz','Pt','Sb','Nd'] as $dow): ?>
+            <div class="dc-dow"><?= $dow ?></div>
+            <?php endforeach; ?>
+            <?php for ($e = 1; $e < $startDow; $e++): ?>
+            <div class="dc-cell dc-empty"></div>
+            <?php endfor; ?>
+            <?php for ($d = 1; $d <= $daysInMonth; $d++): ?>
+            <?php
+              $dateStr  = sprintf('%04d-%02d-%02d', $year, $month, $d);
+              $day      = $calDays[$dateStr] ?? null;
+              $hasError = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
+              $hasWarn  = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
+              $isWeekend= in_array(date('N', strtotime($dateStr)), ['6','7']);
+              $cellCls  = 'dc-cell' . ($isWeekend ? ' dc-weekend' : '');
+              if ($day) {
+                  $total = $day['drive'] + $day['work'] + $day['avail'] + $day['rest'];
+                  $dominantCls = 'dc-rest';
+                  if ($total > 0) {
+                      $max = max($day['drive'], $day['work'], $day['avail'], $day['rest']);
+                      if      ($max === $day['drive']) $dominantCls = 'dc-drive';
+                      elseif  ($max === $day['work'])  $dominantCls = 'dc-work';
+                      elseif  ($max === $day['avail']) $dominantCls = 'dc-avail';
+                      else                             $dominantCls = 'dc-rest';
+                  }
+                  $cellCls .= ' dc-has-data ' . $dominantCls;
+                  if ($hasError) $cellCls .= ' dc-viol';
+                  elseif ($hasWarn) $cellCls .= ' dc-warn';
+              } else {
+                  $cellCls .= ' dc-no-data';
+              }
+              if ($day) {
+                  $tooltipText = $dateStr . "\n" .
+                      'Jazda: '    . floor($day['drive']/60) . 'h ' . ($day['drive']%60) . 'm' . "\n" .
+                      'Praca: '    . floor($day['work']/60)  . 'h ' . ($day['work']%60)  . 'm' . "\n" .
+                      'Dysp: '     . floor($day['avail']/60) . 'h ' . ($day['avail']%60) . 'm' . "\n" .
+                      'Odpoczynek: '  . floor($day['rest']/60)  . 'h ' . ($day['rest']%60)  . 'm' .
+                      ($day['dist'] ? "\nKm: " . $day['dist'] : '') .
+                      ($hasError ? "\n⚠ Naruszenie!" : ($hasWarn ? "\n⚠ Ostrzeżenie" : ''));
+                  $tooltip = 'title="' . htmlspecialchars($tooltipText) . '"';
+              } else {
+                  $tooltip = '';
+              }
+            ?>
+            <div class="<?= $cellCls ?>" <?= $tooltip ?> <?= $day ? 'data-date="'.$dateStr.'"' : '' ?>>
+              <span class="dc-day-num"><?= $d ?></span>
+              <?php if ($day && ($day['drive'] + $day['work'] + $day['avail'] + $day['rest']) > 0): ?>
+              <div class="dc-bar-wrap">
+                <?php
+                  $total = max(1, $day['drive'] + $day['work'] + $day['avail'] + $day['rest']);
+                  $driveW = round($day['drive'] / $total * 100);
+                  $workW  = round($day['work']  / $total * 100);
+                  $availW = round($day['avail'] / $total * 100);
+                  $restW  = 100 - $driveW - $workW - $availW;
+                ?>
+                <div class="dc-bar dc-bar-drive" style="width:<?= $driveW ?>%"></div>
+                <div class="dc-bar dc-bar-work"  style="width:<?= $workW  ?>%"></div>
+                <div class="dc-bar dc-bar-avail" style="width:<?= $availW ?>%"></div>
+                <div class="dc-bar dc-bar-rest"  style="width:<?= max(0,$restW) ?>%"></div>
+              </div>
               <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-<?php endif; ?>
+              <?php if ($hasError): ?><span class="dc-viol-dot"></span><?php endif; ?>
+            </div>
+            <?php endfor; ?>
+          </div>
+        </div>
+        <?php endforeach; ?>
 
-<?php endif; ?>
+        <?php elseif ($activeTab === 'timeline'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: TIMELINE
+             ════════════════════════════════════════════════════ -->
+        <div id="tachoTimelineMain" style="width:100%;overflow-x:auto;min-height:200px;"></div>
+        <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          var days = <?= json_encode(array_values($chartDays), JSON_UNESCAPED_UNICODE) ?>;
+          if (days.length && window.TachoChart) {
+            TachoChart.render('tachoTimelineMain', days);
+          }
+        });
+        </script>
+
+        <?php if (empty($chartDays)): ?>
+        <div class="tp-empty-state py-4">
+          <i class="bi bi-activity" style="font-size:2rem;color:#94a3b8"></i>
+          <p class="mt-2 text-muted small">Brak danych do wyświetlenia na osi czasu.</p>
+        </div>
+        <?php endif; ?>
+
+        <!-- Daily summary table under timeline -->
+        <?php if ($calDays): ?>
+        <div class="mt-4">
+          <h6 class="fw-600 mb-2"><i class="bi bi-table me-1 text-secondary"></i>Podsumowanie dzienne</h6>
+          <div class="table-responsive">
+            <table class="tp-table small">
+              <thead>
+                <tr>
+                  <th>Data</th><th>Jazda</th><th>Praca</th><th>Dysp.</th><th>Odp.</th><th>Km</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($calDays as $day): ?>
+                <?php
+                  $he = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
+                  $hw = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
+                ?>
+                <tr class="<?= $he?'table-danger':($hw?'table-warning':'') ?>">
+                  <td><?= fmtDate($day['date']) ?></td>
+                  <td><?= floor($day['drive']/60) ?>h <?= $day['drive']%60 ?>m</td>
+                  <td><?= floor($day['work']/60)  ?>h <?= $day['work']%60  ?>m</td>
+                  <td><?= floor($day['avail']/60) ?>h <?= $day['avail']%60 ?>m</td>
+                  <td><?= floor($day['rest']/60)  ?>h <?= $day['rest']%60  ?>m</td>
+                  <td><?= $day['dist'] ? $day['dist'].' km' : '—' ?></td>
+                  <td>
+                    <?php if ($he): ?>
+                    <span class="violation-error"><i class="bi bi-exclamation-triangle-fill me-1"></i>Naruszenie</span>
+                    <?php elseif ($hw): ?>
+                    <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
+                    <?php else: ?>
+                    <span class="violation-ok"><i class="bi bi-check-circle me-1"></i>OK</span>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <?php endif; ?>
+
+        <?php elseif ($activeTab === 'violations'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: VIOLATIONS
+             ════════════════════════════════════════════════════ -->
+        <?php if ($violations): ?>
+        <div class="table-responsive">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Opis naruszenia</th>
+                <th>Poziom</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($violations as $v): ?>
+              <tr class="<?= ($v['type']??'')==='error'?'table-danger':'table-warning' ?>">
+                <td class="text-nowrap"><?= fmtDate($v['date'] ?? '') ?></td>
+                <td><?= e($v['msg'] ?? '') ?></td>
+                <td>
+                  <?php if (($v['type']??'')==='error'): ?>
+                  <span class="violation-error"><i class="bi bi-exclamation-triangle-fill me-1"></i>Poważne</span>
+                  <?php else: ?>
+                  <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
+                  <?php endif; ?>
+                </td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php else: ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-shield-check" style="font-size:2.5rem;color:#10b981"></i>
+          <p class="mt-3 mb-1 fw-600 text-success">Brak naruszeń</p>
+          <p class="text-muted small">Nie wykryto żadnych naruszeń przepisów UE w wybranym okresie.</p>
+        </div>
+        <?php endif; ?>
+
+        <?php elseif ($activeTab === 'files'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: FILES
+             ════════════════════════════════════════════════════ -->
+        <?php if ($driverFiles): ?>
+        <div class="table-responsive">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Plik</th>
+                <th>Data wgrania</th>
+                <th>Okres danych</th>
+                <th>Rozmiar</th>
+                <th class="text-end">Akcja</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($driverFiles as $f): ?>
+              <tr>
+                <td>
+                  <i class="bi bi-file-earmark-binary text-primary me-1"></i>
+                  <?= e($f['original_name']) ?>
+                </td>
+                <td><?= fmtDate($f['download_date']) ?></td>
+                <td>
+                  <?php if ($f['period_start'] && $f['period_end']): ?>
+                  <?= fmtDate($f['period_start']) ?> – <?= fmtDate($f['period_end']) ?>
+                  <?php else: ?>
+                  —
+                  <?php endif; ?>
+                </td>
+                <td><?= $f['file_size'] ? number_format((int)$f['file_size'] / 1024, 1) . ' KB' : '—' ?></td>
+                <td class="text-end">
+                  <a href="/modules/driver_analysis/?driver_id=<?= $driverId ?>&file_id=<?= $f['id'] ?>"
+                     class="btn btn-xs btn-outline-primary">
+                    <i class="bi bi-bar-chart-line me-1"></i>Analizuj
+                  </a>
+                </td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php else: ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-folder-x" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak plików DDD</p>
+          <p class="text-muted small">
+            Nie wgrano jeszcze żadnego pliku DDD dla tego kierowcy.
+            <a href="/files.php">Wgraj plik DDD</a>.
+          </p>
+        </div>
+        <?php endif; ?>
+        <?php endif; ?>
+
+      </div><!-- /.tp-card-body -->
+    </div><!-- /.tp-card -->
+    <?php endif; // $driverInfo ?>
+  </div><!-- /.col-lg-9 -->
+</div>
 
 <style>
 /* ── Driver Calendar styles ─────────────────────────────────── */
+.dc-driver-card {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .75rem;
+  background: var(--tp-card-bg, #f8fafc);
+  border-radius: 8px;
+  border: 1px solid var(--tp-border, #e2e8f0);
+}
+.dc-driver-avatar {
+  width: 42px; height: 42px;
+  border-radius: 50%;
+  background: var(--tp-primary, #2563eb);
+  color: #fff;
+  font-size: .9rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.dc-tabs .nav-link {
+  font-size: .875rem;
+  padding: .45rem .85rem;
+  color: var(--tp-text-muted, #64748b);
+  border-bottom: 2px solid transparent;
+  border-top: none; border-left: none; border-right: none;
+}
+.dc-tabs .nav-link.active {
+  color: var(--tp-primary, #2563eb);
+  border-bottom-color: var(--tp-primary, #2563eb);
+  background: transparent;
+  font-weight: 600;
+}
+.dc-tabs .nav-link:hover:not(.active) {
+  color: var(--tp-text, #1e293b);
+}
+.dc-file-list .list-group-item { border-left: none; border-right: none; }
+.dc-file-list .list-group-item:first-child { border-top: none; }
+
+/* Calendar grid */
 .dc-badge {
   display: inline-block;
   width: 14px; height: 14px;
@@ -573,11 +789,14 @@ document.addEventListener('DOMContentLoaded', function () {
 .dc-badge.dc-rest   { background: #94a3b8; }
 .dc-badge.dc-viol   { background: #ef4444; }
 .dc-badge.dc-no-data{ background: #e5e7eb; border:1px solid #d1d5db; }
-
-.dc-month-title {
-  font-weight: 600;
-  font-size: .95rem;
+.dc-month-header {
+  display: flex;
+  align-items: center;
   margin-bottom: .5rem;
+}
+.dc-month-title {
+  font-weight: 700;
+  font-size: .95rem;
   color: var(--tp-text, #1e293b);
 }
 .dc-grid {
@@ -587,21 +806,23 @@ document.addEventListener('DOMContentLoaded', function () {
 }
 .dc-dow {
   text-align: center;
-  font-size: .7rem;
+  font-size: .68rem;
   font-weight: 600;
   color: #64748b;
   padding: 3px 0;
 }
 .dc-cell {
   border-radius: 5px;
-  min-height: 52px;
+  min-height: 54px;
   padding: 3px 4px 2px;
   position: relative;
   cursor: default;
   overflow: hidden;
+  transition: filter .1s;
 }
 .dc-empty { background: transparent; }
 .dc-no-data { background: #f1f5f9; }
+.dc-weekend.dc-no-data { background: #f8f3f3; }
 .dc-has-data { border: 1px solid rgba(0,0,0,.07); }
 .dc-drive  { background: #dbeafe; }
 .dc-work   { background: #fef3c7; }
@@ -609,7 +830,8 @@ document.addEventListener('DOMContentLoaded', function () {
 .dc-rest   { background: #f1f5f9; }
 .dc-viol   { border: 2px solid #ef4444 !important; }
 .dc-warn   { border: 2px solid #f59e0b !important; }
-.dc-has-data:hover { filter: brightness(.95); }
+.dc-weekend.dc-has-data { opacity: .85; }
+.dc-has-data:hover { filter: brightness(.93); cursor: pointer; }
 .dc-day-num {
   font-size: .65rem;
   font-weight: 700;
@@ -622,13 +844,25 @@ document.addEventListener('DOMContentLoaded', function () {
   height: 5px;
   border-radius: 2px;
   overflow: hidden;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .dc-bar { height: 100%; }
 .dc-bar-drive { background: var(--tp-primary, #2563eb); }
 .dc-bar-work  { background: #f59e0b; }
 .dc-bar-avail { background: #10b981; }
 .dc-bar-rest  { background: #94a3b8; }
+.dc-viol-dot {
+  position: absolute;
+  top: 3px; right: 4px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+.btn-xs {
+  padding: .15rem .45rem;
+  font-size: .75rem;
+  line-height: 1.4;
+}
 </style>
 
 <?php include __DIR__ . '/../../templates/footer.php'; ?>

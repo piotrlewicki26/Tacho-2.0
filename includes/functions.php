@@ -950,24 +950,17 @@ function parseVehicleDdd(string $path): array {
 
 /**
  * Backfill driver_activity_calendar for a specific driver by copying data
- * from ddd_activity_days (joined with ddd_files).  Only runs when the calendar
- * table has no rows for this driver, so it is safe to call on every page load.
+ * from ddd_activity_days (joined with ddd_files).  Runs on every page load
+ * so newly uploaded DDD files are automatically reflected in the calendar.
  *
  * @param  \PDO $db
  * @param  int  $companyId
  * @param  int  $driverId
- * @return int  Number of rows inserted/updated (0 if calendar already has data)
+ * @return int  Number of rows now in the calendar for this driver
  */
 function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId): int
 {
     if (!$driverId) return 0;
-
-    // Fast check – skip backfill if we already have any row for this driver
-    $existing = $db->prepare(
-        'SELECT 1 FROM driver_activity_calendar WHERE driver_id=? LIMIT 1'
-    );
-    $existing->execute([$driverId]);
-    if ($existing->fetchColumn() !== false) return 0;
 
     // Count available source rows
     $countStmt = $db->prepare(
