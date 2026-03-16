@@ -1255,7 +1255,7 @@
     });
 
     /* State */
-    var numWeeks = 5;
+    var numWeeks = 4;
     var thisMonday = monDay(new Date());
     /* Auto-position to the latest week that has data so that old DDD files
      * immediately show border crossings and activity rather than today's
@@ -1287,10 +1287,7 @@
       return b;
     }
     var prevBtn  = mkBtn('\u25C4');
-    var todayBtn = mkBtn('Dzi\u015b','background:#E3F2FD;border-color:#1E88E5;color:#1E88E5;font-weight:600;');
     var nextBtn  = mkBtn('\u25BA');
-    /* "Dane" button: jump to the latest week that has actual data */
-    var dataBtn  = mkBtn('Dane \u25BA','background:#E8F5E9;border-color:#43A047;color:#2E7D32;font-weight:600;');
     var sep      = document.createElement('div'); sep.style.cssText = 'width:1px;height:20px;background:#DDE1E6;';
     var wkLabel  = document.createElement('span');
     wkLabel.style.cssText = 'font-size:13px;color:#9AA0AA;font-family:Inter,sans-serif;';
@@ -1319,10 +1316,8 @@
 
     prevBtn.addEventListener('click',  function(){ startWk=addD(startWk,-7); renderWeeks(); });
     nextBtn.addEventListener('click',  function(){ startWk=addD(startWk, 7); renderWeeks(); });
-    todayBtn.addEventListener('click', function(){ startWk=addD(thisMonday,-(numWeeks-1)*7); renderWeeks(); });
-    dataBtn.addEventListener('click',  function(){ startWk=addD(_dataMonday,-(numWeeks-1)*7); renderWeeks(); });
 
-    [prevBtn, todayBtn, nextBtn, dataBtn, sep, wkLabel].concat(wkBtns).concat([dateRange]).forEach(function(el){ toolbar.appendChild(el); });
+    [prevBtn, nextBtn, sep, wkLabel].concat(wkBtns).concat([dateRange]).forEach(function(el){ toolbar.appendChild(el); });
     container.appendChild(toolbar);
 
     /* Legend */

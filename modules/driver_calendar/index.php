@@ -97,7 +97,8 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: full available data range when no explicit dates given.
+        // Date range – default: current month; fall back to most-recent data month
+        // when the current month has no data at all.
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
@@ -113,9 +114,15 @@ if ($driverId) {
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
             // First driver selection (no dates in URL).
-            // Default to the full available data range so data is always visible.
-            $dateFrom = $dataDateMin ?? $curMonthFrom;
-            $dateTo   = $dataDateMax ?? $curMonthTo;
+            // Default to current month; if driver has no data there, show the
+            // most recent available data range so something is always visible.
+            if ($dataDateMax !== null && $dataDateMax < $curMonthFrom) {
+                $dateFrom = $dataDateMin;
+                $dateTo   = $dataDateMax;
+            } else {
+                $dateFrom = $curMonthFrom;
+                $dateTo   = $curMonthTo;
+            }
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $curMonthFrom;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $curMonthTo;
@@ -274,7 +281,7 @@ include __DIR__ . '/../../templates/header.php';
         <form method="GET" novalidate id="filterForm">
           <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
           <div class="mb-3">
-            <select name="driver_id" class="form-select" onchange="this.form.submit()" title="Wybierz kierowcę">
+            <select name="driver_id" class="form-select" onchange="var f=this.form;f.elements['from'].value='';f.elements['to'].value='';f.submit();" title="Wybierz kierowcę">
               <option value="">— Wybierz kierowcę —</option>
               <?php foreach ($allDrivers as $d): ?>
               <option value="<?= $d['id'] ?>"<?= $d['id']==$driverId?' selected':'' ?>>

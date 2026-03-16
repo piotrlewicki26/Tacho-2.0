@@ -129,30 +129,33 @@ if ($action === 'profile' && $editDriver) {
     $stmt->execute([$driverId]);
     $profileLastDownload = $stmt->fetchColumn() ?: null;
 
-    // Activity timeline data for last 4 weeks (for TachoChart)
-    $chartFrom = (new DateTime('today'))->modify('-28 days')->format('Y-m-d');
+    // Activity timeline data for last 90 days (for TachoChart)
+    $chartFrom = (new DateTime('today'))->modify('-90 days')->format('Y-m-d');
     $chartTo   = (new DateTime('today'))->format('Y-m-d');
     try {
         // Auto-backfill calendar from ddd_activity_days when calendar is empty
         backfillDriverActivityCalendar($db, $companyId, $driverId);
 
         $chartStmt = $db->prepare(
-            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
+            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings
              FROM driver_activity_calendar
              WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
              ORDER BY date'
         );
         $chartStmt->execute([$companyId, $driverId, $chartFrom, $chartTo]);
         foreach ($chartStmt->fetchAll() as $cr) {
+            $crossings = json_decode($cr['border_crossings'] ?? '[]', true) ?: [];
+            if (is_int($crossings)) $crossings = [];
             $profileChartDays[] = [
-                'date'  => $cr['date'],
-                'segs'  => json_decode($cr['segments']  ?? '[]', true) ?: [],
-                'drive' => (int)$cr['drive_min'],
-                'work'  => (int)$cr['work_min'],
-                'avail' => (int)$cr['avail_min'],
-                'rest'  => (int)$cr['rest_min'],
-                'dist'  => (int)$cr['dist_km'],
-                'viol'  => json_decode($cr['violations'] ?? '[]', true) ?: [],
+                'date'      => $cr['date'],
+                'segs'      => json_decode($cr['segments']  ?? '[]', true) ?: [],
+                'drive'     => (int)$cr['drive_min'],
+                'work'      => (int)$cr['work_min'],
+                'avail'     => (int)$cr['avail_min'],
+                'rest'      => (int)$cr['rest_min'],
+                'dist'      => (int)$cr['dist_km'],
+                'viol'      => json_decode($cr['violations'] ?? '[]', true) ?: [],
+                'crossings' => $crossings,
             ];
         }
     } catch (Throwable $chartErr) {
@@ -548,7 +551,7 @@ $totalM = $profileTotalDrive % 60;
           <div class="tp-card-header">
             <i class="bi bi-activity text-primary"></i>
             <span class="tp-card-title">Oś czasu aktywności tachografu</span>
-            <span class="badge bg-secondary ms-2">ostatnie 4 tygodnie</span>
+            <span class="badge bg-secondary ms-2">ostatnie 90 dni</span>
             <a href="/modules/driver_calendar/?driver_id=<?= $driverId ?>&tab=timeline"
                class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
               <i class="bi bi-box-arrow-up-right me-1"></i>Pełna analiza
@@ -607,7 +610,7 @@ $totalM = $profileTotalDrive % 60;
             <?php else: ?>
             <div class="tp-empty-state py-4">
               <i class="bi bi-activity"></i>
-              <p>Brak danych aktywności dla ostatnich 4 tygodni.<br>
+              <p>Brak danych aktywności dla ostatnich 90 dni.<br>
                  <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić oś czasu.</p>
             </div>
             <?php endif; ?>
