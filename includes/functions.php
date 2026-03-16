@@ -44,7 +44,7 @@ function dateStatus(?string $date, int $warnDays = 30): array {
     if ($diff <= $warnDays) {
         return ['class' => 'warning', 'label' => 'Wkrótce wygaśnie', 'days' => $diff];
     }
-    return ['class' => 'success', 'label' => 'Aktualny', 'days' => $diff];
+    return ['class' => 'success', 'label' => 'Aktywna', 'days' => $diff];
 }
 
 /**
@@ -187,7 +187,7 @@ function dddNameTrim(string $raw): string
  * Strategy 1 – JSX tag 0x05 0x20: primary name detection.
  * Strategy 2 – EF_Identification tag 0x01 0x05: card number + fallback name + birth date.
  *
- * @return array{last_name:string, first_name:string, card_number:string, birth_date:?string}|null
+ * @return array{last_name:string, first_name:string, card_number:string, birth_date:?string, card_valid_until:?string}|null
  */
 function dddParseDriverInfo(string $data): ?array
 {
@@ -222,8 +222,9 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     // ── Strategy 2: EF_Identification tag 0x01 0x05 ──────────────────────────
-    $cardNumber = null;
-    $birthDate  = null;
+    $cardNumber   = null;
+    $birthDate    = null;
+    $cardValidUntil = null;
     for ($i = 0; $i < $len - 144; $i++) {
         if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
             continue;
@@ -262,6 +263,14 @@ function dddParseDriverInfo(string $data): ?array
                 $birthDate = gmdate('Y-m-d', $birthTs);
             }
         }
+        // cardExpiryDate at base+61 (TimeReal = 4-byte big-endian Unix timestamp)
+        if ($bl >= 65 && $i + 6 + 65 <= $len) {
+            $expiryTs   = unpack('N', substr($data, $base + 61, 4))[1];
+            $expiryYear = (int)gmdate('Y', $expiryTs);
+            if ($expiryYear >= 2000 && $expiryYear <= 2050) {
+                $cardValidUntil = gmdate('Y-m-d', $expiryTs);
+            }
+        }
         if ($cardNumber !== null || $driverName !== null) {
             break;
         }
@@ -272,10 +281,11 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     return [
-        'last_name'   => $driverName['last_name'],
-        'first_name'  => $driverName['first_name'],
-        'card_number' => $cardNumber ?? '',
-        'birth_date'  => $birthDate,
+        'last_name'       => $driverName['last_name'],
+        'first_name'      => $driverName['first_name'],
+        'card_number'     => $cardNumber ?? '',
+        'birth_date'      => $birthDate,
+        'card_valid_until' => $cardValidUntil,
     ];
 }
 

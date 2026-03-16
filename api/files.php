@@ -161,8 +161,9 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     // ── Strategy 2: EF_Identification tag 0x01 0x05 – card number + fallback name + birth date ──
-    $cardNumber = null;
-    $birthDate  = null;
+    $cardNumber   = null;
+    $birthDate    = null;
+    $cardValidUntil = null;
     for ($i = 0; $i < $len - 144; $i++) {
         if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
             continue;
@@ -218,6 +219,15 @@ function dddParseDriverInfo(string $data): ?array
             }
         }
 
+        // cardExpiryDate at base+61 (TimeReal = 4-byte big-endian Unix timestamp)
+        if ($bl >= 65 && $i + 6 + 65 <= $len) {
+            $expiryTs   = unpack('N', substr($data, $base + 61, 4))[1];
+            $expiryYear = (int)gmdate('Y', $expiryTs);
+            if ($expiryYear >= 2000 && $expiryYear <= 2050) {
+                $cardValidUntil = gmdate('Y-m-d', $expiryTs);
+            }
+        }
+
         if ($cardNumber !== null || $driverName !== null) {
             break;
         }
@@ -228,10 +238,11 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     return [
-        'last_name'   => $driverName['last_name'],
-        'first_name'  => $driverName['first_name'],
-        'card_number' => $cardNumber ?? '',
-        'birth_date'  => $birthDate,
+        'last_name'        => $driverName['last_name'],
+        'first_name'       => $driverName['first_name'],
+        'card_number'      => $cardNumber ?? '',
+        'birth_date'       => $birthDate,
+        'card_valid_until' => $cardValidUntil,
     ];
 }
 } /* end if (!function_exists('dddParseDriverInfo')) */
@@ -363,10 +374,11 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($fileType === 'driver') {
             $parsed = dddParseDriverInfo($binaryData);
             if ($parsed) {
-                $lastName         = $parsed['last_name'];
-                $firstName        = $parsed['first_name'];
-                $parsedCardNumber = $parsed['card_number'];
-                $parsedBirthDate  = $parsed['birth_date'] ?? null;
+                $lastName           = $parsed['last_name'];
+                $firstName          = $parsed['first_name'];
+                $parsedCardNumber   = $parsed['card_number'];
+                $parsedBirthDate    = $parsed['birth_date'] ?? null;
+                $parsedCardValid    = $parsed['card_valid_until'] ?? null;
 
                 // Try to find existing driver by card number first, then by name
                 $stmt = $db->prepare(
@@ -395,11 +407,17 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             'UPDATE drivers SET birth_date=? WHERE id=? AND birth_date IS NULL'
                         )->execute([$parsedBirthDate, $linkedDriverId]);
                     }
+                    // Update card expiry date – keep the latest (furthest) date
+                    if ($parsedCardValid) {
+                        $db->prepare(
+                            'UPDATE drivers SET card_valid_until=? WHERE id=? AND (card_valid_until IS NULL OR card_valid_until < ?)'
+                        )->execute([$parsedCardValid, $linkedDriverId, $parsedCardValid]);
+                    }
                 } else {
-                    // Auto-create driver with card number and birth date
+                    // Auto-create driver with card number, birth date and card expiry
                     $db->prepare(
-                        'INSERT INTO drivers (company_id, first_name, last_name, card_number, birth_date) VALUES (?,?,?,?,?)'
-                    )->execute([$companyId, $firstName, $lastName, $parsedCardNumber ?: null, $parsedBirthDate]);
+                        'INSERT INTO drivers (company_id, first_name, last_name, card_number, birth_date, card_valid_until) VALUES (?,?,?,?,?,?)'
+                    )->execute([$companyId, $firstName, $lastName, $parsedCardNumber ?: null, $parsedBirthDate, $parsedCardValid]);
                     $linkedDriverId = (int)$db->lastInsertId();
                     $autoCreated = "Automatycznie utworzono kierowcę: {$firstName} {$lastName}";
                 }
@@ -450,6 +468,20 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $parsedCardNumber ?: null,
         ]);
         $newFileId = (int)$db->lastInsertId();
+
+        // ── Record card download date for driver cards ────────────────
+        if ($fileType === 'driver' && $linkedDriverId) {
+            $effDate = $downloadDate ?: date('Y-m-d');
+            $exists  = $db->prepare(
+                'SELECT id FROM card_downloads WHERE driver_id=? AND download_date=? LIMIT 1'
+            );
+            $exists->execute([$linkedDriverId, $effDate]);
+            if (!$exists->fetchColumn()) {
+                $db->prepare(
+                    'INSERT INTO card_downloads (driver_id, download_date, performed_by) VALUES (?,?,?)'
+                )->execute([$linkedDriverId, $effDate, $userId]);
+            }
+        }
 
         // ── Parse activity data and persist to ddd_activity_days ─────
         try {
