@@ -177,7 +177,10 @@
         setTimeout(() => {
           const bsModal = bootstrap.Modal.getInstance(document.getElementById('dddUploadModal'));
           bsModal?.hide();
-          if (window.location.pathname === '/files.php') {
+          // After uploading a driver card, redirect to the driver calendar for that driver
+          if (data.driver_id && fileTypeEl.value === 'driver') {
+            window.location.href = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id);
+          } else if (window.location.pathname === '/files.php') {
             window.location.reload();
           }
         }, 900);

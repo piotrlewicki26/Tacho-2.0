@@ -853,9 +853,13 @@ include __DIR__ . '/../../templates/header.php';
                 </td>
                 <td><?= $f['file_size'] ? number_format((int)$f['file_size'] / 1024, 1) . ' KB' : '—' ?></td>
                 <td class="text-end">
-                  <a href="/modules/driver_analysis/?driver_id=<?= $driverId ?>&file_id=<?= $f['id'] ?>"
+                  <?php
+                    $fFrom = $f['period_start'] ?: $f['download_date'];
+                    $fTo   = $f['period_end']   ?: $f['download_date'];
+                  ?>
+                  <a href="?driver_id=<?= $driverId ?>&from=<?= e($fFrom) ?>&to=<?= e($fTo) ?>&tab=timeline"
                      class="btn btn-xs btn-outline-primary">
-                    <i class="bi bi-bar-chart-line me-1"></i>Analizuj
+                    <i class="bi bi-activity me-1"></i>Oś czasu
                   </a>
                 </td>
               </tr>
