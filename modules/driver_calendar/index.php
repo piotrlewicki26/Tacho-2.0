@@ -47,7 +47,7 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files'])
+$activeTab = in_array($_GET['tab'] ?? '', ['calendar','violations','files'])
     ? $_GET['tab'] : 'calendar';
 
 $stmt = $db->prepare(
@@ -458,11 +458,6 @@ include __DIR__ . '/../../templates/header.php';
                role="tab"><i class="bi bi-calendar3 me-1"></i>Kalendarz</a>
           </li>
           <li class="nav-item" role="presentation">
-            <a class="nav-link<?= $activeTab==='timeline'?' active':'' ?>"
-               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=timeline"
-               role="tab"><i class="bi bi-activity me-1"></i>Oś czasu</a>
-          </li>
-          <li class="nav-item" role="presentation">
             <a class="nav-link<?= $activeTab==='violations'?' active':'' ?>"
                href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=violations"
                role="tab">
@@ -835,9 +830,9 @@ include __DIR__ . '/../../templates/header.php';
                     $fFrom = $f['period_start'] ?: $f['download_date'];
                     $fTo   = $f['period_end']   ?: $f['download_date'];
                   ?>
-                  <a href="?driver_id=<?= $driverId ?>&from=<?= e($fFrom) ?>&to=<?= e($fTo) ?>&tab=timeline"
+                  <a href="?driver_id=<?= $driverId ?>&from=<?= e($fFrom) ?>&to=<?= e($fTo) ?>&tab=calendar"
                      class="btn btn-xs btn-outline-primary">
-                    <i class="bi bi-activity me-1"></i>Oś czasu
+                    <i class="bi bi-calendar3 me-1"></i>Kalendarz
                   </a>
                 </td>
               </tr>

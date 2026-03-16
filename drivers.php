@@ -121,6 +121,9 @@ $profileLastDownload = null;
 $profileWeeks        = [];
 $profileTotalDrive   = 0;
 $profileChartDays    = [];
+$profileVehicles     = [];
+$vehFrom             = null;
+$vehTo               = null;
 if ($action === 'profile' && $editDriver) {
     // Last download date (latest period_end from card_downloads)
     $stmt = $db->prepare(
@@ -246,6 +249,34 @@ if ($action === 'profile' && $editDriver) {
             'days'  => $days,
             'total' => $rowTotal,
         ];
+    }
+
+    // ── Vehicles tab data ────────────────────────────────────────
+    $nowDt   = new DateTime('today');
+    $vehFrom = isset($_GET['veh_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_from'])
+             ? $_GET['veh_from']
+             : $nowDt->format('Y-m-01');
+    $vehTo   = isset($_GET['veh_to']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_to'])
+             ? $_GET['veh_to']
+             : $nowDt->format('Y-m-t');
+    try {
+        $vStmt = $db->prepare(
+            "SELECT v.registration,
+                    MIN(dac.date) AS period_start,
+                    MAX(dac.date) AS period_end,
+                    SUM(dac.dist_km) AS total_dist
+             FROM driver_activity_calendar dac
+             JOIN ddd_files df ON df.id = dac.source_file_id AND df.vehicle_id IS NOT NULL
+             JOIN vehicles v ON v.id = df.vehicle_id
+             WHERE dac.driver_id = ? AND dac.company_id = ?
+               AND dac.date BETWEEN ? AND ?
+             GROUP BY v.id, v.registration
+             ORDER BY MIN(dac.date)"
+        );
+        $vStmt->execute([$driverId, $companyId, $vehFrom, $vehTo]);
+        $profileVehicles = $vStmt->fetchAll();
+    } catch (Throwable $vErr) {
+        error_log('drivers.php vehicles tab: ' . $vErr->getMessage());
     }
 }
 
@@ -438,7 +469,7 @@ include __DIR__ . '/templates/header.php';
                  class="btn btn-xs btn-outline-primary me-1" title="Edytuj">
                 <i class="bi bi-pencil"></i>
               </a>
-              <a href="/modules/driver_calendar/?driver_id=<?= $d['id'] ?>&tab=timeline"
+              <a href="/modules/driver_calendar/?driver_id=<?= $d['id'] ?>&tab=violations"
                  class="btn btn-xs btn-outline-info me-1" title="Analiza">
                 <i class="bi bi-bar-chart-line"></i>
               </a>
@@ -587,6 +618,10 @@ $totalM = $profileTotalDrive % 60;
              data-bs-toggle="list" href="#pane-weeks" role="tab">
             <i class="bi bi-table me-2"></i>Tygodnie
           </a>
+          <a class="list-group-item list-group-item-action py-2 px-3" id="tab-vehicles"
+             data-bs-toggle="list" href="#pane-vehicles" role="tab">
+            <i class="bi bi-truck me-2"></i>Pojazdy
+          </a>
         </div>
       </div>
     </div>
@@ -602,7 +637,7 @@ $totalM = $profileTotalDrive % 60;
             <i class="bi bi-activity text-primary"></i>
             <span class="tp-card-title">Oś czasu aktywności tachografu</span>
             <span class="badge bg-secondary ms-2">ostatnie 90 dni</span>
-            <a href="/modules/driver_calendar/?driver_id=<?= $driverId ?>&tab=timeline"
+            <a href="/modules/driver_calendar/?driver_id=<?= $driverId ?>&tab=violations"
                class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
               <i class="bi bi-box-arrow-up-right me-1"></i>Pełna analiza
             </a>
@@ -741,6 +776,81 @@ $totalM = $profileTotalDrive % 60;
             <div class="tp-empty-state py-4">
               <i class="bi bi-table"></i>
               Brak danych aktywności dla tego kierowcy.
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vehicles tab -->
+      <div class="tab-pane fade" id="pane-vehicles" role="tabpanel">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-truck text-primary"></i>
+            <span class="tp-card-title">Pojazdy</span>
+          </div>
+          <div class="tp-card-body">
+            <!-- Date filter -->
+            <form method="GET" class="d-flex flex-wrap gap-2 align-items-end mb-3">
+              <input type="hidden" name="action" value="profile">
+              <input type="hidden" name="id" value="<?= $driverId ?>">
+              <div>
+                <label class="form-label small mb-1">Od</label>
+                <input type="date" name="veh_from" class="form-control form-control-sm"
+                       value="<?= e($vehFrom) ?>">
+              </div>
+              <div>
+                <label class="form-label small mb-1">Do</label>
+                <input type="date" name="veh_to" class="form-control form-control-sm"
+                       value="<?= e($vehTo) ?>">
+              </div>
+              <button type="submit" class="btn btn-sm btn-primary" onclick="document.getElementById('tab-vehicles').click()">
+                <i class="bi bi-funnel me-1"></i>Filtruj
+              </button>
+              <script>
+              // Activate vehicles tab after filter submit
+              document.addEventListener('DOMContentLoaded', function() {
+                var hash = window.location.hash;
+                if (hash === '#pane-vehicles' || new URLSearchParams(window.location.search).has('veh_from') || new URLSearchParams(window.location.search).has('veh_to')) {
+                  var tabEl = document.getElementById('tab-vehicles');
+                  if (tabEl) { tabEl.click(); }
+                }
+              });
+              </script>
+            </form>
+            <?php if ($profileVehicles): ?>
+            <div class="table-responsive">
+              <table class="tp-table table-sm">
+                <thead>
+                  <tr>
+                    <th>Nr rejestracyjny</th>
+                    <th>Początek terminu</th>
+                    <th>Koniec terminu</th>
+                    <th class="text-end">Odległość</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($profileVehicles as $pv): ?>
+                  <tr>
+                    <td class="fw-bold"><?= e($pv['registration']) ?></td>
+                    <td><?= fmtDate($pv['period_start']) ?></td>
+                    <td><?= fmtDate($pv['period_end']) ?></td>
+                    <td class="text-end"><?= $pv['total_dist'] ? number_format((int)$pv['total_dist'], 0, ',', ' ') . ' km' : '—' ?></td>
+                  </tr>
+                  <?php endforeach; ?>
+                </tbody>
+                <tfoot>
+                  <tr class="table-secondary fw-bold">
+                    <td colspan="3">Łącznie</td>
+                    <td class="text-end"><?= number_format(array_sum(array_column($profileVehicles, 'total_dist')), 0, ',', ' ') ?> km</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <?php else: ?>
+            <div class="tp-empty-state py-4">
+              <i class="bi bi-truck" style="font-size:2rem;color:#94a3b8"></i>
+              <p class="mt-2 text-muted small">Brak danych o pojazdach w wybranym okresie.</p>
             </div>
             <?php endif; ?>
           </div>
