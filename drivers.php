@@ -120,6 +120,7 @@ if (($action === 'edit' || $action === 'view' || $action === 'profile') && $driv
 $profileLastDownload = null;
 $profileWeeks        = [];
 $profileTotalDrive   = 0;
+$profileChartDays    = [];
 if ($action === 'profile' && $editDriver) {
     // Last download date (latest period_end from card_downloads)
     $stmt = $db->prepare(
@@ -127,6 +128,33 @@ if ($action === 'profile' && $editDriver) {
     );
     $stmt->execute([$driverId]);
     $profileLastDownload = $stmt->fetchColumn() ?: null;
+
+    // Activity timeline data for last 4 weeks (for TachoChart)
+    $chartFrom = (new DateTime('today'))->modify('-28 days')->format('Y-m-d');
+    $chartTo   = (new DateTime('today'))->format('Y-m-d');
+    try {
+        $chartStmt = $db->prepare(
+            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
+             FROM driver_activity_calendar
+             WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
+             ORDER BY date'
+        );
+        $chartStmt->execute([$companyId, $driverId, $chartFrom, $chartTo]);
+        foreach ($chartStmt->fetchAll() as $cr) {
+            $profileChartDays[] = [
+                'date'  => $cr['date'],
+                'segs'  => json_decode($cr['segments']  ?? '[]', true) ?: [],
+                'drive' => (int)$cr['drive_min'],
+                'work'  => (int)$cr['work_min'],
+                'avail' => (int)$cr['avail_min'],
+                'rest'  => (int)$cr['rest_min'],
+                'dist'  => (int)$cr['dist_km'],
+                'viol'  => json_decode($cr['violations'] ?? '[]', true) ?: [],
+            ];
+        }
+    } catch (Throwable $chartErr) {
+        error_log('drivers.php profile chart: ' . $chartErr->getMessage());
+    }
 
     // Weekly driving time table from driver_activity_calendar
     $stmt = $db->prepare(
@@ -515,17 +543,71 @@ $totalM = $profileTotalDrive % 60;
       <div class="tab-pane fade show active" id="pane-activity" role="tabpanel">
         <div class="tp-card">
           <div class="tp-card-header">
-            <i class="bi bi-bar-chart-line text-primary"></i>
-            <span class="tp-card-title">Aktywność kierowcy</span>
+            <i class="bi bi-activity text-primary"></i>
+            <span class="tp-card-title">Oś czasu aktywności tachografu</span>
+            <span class="badge bg-secondary ms-2">ostatnie 4 tygodnie</span>
             <a href="/modules/driver_analysis/?driver_id=<?= $driverId ?>"
                class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
               <i class="bi bi-box-arrow-up-right me-1"></i>Pełna analiza
             </a>
           </div>
-          <div class="tp-card-body p-0">
-            <iframe src="/modules/driver_analysis/?driver_id=<?= $driverId ?>"
-                    style="width:100%;height:520px;border:none;border-radius:0 0 8px 8px"
-                    title="Analiza aktywności"></iframe>
+          <div class="tp-card-body">
+            <?php if ($profileChartDays): ?>
+            <!-- Summary stats row -->
+            <?php
+              $pcsD = array_sum(array_column($profileChartDays, 'drive'));
+              $pcsW = array_sum(array_column($profileChartDays, 'work'));
+              $pcsR = array_sum(array_column($profileChartDays, 'rest'));
+              $pcsV = array_sum(array_map(fn($d) => count(array_filter($d['viol'], fn($v)=>($v['type']??'')==='error')), $profileChartDays));
+            ?>
+            <div class="row g-2 mb-3">
+              <div class="col-6 col-md-3">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon primary"><i class="bi bi-speedometer2"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= floor($pcsD/60) ?>h <?= $pcsD%60 ?>m</div>
+                    <div class="tp-stat-label">Jazda</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-6 col-md-3">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon warning"><i class="bi bi-briefcase"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= floor($pcsW/60) ?>h <?= $pcsW%60 ?>m</div>
+                    <div class="tp-stat-label">Praca</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-6 col-md-3">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon success"><i class="bi bi-moon"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= floor($pcsR/60) ?>h <?= $pcsR%60 ?>m</div>
+                    <div class="tp-stat-label">Odpoczynek</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-6 col-md-3">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon <?= $pcsV>0?'danger':'success' ?>">
+                    <i class="bi bi-<?= $pcsV>0?'exclamation-triangle':'check-circle' ?>"></i>
+                  </div>
+                  <div>
+                    <div class="tp-stat-value"><?= $pcsV ?></div>
+                    <div class="tp-stat-label">Naruszenia</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="profileTachoTimeline" style="width:100%;overflow-x:auto;"></div>
+            <?php else: ?>
+            <div class="tp-empty-state py-4">
+              <i class="bi bi-activity"></i>
+              <p>Brak danych aktywności dla ostatnich 4 tygodni.<br>
+                 <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić oś czasu.</p>
+            </div>
+            <?php endif; ?>
           </div>
         </div>
       </div>
@@ -614,4 +696,14 @@ $totalM = $profileTotalDrive % 60;
 <?php endif; // profile vs list ?>
 
 <style>.btn-xs{padding:.2rem .5rem;font-size:.8rem;}</style>
+<?php if ($action === 'profile' && $profileChartDays): ?>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var days = <?= json_encode($profileChartDays, JSON_UNESCAPED_UNICODE) ?>;
+  if (days.length && window.TachoChart) {
+    TachoChart.render('profileTachoTimeline', days);
+  }
+});
+</script>
+<?php endif; ?>
 <?php include __DIR__ . '/templates/footer.php'; ?>
