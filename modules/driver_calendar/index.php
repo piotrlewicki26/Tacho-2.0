@@ -65,6 +65,8 @@ $driverInfo = null;
 $driverFiles = [];
 $dataDateMin = null;
 $dataDateMax = null;
+$dateFrom    = date('Y-m-01');
+$dateTo      = date('Y-m-t');
 
 if ($driverId) {
     $dStmt = $db->prepare('SELECT id, first_name, last_name, card_number FROM drivers WHERE id=? AND company_id=? AND is_active=1');
@@ -95,19 +97,25 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: full data range, capped at last 6 months or data extent
-        $today = new DateTime();
-        if ($dataDateMin) {
-            $defaultFrom = $dataDateMin;
-            $defaultTo   = $dataDateMax;
+        // Date range – default: current month on first driver selection;
+        // explicit from/to in GET when user filters manually.
+        $today        = new DateTime();
+        $curMonthFrom = $today->format('Y-m-01');
+        $curMonthTo   = $today->format('Y-m-t');
+
+        if (isset($_GET['from']) || isset($_GET['to'])) {
+            // User explicitly submitted the filter form – honour their choice.
+            $fallbackFrom = $dataDateMin ?? $curMonthFrom;
+            $fallbackTo   = $dataDateMax ?? $curMonthTo;
+            $dateFrom = $_GET['from'] ?? $fallbackFrom;
+            $dateTo   = $_GET['to']   ?? $fallbackTo;
         } else {
-            $defaultFrom = (clone $today)->modify('first day of -5 months')->format('Y-m-d');
-            $defaultTo   = $today->format('Y-m-d');
+            // First driver selection (no dates in URL) → default to current month.
+            $dateFrom = $curMonthFrom;
+            $dateTo   = $curMonthTo;
         }
-        $dateFrom = $_GET['from'] ?? $defaultFrom;
-        $dateTo   = $_GET['to']   ?? $defaultTo;
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $defaultFrom;
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $defaultTo;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $curMonthFrom;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $curMonthTo;
         if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 
         // Re-parse border crossings for stale/null rows
@@ -224,6 +232,17 @@ if ($driverId) {
     }
 }
 
+// ── Timeline tab date filter (tl_from / tl_to) ───────────────
+$tlFrom = isset($_GET['tl_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_from']) ? $_GET['tl_from'] : '';
+$tlTo   = isset($_GET['tl_to'])   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_to'])   ? $_GET['tl_to']   : '';
+if ($tlFrom && $tlTo && $tlFrom > $tlTo) [$tlFrom, $tlTo] = [$tlTo, $tlFrom];
+$filteredChartDays = $chartDays;
+if ($tlFrom || $tlTo) {
+    $filteredChartDays = array_values(array_filter($chartDays, function ($d) use ($tlFrom, $tlTo) {
+        return (!$tlFrom || $d['date'] >= $tlFrom) && (!$tlTo || $d['date'] <= $tlTo);
+    }));
+}
+
 // ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
 {
@@ -291,21 +310,38 @@ include __DIR__ . '/../../templates/header.php';
 
           <hr class="my-2">
           <label class="form-label fw-600 small">Zakres dat</label>
+          <!-- Quick-select buttons -->
+          <div class="d-flex gap-1 mb-2">
+            <?php
+              $qCurFrom = date('Y-m-01');
+              $qCurTo   = date('Y-m-t');
+              $qPrvFrom = date('Y-m-01', strtotime('-1 month'));
+              $qPrvTo   = date('Y-m-t',  strtotime('-1 month'));
+            ?>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $qCurFrom ?>&to=<?= $qCurTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= ($dateFrom===$qCurFrom&&$dateTo===$qCurTo)?'btn-primary':'btn-outline-primary' ?> flex-fill">
+              Bieżący
+            </a>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $qPrvFrom ?>&to=<?= $qPrvTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= ($dateFrom===$qPrvFrom&&$dateTo===$qPrvTo)?'btn-secondary':'btn-outline-secondary' ?> flex-fill">
+              Poprzedni
+            </a>
+          </div>
           <div class="mb-2">
             <input type="date" name="from" class="form-control form-control-sm"
                    value="<?= e($dateFrom ?? '') ?>"
-                   <?= $dataDateMin ? 'min="'.$dataDateMin.'" max="'.$dataDateMax.'"' : '' ?>>
+                   <?= $dataDateMin ? 'min="'.$dataDateMin.'"' : '' ?>>
           </div>
           <div class="mb-3">
             <input type="date" name="to" class="form-control form-control-sm"
                    value="<?= e($dateTo ?? '') ?>"
-                   <?= $dataDateMin ? 'min="'.$dataDateMin.'" max="'.$dataDateMax.'"' : '' ?>>
+                   <?= $dataDateMin ? 'min="'.$dataDateMin.'"' : '' ?>>
           </div>
           <button type="submit" class="btn btn-primary btn-sm w-100 mb-2">
             <i class="bi bi-search me-1"></i>Filtruj
           </button>
           <?php if ($dataDateMin): ?>
-          <a href="?driver_id=<?= $driverId ?>&tab=<?= e($activeTab) ?>"
+          <a href="?driver_id=<?= $driverId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>&tab=<?= e($activeTab) ?>"
              class="btn btn-outline-secondary btn-sm w-100">
             <i class="bi bi-arrow-counterclockwise me-1"></i>Pełny zakres
           </a>
@@ -455,11 +491,16 @@ include __DIR__ . '/../../templates/header.php';
           <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#94a3b8"></i>
           <p class="mt-3 mb-1 fw-600">Brak danych aktywności</p>
           <p class="text-muted small">
-            Brak danych dla wybranego kierowcy w podanym zakresie dat.
+            Brak danych dla wybranego kierowcy w wybranym zakresie dat.
             <?php if (!$driverFiles): ?>
             <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić kalendarz.
             <?php else: ?>
-            Spróbuj rozszerzyć zakres dat.
+            <?php if ($dataDateMin): ?>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>&tab=<?= e($activeTab) ?>">Pokaż pełny zakres danych</a>
+            (<?= fmtDate($dataDateMin) ?> – <?= fmtDate($dataDateMax) ?>).
+            <?php else: ?>
+            Spróbuj rozszerzyć zakres dat lub wgraj nowy plik DDD.
+            <?php endif; ?>
             <?php endif; ?>
           </p>
         </div>
@@ -573,27 +614,105 @@ include __DIR__ . '/../../templates/header.php';
 
         <?php elseif ($activeTab === 'timeline'): ?>
         <!-- ════════════════════════════════════════════════════
-             TAB: TIMELINE
+             TAB: TIMELINE / ANALIZATOR
              ════════════════════════════════════════════════════ -->
+
+        <!-- Timeline date range filter -->
+        <form method="GET" class="d-flex gap-2 mb-3 align-items-end flex-wrap" novalidate>
+          <input type="hidden" name="driver_id" value="<?= $driverId ?>">
+          <input type="hidden" name="from"      value="<?= e($dateFrom) ?>">
+          <input type="hidden" name="to"        value="<?= e($dateTo) ?>">
+          <input type="hidden" name="tab"       value="timeline">
+          <div>
+            <label class="form-label fw-600 mb-1 small">Od</label>
+            <input type="date" name="tl_from" class="form-control form-control-sm"
+                   value="<?= e($tlFrom ?: ($chartDays ? $chartDays[0]['date'] : $dateFrom)) ?>">
+          </div>
+          <div>
+            <label class="form-label fw-600 mb-1 small">Do</label>
+            <input type="date" name="tl_to" class="form-control form-control-sm"
+                   value="<?= e($tlTo ?: ($chartDays ? end($chartDays)['date'] : $dateTo)) ?>">
+          </div>
+          <button type="submit" class="btn btn-sm btn-primary">
+            <i class="bi bi-funnel me-1"></i>Filtruj
+          </button>
+          <?php if ($tlFrom || $tlTo): ?>
+          <a href="?driver_id=<?= $driverId ?>&amp;from=<?= e($dateFrom) ?>&amp;to=<?= e($dateTo) ?>&amp;tab=timeline"
+             class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-x-circle me-1"></i>Resetuj
+          </a>
+          <?php endif; ?>
+          <span class="ms-auto text-muted small align-self-end">
+            <?= count($filteredChartDays) ?> dni na osi czasu
+          </span>
+        </form>
+
         <div id="tachoTimelineMain" style="width:100%;overflow-x:auto;min-height:200px;"></div>
         <script>
         document.addEventListener('DOMContentLoaded', function () {
-          var days = <?= json_encode(array_values($chartDays), JSON_UNESCAPED_UNICODE) ?>;
+          var days = <?= json_encode(array_values($filteredChartDays), JSON_UNESCAPED_UNICODE) ?>;
           if (days.length && window.TachoChart) {
             TachoChart.render('tachoTimelineMain', days);
           }
         });
         </script>
 
-        <?php if (empty($chartDays)): ?>
+        <?php if (empty($filteredChartDays)): ?>
         <div class="tp-empty-state py-4">
           <i class="bi bi-activity" style="font-size:2rem;color:#94a3b8"></i>
-          <p class="mt-2 text-muted small">Brak danych do wyświetlenia na osi czasu.</p>
+          <p class="mt-2 text-muted small">Brak danych do wyświetlenia na osi czasu dla wybranego zakresu.</p>
+        </div>
+        <?php endif; ?>
+
+        <!-- Violations in timeline view -->
+        <?php
+          $tlViolations = [];
+          foreach ($filteredChartDays as $fd) {
+              $fDate = $fd['date'];
+              if (isset($calDays[$fDate])) {
+                  foreach ($calDays[$fDate]['viol'] as $v) {
+                      $tlViolations[] = array_merge($v, ['date' => $fDate]);
+                  }
+              }
+          }
+        ?>
+        <?php if ($tlViolations): ?>
+        <div class="mt-4">
+          <h6 class="fw-600 mb-2">
+            <i class="bi bi-exclamation-triangle text-danger me-1"></i>Naruszenia w wybranym zakresie
+            <span class="badge bg-danger ms-1"><?= count($tlViolations) ?></span>
+          </h6>
+          <div class="table-responsive">
+            <table class="tp-table small">
+              <thead><tr><th>Data</th><th>Opis</th><th>Poziom</th></tr></thead>
+              <tbody>
+                <?php foreach ($tlViolations as $v): ?>
+                <tr class="<?= ($v['type']??'')==='error'?'table-danger':'table-warning' ?>">
+                  <td class="text-nowrap"><?= fmtDate($v['date']) ?></td>
+                  <td><?= e($v['msg'] ?? '') ?></td>
+                  <td>
+                    <?php if (($v['type']??'')==='error'): ?>
+                    <span class="violation-error"><i class="bi bi-exclamation-triangle-fill me-1"></i>Poważne</span>
+                    <?php else: ?>
+                    <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
         </div>
         <?php endif; ?>
 
         <!-- Daily summary table under timeline -->
-        <?php if ($calDays): ?>
+        <?php
+          $tlCalDays = [];
+          foreach ($filteredChartDays as $fd) {
+              if (isset($calDays[$fd['date']])) $tlCalDays[] = $calDays[$fd['date']];
+          }
+        ?>
+        <?php if ($tlCalDays): ?>
         <div class="mt-4">
           <h6 class="fw-600 mb-2"><i class="bi bi-table me-1 text-secondary"></i>Podsumowanie dzienne</h6>
           <div class="table-responsive">
@@ -604,7 +723,7 @@ include __DIR__ . '/../../templates/header.php';
                 </tr>
               </thead>
               <tbody>
-                <?php foreach ($calDays as $day): ?>
+                <?php foreach ($tlCalDays as $day): ?>
                 <?php
                   $he = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
                   $hw = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
