@@ -614,16 +614,19 @@ include __DIR__ . '/../../templates/header.php';
         </div>
         <?php endforeach; ?>
 
-        <?php if (!empty($chartDays)): ?>
-        <!-- ── Embedded timeline analyzer ────────────────────── -->
-        <h6 class="fw-600 mt-2 mb-2"><i class="bi bi-activity me-1 text-primary"></i>Oś czasu aktywności</h6>
-        <div id="tachoCalendarTimeline" style="width:100%;overflow-x:auto;min-height:160px;"></div>
+        <?php if (!empty($calDays)): ?>
+        <!-- Day-view click handler for calendar cells -->
         <script>
         document.addEventListener('DOMContentLoaded', function () {
-          var days = <?= json_encode(array_values($chartDays), JSON_UNESCAPED_UNICODE) ?>;
-          if (days.length && window.TachoChart) {
-            TachoChart.render('tachoCalendarTimeline', days);
-          }
+          var calDaysData = <?= json_encode(array_values($calDays), JSON_UNESCAPED_UNICODE) ?>;
+          document.querySelectorAll('.dc-cell[data-date]').forEach(function(cell) {
+            cell.style.cursor = 'pointer';
+            cell.addEventListener('click', function() {
+              if (window.TachoChart && TachoChart.showDayView) {
+                TachoChart.showDayView(cell.getAttribute('data-date'), calDaysData);
+              }
+            });
+          });
         });
         </script>
         <?php endif; ?>
@@ -758,10 +761,17 @@ include __DIR__ . '/../../templates/header.php';
                 <th>Data</th>
                 <th>Opis naruszenia</th>
                 <th>Poziom</th>
+                <th class="text-nowrap">Kara – kierowca</th>
+                <th class="text-nowrap">Kara – firma</th>
+                <th>Akt prawny</th>
               </tr>
             </thead>
             <tbody>
-              <?php foreach ($violations as $v): ?>
+              <?php foreach ($violations as $v):
+                $vp = (isset($v['penalty_driver']) || isset($v['penalty_company']))
+                    ? $v
+                    : array_merge($v, violPenalty($v['type'] ?? '', $v['msg'] ?? ''));
+              ?>
               <tr class="<?= ($v['type']??'')==='error'?'table-danger':'table-warning' ?>">
                 <td class="text-nowrap"><?= fmtDate($v['date'] ?? '') ?></td>
                 <td><?= e($v['msg'] ?? '') ?></td>
@@ -772,6 +782,9 @@ include __DIR__ . '/../../templates/header.php';
                   <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
                   <?php endif; ?>
                 </td>
+                <td class="text-nowrap"><?= $vp['penalty_driver'] > 0 ? 'do ' . number_format($vp['penalty_driver'], 0, ',', ' ') . ' PLN' : '–' ?></td>
+                <td class="text-nowrap"><?= $vp['penalty_company'] > 0 ? 'do ' . number_format($vp['penalty_company'], 0, ',', ' ') . ' PLN' : '–' ?></td>
+                <td class="small text-muted"><?= e($vp['article'] ?? '') ?></td>
               </tr>
               <?php endforeach; ?>
             </tbody>

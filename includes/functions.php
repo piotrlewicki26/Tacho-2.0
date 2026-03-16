@@ -305,6 +305,48 @@ function dddParseVehicleReg(string $data): ?string {
 }
 
 /**
+ * Returns potential penalty amounts (PLN) and legal act reference for a violation.
+ * Based on Polish transport law (Ustawa o transporcie drogowym, zał. 3 GITD).
+ *
+ * @return array{penalty_driver:int, penalty_company:int, article:string}
+ */
+function violPenalty(string $type, string $msg): array {
+    if (strpos($msg, 'Przekroczenie czasu jazdy') !== false) {
+        return [
+            'penalty_driver'  => 500,
+            'penalty_company' => 1000,
+            'article'         => 'art. 6 ust. 1 rozp. WE 561/2006, zał. 3 GITD lp. 5.1',
+        ];
+    }
+    if (strpos($msg, 'Wydłużony czas jazdy') !== false) {
+        return [
+            'penalty_driver'  => 150,
+            'penalty_company' => 200,
+            'article'         => 'art. 6 ust. 1 rozp. WE 561/2006, zał. 3 GITD lp. 5.2',
+        ];
+    }
+    if (strpos($msg, 'odpoczynek') !== false) {
+        return [
+            'penalty_driver'  => 250,
+            'penalty_company' => 500,
+            'article'         => 'art. 8 ust. 2 rozp. WE 561/2006, zał. 3 GITD lp. 6.1',
+        ];
+    }
+    if (strpos($msg, 'ciągłego czasu jazdy') !== false) {
+        return [
+            'penalty_driver'  => 100,
+            'penalty_company' => 200,
+            'article'         => 'art. 7 rozp. WE 561/2006, zał. 3 GITD lp. 7.1',
+        ];
+    }
+    return [
+        'penalty_driver'  => 0,
+        'penalty_company' => 0,
+        'article'         => 'rozp. WE 561/2006',
+    ];
+}
+
+/**
  * DDD driver-card activity parser.
  *
  * Record header layout (EU Reg. 165/2014 Annex 1B/1C):
@@ -449,12 +491,15 @@ function parseDddFile(string $path): array {
 
         $viol = [];
         if ($driveTotal > $EU_MAX_DAY_X) {
-            $viol[] = ['type'=>'error','msg'=>'Przekroczenie czasu jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m (max '.floor($EU_MAX_DAY_X/60).'h)'];
+            $msg = 'Przekroczenie czasu jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m (max '.floor($EU_MAX_DAY_X/60).'h)';
+            $viol[] = array_merge(['type'=>'error','msg'=>$msg], violPenalty('error', $msg));
         } elseif ($driveTotal > $EU_MAX_DAY) {
-            $viol[] = ['type'=>'warn','msg'=>'Wydłużony czas jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m'];
+            $msg = 'Wydłużony czas jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m';
+            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
         }
         if ($restTotal < $EU_MIN_REST && $driveTotal > 60) {
-            $viol[] = ['type'=>'warn','msg'=>'Niewystarczający odpoczynek: '.floor($restTotal/60).'h '.($restTotal%60).'m (min 11h)'];
+            $msg = 'Niewystarczający odpoczynek: '.floor($restTotal/60).'h '.($restTotal%60).'m (min 11h)';
+            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
         }
         $cont = 0; $maxCont = 0;
         foreach ($slots as $seg) {
@@ -462,7 +507,8 @@ function parseDddFile(string $path): array {
             elseif ($seg['act'] === 0 && $seg['dur'] >= 15) { $cont = 0; }
         }
         if ($maxCont > $EU_MAX_CONT) {
-            $viol[] = ['type'=>'warn','msg'=>'Przekroczenie ciągłego czasu jazdy: '.floor($maxCont/60).'h '.($maxCont%60).'m (max 4h30m)'];
+            $msg = 'Przekroczenie ciągłego czasu jazdy: '.floor($maxCont/60).'h '.($maxCont%60).'m (max 4h30m)';
+            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
         }
 
         $days[$dateKey] = [

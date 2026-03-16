@@ -1256,17 +1256,11 @@
 
     /* State */
     var numWeeks = 4;
-    var thisMonday = monDay(new Date());
-    /* Auto-position to the latest week that has data so that old DDD files
-     * immediately show border crossings and activity rather than today's
-     * (empty) weeks.  The user can still click "Dziś" to jump to today. */
-    var _latestDataDate = null;
-    daysData.forEach(function(d) {
-      var dt = new Date(d.date + 'T00:00:00');
-      if (!_latestDataDate || dt > _latestDataDate) _latestDataDate = dt;
-    });
-    var _dataMonday = _latestDataDate ? monDay(_latestDataDate) : thisMonday;
-    var startWk = addD(_dataMonday, -(numWeeks-1)*7);
+    /* Default to the current month's first week so the chart shows the
+     * current period on first load regardless of where the data is. */
+    var _now = new Date();
+    var _firstOfMonth = new Date(_now.getFullYear(), _now.getMonth(), 1);
+    var startWk = monDay(_firstOfMonth);
 
     function getVisibleWeeks() {
       var res=[];
@@ -1286,38 +1280,15 @@
       b.style.cssText='background:#FFF;border:1px solid #DDE1E6;border-radius:4px;padding:4px 10px;font-size:14px;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;'+(extra||'');
       return b;
     }
-    var prevBtn  = mkBtn('\u25C4');
-    var nextBtn  = mkBtn('\u25BA');
-    var sep      = document.createElement('div'); sep.style.cssText = 'width:1px;height:20px;background:#DDE1E6;';
-    var wkLabel  = document.createElement('span');
-    wkLabel.style.cssText = 'font-size:13px;color:#9AA0AA;font-family:Inter,sans-serif;';
-    wkLabel.textContent = 'Tygodni:';
+    var prevBtn  = mkBtn('\u25C4 Poprzedni');
+    var nextBtn  = mkBtn('Nast\u0119pny \u25BA');
     var dateRange = document.createElement('span');
     dateRange.style.cssText = 'font-size:13px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
-
-    var wkBtns = [];
-    for (var n=1; n<=6; n++) {
-      (function(nn) {
-        var b=document.createElement('button'); b.type='button'; b.textContent=nn; b.dataset.n=nn;
-        var active=nn===numWeeks;
-        b.style.cssText='background:'+(active?'#E3F2FD':'#FFF')+';border:1px solid '+(active?'#1E88E5':'#DDE1E6')+';border-radius:3px;padding:3px 9px;font-size:13px;cursor:pointer;color:'+(active?'#1E88E5':'#9AA0AA')+';font-weight:'+(active?600:400)+';font-family:Inter,sans-serif;';
-        b.addEventListener('click', function() {
-          numWeeks=nn; startWk=addD(_dataMonday,-(numWeeks-1)*7);
-          wkBtns.forEach(function(x) {
-            var a=parseInt(x.dataset.n)===nn;
-            x.style.background=a?'#E3F2FD':'#FFF'; x.style.borderColor=a?'#1E88E5':'#DDE1E6';
-            x.style.color=a?'#1E88E5':'#9AA0AA'; x.style.fontWeight=a?'600':'400';
-          });
-          renderWeeks();
-        });
-        wkBtns.push(b);
-      })(n);
-    }
 
     prevBtn.addEventListener('click',  function(){ startWk=addD(startWk,-7); renderWeeks(); });
     nextBtn.addEventListener('click',  function(){ startWk=addD(startWk, 7); renderWeeks(); });
 
-    [prevBtn, nextBtn, sep, wkLabel].concat(wkBtns).concat([dateRange]).forEach(function(el){ toolbar.appendChild(el); });
+    [prevBtn, nextBtn, dateRange].forEach(function(el){ toolbar.appendChild(el); });
     container.appendChild(toolbar);
 
     /* Legend */
@@ -1378,6 +1349,11 @@
       });
       ro.observe(container);
     }
+  };
+
+  /* Public: open day-view modal for a given date and dataset */
+  NS.showDayView = function(date, daysData) {
+    showDayModal(date, daysData);
   };
 
 })(window.TachoChart = window.TachoChart || {});
