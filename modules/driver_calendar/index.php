@@ -110,9 +110,24 @@ if ($driverId) {
             $dateFrom = $_GET['from'] ?? $fallbackFrom;
             $dateTo   = $_GET['to']   ?? $fallbackTo;
         } else {
-            // First driver selection (no dates in URL) → default to current month.
+            // First driver selection (no dates in URL).
+            // Default to current month; if no data there, fall back to the most recent data month.
             $dateFrom = $curMonthFrom;
             $dateTo   = $curMonthTo;
+            if ($dataDateMin) {
+                $chkStmt = $db->prepare(
+                    'SELECT COUNT(*) FROM driver_activity_calendar
+                     WHERE driver_id=? AND date BETWEEN ? AND ?
+                       AND (drive_min+work_min+avail_min+rest_min) > 0'
+                );
+                $chkStmt->execute([$driverId, $curMonthFrom, $curMonthTo]);
+                if ((int)$chkStmt->fetchColumn() === 0) {
+                    // No activity in current month – show the most recent data month.
+                    $recentDt = new DateTime($dataDateMax);
+                    $dateFrom = $recentDt->format('Y-m-01');
+                    $dateTo   = $recentDt->format('Y-m-t');
+                }
+            }
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $curMonthFrom;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $curMonthTo;
@@ -278,7 +293,7 @@ include __DIR__ . '/../../templates/header.php';
         <form method="GET" novalidate id="filterForm">
           <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
           <div class="mb-3">
-            <select name="driver_id" class="form-select" onchange="this.form.submit()" title="Wybierz kierowcę">
+            <select name="driver_id" class="form-select" onchange="dcChangeDriver(this.value)" title="Wybierz kierowcę">
               <option value="">— Wybierz kierowcę —</option>
               <?php foreach ($allDrivers as $d): ?>
               <option value="<?= $d['id'] ?>"<?= $d['id']==$driverId?' selected':'' ?>>
@@ -611,6 +626,20 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
         <?php endforeach; ?>
+
+        <?php if (!empty($chartDays)): ?>
+        <!-- ── Embedded timeline analyzer ────────────────────── -->
+        <h6 class="fw-600 mt-2 mb-2"><i class="bi bi-activity me-1 text-primary"></i>Oś czasu aktywności</h6>
+        <div id="tachoCalendarTimeline" style="width:100%;overflow-x:auto;min-height:160px;"></div>
+        <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          var days = <?= json_encode(array_values($chartDays), JSON_UNESCAPED_UNICODE) ?>;
+          if (days.length && window.TachoChart) {
+            TachoChart.render('tachoCalendarTimeline', days);
+          }
+        });
+        </script>
+        <?php endif; ?>
 
         <?php elseif ($activeTab === 'timeline'): ?>
         <!-- ════════════════════════════════════════════════════
