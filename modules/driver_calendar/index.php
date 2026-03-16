@@ -97,40 +97,28 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: current month on first driver selection;
-        // explicit from/to in GET when user filters manually.
+        // Date range – default: full available data range when no explicit dates given.
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
 
-        if (isset($_GET['from']) || isset($_GET['to'])) {
+        $rawFrom = isset($_GET['from']) ? trim($_GET['from']) : '';
+        $rawTo   = isset($_GET['to'])   ? trim($_GET['to'])   : '';
+
+        if ($rawFrom !== '' || $rawTo !== '') {
             // User explicitly submitted the filter form – honour their choice.
             $fallbackFrom = $dataDateMin ?? $curMonthFrom;
             $fallbackTo   = $dataDateMax ?? $curMonthTo;
-            $dateFrom = $_GET['from'] ?? $fallbackFrom;
-            $dateTo   = $_GET['to']   ?? $fallbackTo;
+            $dateFrom = $rawFrom !== '' ? $rawFrom : $fallbackFrom;
+            $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
             // First driver selection (no dates in URL).
-            // Default to current month; if no data there, fall back to the most recent data month.
-            $dateFrom = $curMonthFrom;
-            $dateTo   = $curMonthTo;
-            if ($dataDateMin) {
-                $chkStmt = $db->prepare(
-                    'SELECT COUNT(*) FROM driver_activity_calendar
-                     WHERE driver_id=? AND date BETWEEN ? AND ?
-                       AND (drive_min+work_min+avail_min+rest_min) > 0'
-                );
-                $chkStmt->execute([$driverId, $curMonthFrom, $curMonthTo]);
-                if ((int)$chkStmt->fetchColumn() === 0) {
-                    // No activity in current month – show the most recent data month.
-                    $recentDt = new DateTime($dataDateMax);
-                    $dateFrom = $recentDt->format('Y-m-01');
-                    $dateTo   = $recentDt->format('Y-m-t');
-                }
-            }
+            // Default to the full available data range so data is always visible.
+            $dateFrom = $dataDateMin ?? $curMonthFrom;
+            $dateTo   = $dataDateMax ?? $curMonthTo;
         }
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $curMonthFrom;
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $curMonthTo;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $curMonthFrom;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $curMonthTo;
         if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 
         // Re-parse border crossings for stale/null rows
@@ -247,16 +235,9 @@ if ($driverId) {
     }
 }
 
-// ── Timeline tab date filter (tl_from / tl_to) ───────────────
-$tlFrom = isset($_GET['tl_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_from']) ? $_GET['tl_from'] : '';
-$tlTo   = isset($_GET['tl_to'])   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['tl_to'])   ? $_GET['tl_to']   : '';
-if ($tlFrom && $tlTo && $tlFrom > $tlTo) [$tlFrom, $tlTo] = [$tlTo, $tlFrom];
+// ── The timeline uses the same from/to date range as the calendar ──
+// (No secondary tl_from/tl_to filter – the left panel from/to is the single control)
 $filteredChartDays = $chartDays;
-if ($tlFrom || $tlTo) {
-    $filteredChartDays = array_values(array_filter($chartDays, function ($d) use ($tlFrom, $tlTo) {
-        return (!$tlFrom || $d['date'] >= $tlFrom) && (!$tlTo || $d['date'] <= $tlTo);
-    }));
-}
 
 // ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
@@ -326,41 +307,40 @@ include __DIR__ . '/../../templates/header.php';
           <hr class="my-2">
           <label class="form-label fw-600 small">Zakres dat</label>
           <!-- Quick-select buttons -->
-          <div class="d-flex gap-1 mb-2">
+          <?php if ($dataDateMin): ?>
+          <div class="d-flex gap-1 mb-2 flex-wrap">
             <?php
-              $qCurFrom = date('Y-m-01');
-              $qCurTo   = date('Y-m-t');
-              $qPrvFrom = date('Y-m-01', strtotime('-1 month'));
-              $qPrvTo   = date('Y-m-t',  strtotime('-1 month'));
+              $q28From = date('Y-m-d', strtotime('-27 days'));
+              $q28To   = date('Y-m-d');
+              $q3mFrom = date('Y-m-d', strtotime('-3 months'));
+              $q3mTo   = date('Y-m-d');
+              $qAllFrom = $dataDateMin;
+              $qAllTo   = $dataDateMax;
+              $isAll = ($dateFrom === $qAllFrom && $dateTo === $qAllTo);
             ?>
-            <a href="?driver_id=<?= $driverId ?>&from=<?= $qCurFrom ?>&to=<?= $qCurTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs <?= ($dateFrom===$qCurFrom&&$dateTo===$qCurTo)?'btn-primary':'btn-outline-primary' ?> flex-fill">
-              Bieżący
-            </a>
-            <a href="?driver_id=<?= $driverId ?>&from=<?= $qPrvFrom ?>&to=<?= $qPrvTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs <?= ($dateFrom===$qPrvFrom&&$dateTo===$qPrvTo)?'btn-secondary':'btn-outline-secondary' ?> flex-fill">
-              Poprzedni
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs btn-outline-primary flex-fill">28 dni</a>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $q3mFrom ?>&to=<?= $q3mTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs btn-outline-secondary flex-fill">3 mies.</a>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $qAllFrom ?>&to=<?= $qAllTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= $isAll ? 'btn-success' : 'btn-outline-success' ?> flex-fill">
+              <i class="bi bi-collection me-1"></i>Wszystko
             </a>
           </div>
+          <?php endif; ?>
           <div class="mb-2">
+            <label class="form-label mb-1 small text-muted">Od</label>
             <input type="date" name="from" class="form-control form-control-sm"
-                   value="<?= e($dateFrom ?? '') ?>"
-                   <?= $dataDateMin ? 'min="'.$dataDateMin.'"' : '' ?>>
+                   value="<?= e($dateFrom ?? '') ?>">
           </div>
           <div class="mb-3">
+            <label class="form-label mb-1 small text-muted">Do</label>
             <input type="date" name="to" class="form-control form-control-sm"
-                   value="<?= e($dateTo ?? '') ?>"
-                   <?= $dataDateMin ? 'min="'.$dataDateMin.'"' : '' ?>>
+                   value="<?= e($dateTo ?? '') ?>">
           </div>
-          <button type="submit" class="btn btn-primary btn-sm w-100 mb-2">
+          <button type="submit" class="btn btn-primary btn-sm w-100">
             <i class="bi bi-search me-1"></i>Filtruj
           </button>
-          <?php if ($dataDateMin): ?>
-          <a href="?driver_id=<?= $driverId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>&tab=<?= e($activeTab) ?>"
-             class="btn btn-outline-secondary btn-sm w-100">
-            <i class="bi bi-arrow-counterclockwise me-1"></i>Pełny zakres
-          </a>
-          <?php endif; ?>
           <?php endif; ?>
         </form>
       </div>
@@ -646,35 +626,13 @@ include __DIR__ . '/../../templates/header.php';
              TAB: TIMELINE / ANALIZATOR
              ════════════════════════════════════════════════════ -->
 
-        <!-- Timeline date range filter -->
-        <form method="GET" class="d-flex gap-2 mb-3 align-items-end flex-wrap" novalidate>
-          <input type="hidden" name="driver_id" value="<?= $driverId ?>">
-          <input type="hidden" name="from"      value="<?= e($dateFrom) ?>">
-          <input type="hidden" name="to"        value="<?= e($dateTo) ?>">
-          <input type="hidden" name="tab"       value="timeline">
-          <div>
-            <label class="form-label fw-600 mb-1 small">Od</label>
-            <input type="date" name="tl_from" class="form-control form-control-sm"
-                   value="<?= e($tlFrom ?: ($chartDays ? $chartDays[0]['date'] : $dateFrom)) ?>">
-          </div>
-          <div>
-            <label class="form-label fw-600 mb-1 small">Do</label>
-            <input type="date" name="tl_to" class="form-control form-control-sm"
-                   value="<?= e($tlTo ?: ($chartDays ? end($chartDays)['date'] : $dateTo)) ?>">
-          </div>
-          <button type="submit" class="btn btn-sm btn-primary">
-            <i class="bi bi-funnel me-1"></i>Filtruj
-          </button>
-          <?php if ($tlFrom || $tlTo): ?>
-          <a href="?driver_id=<?= $driverId ?>&amp;from=<?= e($dateFrom) ?>&amp;to=<?= e($dateTo) ?>&amp;tab=timeline"
-             class="btn btn-sm btn-outline-secondary">
-            <i class="bi bi-x-circle me-1"></i>Resetuj
-          </a>
-          <?php endif; ?>
-          <span class="ms-auto text-muted small align-self-end">
-            <?= count($filteredChartDays) ?> dni na osi czasu
+        <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+          <span class="text-muted small">
+            <i class="bi bi-calendar-range me-1"></i>
+            <?= $dateFrom ? fmtDate($dateFrom) . ' – ' . fmtDate($dateTo) : 'Pełny zakres' ?>
           </span>
-        </form>
+          <span class="badge bg-secondary ms-auto"><?= count($filteredChartDays) ?> dni</span>
+        </div>
 
         <div id="tachoTimelineMain" style="width:100%;overflow-x:auto;min-height:200px;"></div>
         <script>

@@ -589,31 +589,33 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                                (company_id, driver_id, date, drive_min, work_min, avail_min,
                                 rest_min, dist_km, violations, segments, border_crossings,
                                 source_file_id)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?) AS nr
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                              ON DUPLICATE KEY UPDATE
-                               drive_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
+                               drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     nr.drive_min, drive_min),
-                               work_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
+                                                     VALUES(drive_min), drive_min),
+                               work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     nr.work_min, work_min),
-                               avail_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
+                                                     VALUES(work_min), work_min),
+                               avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     nr.avail_min, avail_min),
-                               rest_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
+                                                     VALUES(avail_min), avail_min),
+                               rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     nr.rest_min, rest_min),
-                               dist_km          = GREATEST(dist_km, nr.dist_km),
-                               violations       = IF(nr.violations IS NOT NULL
-                                                     AND nr.violations != \'[]\',
-                                                     nr.violations, violations),
-                               segments         = IF(nr.segments IS NOT NULL
-                                                     AND nr.segments != \'[]\',
-                                                     nr.segments, segments),
-                               border_crossings = IF(nr.border_crossings IS NOT NULL
-                                                     AND nr.border_crossings NOT IN (\'0\',\'[]\',\'null\',\'false\'),
-                                                     nr.border_crossings, border_crossings),
-                               source_file_id   = nr.source_file_id'
+                                                     VALUES(rest_min), rest_min),
+                               dist_km          = GREATEST(dist_km, VALUES(dist_km)),
+                               violations       = IF(VALUES(violations) IS NOT NULL
+                                                     AND VALUES(violations) != \'[]\',
+                                                     VALUES(violations), violations),
+                               segments         = IF(VALUES(segments) IS NOT NULL
+                                                     AND VALUES(segments) != \'[]\',
+                                                     VALUES(segments), segments),
+                               border_crossings = IF(VALUES(border_crossings) IS NOT NULL
+                                                     AND VALUES(border_crossings) NOT IN (\'0\',\'[]\',\'null\',\'false\'),
+                                                     VALUES(border_crossings), border_crossings),
+                               source_file_id   = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     > drive_min+work_min+avail_min+rest_min,
+                                                     VALUES(source_file_id), source_file_id)'
                         );
 
                         foreach ($calData as $row) {
