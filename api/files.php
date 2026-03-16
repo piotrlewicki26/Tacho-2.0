@@ -469,20 +469,6 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
         $newFileId = (int)$db->lastInsertId();
 
-        // ── Record card download date for driver cards ────────────────
-        if ($fileType === 'driver' && $linkedDriverId) {
-            $effDate = $downloadDate ?: date('Y-m-d');
-            $exists  = $db->prepare(
-                'SELECT id FROM card_downloads WHERE driver_id=? AND download_date=? LIMIT 1'
-            );
-            $exists->execute([$linkedDriverId, $effDate]);
-            if (!$exists->fetchColumn()) {
-                $db->prepare(
-                    'INSERT INTO card_downloads (driver_id, download_date, performed_by) VALUES (?,?,?)'
-                )->execute([$linkedDriverId, $effDate, $userId]);
-            }
-        }
-
         // ── Parse activity data and persist to ddd_activity_days ─────
         try {
             $actResult = ($fileType === 'driver')
@@ -498,6 +484,22 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Update period_start / period_end in ddd_files
                 $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
                    ->execute([$periodStart, $periodEnd, $newFileId]);
+
+                // ── Record card download date using end of data range ─────
+                // Use period_end (the last date with activity in the file) as the
+                // "last download" date so it reflects the actual data range of the card.
+                if ($fileType === 'driver' && $linkedDriverId) {
+                    $effDate = $periodEnd;
+                    $exists  = $db->prepare(
+                        'SELECT id FROM card_downloads WHERE driver_id=? AND download_date=? LIMIT 1'
+                    );
+                    $exists->execute([$linkedDriverId, $effDate]);
+                    if (!$exists->fetchColumn()) {
+                        $db->prepare(
+                            'INSERT INTO card_downloads (driver_id, download_date, performed_by) VALUES (?,?,?)'
+                        )->execute([$linkedDriverId, $effDate, $userId]);
+                    }
+                }
 
                 // Persist per-day activity data (driver files only – full slot data)
                 if ($fileType === 'driver') {
@@ -636,6 +638,23 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Throwable $actErr) {
             // Non-fatal: activity parsing failed but the file itself was saved
             error_log('DDD activity parse error (file_id=' . $newFileId . '): ' . $actErr->getMessage());
+        }
+
+        // ── Fallback card download record (when activity parse found no days) ─
+        // If the activity parse succeeded with period_end, the card_download was
+        // already inserted inside the try block above. Insert here only when no
+        // period_end was determined (parse failed or file had no activity rows).
+        if ($fileType === 'driver' && $linkedDriverId) {
+            $hasDownload = $db->prepare(
+                'SELECT id FROM card_downloads WHERE driver_id=? LIMIT 1'
+            );
+            $hasDownload->execute([$linkedDriverId]);
+            if (!$hasDownload->fetchColumn()) {
+                $effDate = $downloadDate ?: date('Y-m-d');
+                $db->prepare(
+                    'INSERT IGNORE INTO card_downloads (driver_id, download_date, performed_by) VALUES (?,?,?)'
+                )->execute([$linkedDriverId, $effDate, $userId]);
+            }
         }
 
         $msg = 'Plik został wgrany do archiwum.';

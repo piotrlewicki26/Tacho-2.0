@@ -107,13 +107,62 @@ $stmt = $db->prepare('SELECT * FROM driver_groups WHERE company_id=? ORDER BY na
 $stmt->execute([$companyId]);
 $groups = $stmt->fetchAll();
 
-// ── Load driver for edit ─────────────────────────────────────
+// ── Load driver for edit / profile ──────────────────────────
 $editDriver = null;
-if (($action === 'edit' || $action === 'view') && $driverId) {
+if (($action === 'edit' || $action === 'view' || $action === 'profile') && $driverId) {
     $stmt = $db->prepare('SELECT * FROM drivers WHERE id=? AND company_id=?');
     $stmt->execute([$driverId, $companyId]);
     $editDriver = $stmt->fetch();
     if (!$editDriver) { flashSet('danger', 'Nie znaleziono kierowcy.'); redirect('/drivers.php'); }
+}
+
+// ── Profile view – extra data ────────────────────────────────
+$profileLastDownload = null;
+$profileWeeks        = [];
+$profileTotalDrive   = 0;
+if ($action === 'profile' && $editDriver) {
+    // Last download date (latest period_end from card_downloads)
+    $stmt = $db->prepare(
+        'SELECT download_date FROM card_downloads WHERE driver_id=? ORDER BY download_date DESC LIMIT 1'
+    );
+    $stmt->execute([$driverId]);
+    $profileLastDownload = $stmt->fetchColumn() ?: null;
+
+    // Weekly driving time table from driver_activity_calendar
+    $stmt = $db->prepare(
+        'SELECT date, drive_min
+         FROM driver_activity_calendar
+         WHERE company_id=? AND driver_id=?
+         ORDER BY date'
+    );
+    $stmt->execute([$companyId, $driverId]);
+    $calRows = $stmt->fetchAll();
+
+    // Group by ISO year-week
+    $weekData = [];
+    foreach ($calRows as $row) {
+        $dt   = new DateTime($row['date']);
+        $iso  = $dt->format('o-W');   // e.g. "2024-05"
+        $dow  = (int)$dt->format('N'); // 1=Mon … 7=Sun
+        $weekData[$iso]['year']       = $dt->format('o');
+        $weekData[$iso]['week']       = (int)$dt->format('W');
+        $weekData[$iso]['days'][$dow] = ($weekData[$iso]['days'][$dow] ?? 0) + (int)$row['drive_min'];
+    }
+    ksort($weekData);
+    foreach ($weekData as $isoKey => $w) {
+        $rowTotal = array_sum($w['days'] ?? []);
+        $profileTotalDrive += $rowTotal;
+        $days = [];
+        for ($d = 1; $d <= 7; $d++) {
+            $days[$d] = $w['days'][$d] ?? 0;
+        }
+        $profileWeeks[] = [
+            'year'  => $w['year'],
+            'week'  => $w['week'],
+            'days'  => $days,
+            'total' => $rowTotal,
+        ];
+    }
 }
 
 // ── Pagination & list ────────────────────────────────────────
@@ -156,6 +205,7 @@ include __DIR__ . '/templates/header.php';
 ?>
 
 <!-- ── Toolbar ───────────────────────────────────────────────── -->
+<?php if ($action !== 'profile'): ?>
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <form method="GET" class="d-flex gap-2 flex-grow-1" style="max-width:360px">
     <input type="hidden" name="perPage" value="<?= $perPage ?>">
@@ -290,7 +340,9 @@ include __DIR__ . '/templates/header.php';
           <?php $cardSt = dateStatus($d['card_valid_until'], 30); ?>
           <tr>
             <td>
-              <strong><?= e($d['last_name'] . ' ' . $d['first_name']) ?></strong>
+              <a href="/drivers.php?action=profile&id=<?= $d['id'] ?>" class="fw-bold text-decoration-none">
+                <?= e($d['last_name'] . ' ' . $d['first_name']) ?>
+              </a>
             </td>
             <td><?= e($d['group_name'] ?? '—') ?></td>
             <td><?= fmtDate($d['birth_date']) ?></td>
@@ -344,6 +396,222 @@ include __DIR__ . '/templates/header.php';
   </div>
   <?php endif; ?>
 </div>
+
+<?php else: ?>
+<!-- ── Driver Profile ─────────────────────────────────────────── -->
+<?php
+$cardSt      = dateStatus($editDriver['card_valid_until'], 30);
+$daysSinceDl = null;
+if ($profileLastDownload) {
+    $today       = new DateTime('today');
+    $dlDt        = new DateTime($profileLastDownload);
+    $daysSinceDl = (int)$today->diff($dlDt)->format('%a');
+}
+$totalH = (int)floor($profileTotalDrive / 60);
+$totalM = $profileTotalDrive % 60;
+?>
+<div class="d-flex align-items-center gap-2 mb-3">
+  <a href="/drivers.php" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> Kierowcy
+  </a>
+  <h5 class="mb-0 ms-1">
+    <?= e($editDriver['first_name'] . ' ' . $editDriver['last_name']) ?>
+  </h5>
+  <?php if (hasRole('manager')): ?>
+  <a href="/drivers.php?action=edit&id=<?= $driverId ?>" class="btn btn-sm btn-outline-primary ms-auto">
+    <i class="bi bi-pencil me-1"></i>Edytuj dane
+  </a>
+  <?php endif; ?>
+</div>
+
+<!-- Info widgets -->
+<div class="row g-3 mb-3">
+  <div class="col-sm-6 col-xl-3">
+    <div class="tp-card h-100">
+      <div class="tp-card-body d-flex align-items-center gap-3 py-3">
+        <div class="tp-stat-icon bg-<?= e($cardSt['class']) ?>-subtle rounded-3 p-3">
+          <i class="bi bi-credit-card-2-front fs-4 text-<?= e($cardSt['class']) ?>"></i>
+        </div>
+        <div>
+          <div class="tp-stat-label text-muted small">Karta ważna do</div>
+          <div class="tp-stat-value fw-bold"><?= fmtDate($editDriver['card_valid_until']) ?></div>
+          <span class="badge bg-<?= e($cardSt['class']) ?>"><?= e($cardSt['label']) ?></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="tp-card h-100">
+      <div class="tp-card-body d-flex align-items-center gap-3 py-3">
+        <div class="tp-stat-icon bg-info-subtle rounded-3 p-3">
+          <i class="bi bi-cloud-download fs-4 text-info"></i>
+        </div>
+        <div>
+          <div class="tp-stat-label text-muted small">Ostatnie pobranie</div>
+          <div class="tp-stat-value fw-bold"><?= fmtDate($profileLastDownload) ?></div>
+          <?php if ($daysSinceDl !== null): ?>
+          <small class="text-muted"><?= $daysSinceDl ?> dni temu</small>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="tp-card h-100">
+      <div class="tp-card-body d-flex align-items-center gap-3 py-3">
+        <div class="tp-stat-icon bg-primary-subtle rounded-3 p-3">
+          <i class="bi bi-card-text fs-4 text-primary"></i>
+        </div>
+        <div>
+          <div class="tp-stat-label text-muted small">Nr karty kierowcy</div>
+          <div class="tp-stat-value fw-bold" style="font-size:.9rem"><?= e($editDriver['card_number'] ?? '—') ?></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="tp-card h-100">
+      <div class="tp-card-body d-flex align-items-center gap-3 py-3">
+        <div class="tp-stat-icon bg-success-subtle rounded-3 p-3">
+          <i class="bi bi-clock-history fs-4 text-success"></i>
+        </div>
+        <div>
+          <div class="tp-stat-label text-muted small">Łączny czas jazdy</div>
+          <div class="tp-stat-value fw-bold"><?= $totalH ?>h <?= $totalM ?>m</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="d-flex gap-3">
+  <!-- Left nav -->
+  <div class="flex-shrink-0" style="width:190px">
+    <div class="tp-card">
+      <div class="tp-card-body p-2">
+        <div class="list-group list-group-flush" id="profileTabList" role="tablist">
+          <a class="list-group-item list-group-item-action active py-2 px-3" id="tab-activity"
+             data-bs-toggle="list" href="#pane-activity" role="tab">
+            <i class="bi bi-bar-chart-line me-2"></i>Aktywność
+          </a>
+          <a class="list-group-item list-group-item-action py-2 px-3" id="tab-delegation"
+             data-bs-toggle="list" href="#pane-delegation" role="tab">
+            <i class="bi bi-file-earmark-text me-2"></i>Poświadczenie czynności
+          </a>
+          <a class="list-group-item list-group-item-action py-2 px-3" id="tab-weeks"
+             data-bs-toggle="list" href="#pane-weeks" role="tab">
+            <i class="bi bi-table me-2"></i>Tygodnie
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab content -->
+  <div class="flex-grow-1 min-w-0">
+    <div class="tab-content">
+      <!-- Activity chart tab -->
+      <div class="tab-pane fade show active" id="pane-activity" role="tabpanel">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-bar-chart-line text-primary"></i>
+            <span class="tp-card-title">Aktywność kierowcy</span>
+            <a href="/modules/driver_analysis/?driver_id=<?= $driverId ?>"
+               class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
+              <i class="bi bi-box-arrow-up-right me-1"></i>Pełna analiza
+            </a>
+          </div>
+          <div class="tp-card-body p-0">
+            <iframe src="/modules/driver_analysis/?driver_id=<?= $driverId ?>"
+                    style="width:100%;height:520px;border:none;border-radius:0 0 8px 8px"
+                    title="Analiza aktywności"></iframe>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delegation / poświadczenie tab -->
+      <div class="tab-pane fade" id="pane-delegation" role="tabpanel">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-file-earmark-text text-primary"></i>
+            <span class="tp-card-title">Poświadczenie czynności</span>
+            <a href="/modules/delegation/?driver_id=<?= $driverId ?>"
+               class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
+              <i class="bi bi-box-arrow-up-right me-1"></i>Otwórz
+            </a>
+          </div>
+          <div class="tp-card-body p-0">
+            <iframe src="/modules/delegation/?driver_id=<?= $driverId ?>"
+                    style="width:100%;height:580px;border:none;border-radius:0 0 8px 8px"
+                    title="Poświadczenie czynności"></iframe>
+          </div>
+        </div>
+      </div>
+
+      <!-- Weeks table tab -->
+      <div class="tab-pane fade" id="pane-weeks" role="tabpanel">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-table text-primary"></i>
+            <span class="tp-card-title">Tygodnie – czas jazdy</span>
+          </div>
+          <div class="tp-card-body p-0">
+            <?php if ($profileWeeks): ?>
+            <div class="table-responsive">
+              <table class="tp-table table-sm">
+                <thead>
+                  <tr>
+                    <th>Rok</th>
+                    <th>Tydzień</th>
+                    <th>Pon</th>
+                    <th>Wt</th>
+                    <th>Śr</th>
+                    <th>Czw</th>
+                    <th>Pt</th>
+                    <th>Sob</th>
+                    <th>Nd</th>
+                    <th class="text-end">Suma</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($profileWeeks as $wk): ?>
+                  <tr>
+                    <td><?= (int)$wk['year'] ?></td>
+                    <td><?= (int)$wk['week'] ?></td>
+                    <?php for ($wd = 1; $wd <= 7; $wd++): ?>
+                    <?php $m = $wk['days'][$wd]; ?>
+                    <td class="<?= $m > 0 ? 'text-success' : 'text-muted' ?>">
+                      <?php if ($m > 0): echo floor($m/60) . 'h' . ($m%60) . 'm'; else: echo '—'; endif; ?>
+                    </td>
+                    <?php endfor; ?>
+                    <td class="text-end fw-bold">
+                      <?= floor($wk['total']/60) ?>h <?= $wk['total']%60 ?>m
+                    </td>
+                  </tr>
+                  <?php endforeach; ?>
+                </tbody>
+                <tfoot>
+                  <tr class="table-secondary fw-bold">
+                    <td colspan="9">Łącznie</td>
+                    <td class="text-end"><?= $totalH ?>h <?= $totalM ?>m</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <?php else: ?>
+            <div class="tp-empty-state py-4">
+              <i class="bi bi-table"></i>
+              Brak danych aktywności dla tego kierowcy.
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; // profile vs list ?>
 
 <style>.btn-xs{padding:.2rem .5rem;font-size:.8rem;}</style>
 <?php include __DIR__ . '/templates/footer.php'; ?>
