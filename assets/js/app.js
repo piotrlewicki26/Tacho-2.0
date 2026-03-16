@@ -179,7 +179,7 @@
           bsModal?.hide();
           // After uploading a driver card, redirect to the driver calendar for that driver
           if (data.driver_id && fileTypeEl.value === 'driver') {
-            window.location.href = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id);
+            window.location.href = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=timeline';
           } else if (window.location.pathname === '/files.php') {
             window.location.reload();
           }

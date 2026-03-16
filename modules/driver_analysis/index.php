@@ -1,16 +1,18 @@
 <?php
 /**
- * TachoPro 2.0 – Driver Time Analysis Module
- * Shows tachograph activity using the SVG timeline chart ported from
- * truck-delegate-pro.jsx (commit ea1fcf7b).
+ * TachoPro 2.0 – Driver Analysis (redirect shim)
+ * This module has been merged into the unified Driver Activity Calendar.
+ * Any direct links to driver_analysis are transparently forwarded there.
  */
 require_once __DIR__ . '/../../includes/auth.php';
-require_once __DIR__ . '/../../includes/db.php';
-require_once __DIR__ . '/../../includes/functions.php';
-require_once __DIR__ . '/../../includes/license_check.php';
 
 requireLogin();
-requireModule('driver_analysis');
+
+// ── Redirect to the unified Driver Activity Calendar ─────────
+$driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
+$qs       = 'tab=timeline' . ($driverId ? '&driver_id=' . $driverId : '');
+header('Location: /modules/driver_calendar/?' . $qs, true, 301);
+exit;
 
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
