@@ -962,6 +962,59 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
 {
     if (!$driverId) return 0;
 
+    // ── Step 1: Re-parse driver DDD files that have no ddd_activity_days rows ──
+    // This handles the case where migration_020 deleted truncated activity rows so
+    // the fixed parser can rebuild the full activity window on the next page visit.
+    try {
+        $missingStmt = $db->prepare(
+            "SELECT f.* FROM ddd_files f
+             WHERE f.company_id=? AND f.driver_id=?
+               AND f.file_type='driver' AND f.is_deleted=0
+               AND NOT EXISTS (
+                   SELECT 1 FROM ddd_activity_days d WHERE d.file_id = f.id
+               )"
+        );
+        $missingStmt->execute([$companyId, $driverId]);
+        $missingFiles = $missingStmt->fetchAll();
+
+        if ($missingFiles) {
+            $insDay = $db->prepare(
+                'INSERT IGNORE INTO ddd_activity_days
+                 (file_id, date, drive_min, work_min, avail_min, rest_min, dist_km,
+                  violations, segments, border_crossings)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)'
+            );
+            foreach ($missingFiles as $fRow) {
+                $fp = dddPhysPath($fRow, $companyId);
+                if (!is_file($fp)) continue;
+                $parseResult  = parseDddFile($fp);
+                $reparsedDays = $parseResult['days'] ?? [];
+                if (empty($reparsedDays)) continue;
+                foreach ($reparsedDays as $day) {
+                    $insDay->execute([
+                        $fRow['id'],
+                        $day['date'],
+                        $day['drive']  ?? 0,
+                        $day['work']   ?? 0,
+                        $day['avail']  ?? 0,
+                        $day['rest']   ?? 0,
+                        $day['dist']   ?? 0,
+                        json_encode($day['viol']      ?? []),
+                        json_encode($day['segs']      ?? []),
+                        !empty($day['crossings']) ? json_encode($day['crossings']) : json_encode(0),
+                    ]);
+                }
+                // Update period_start / period_end in ddd_files
+                $freshDates = array_column($reparsedDays, 'date');
+                sort($freshDates);
+                $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
+                   ->execute([$freshDates[0], end($freshDates), $fRow['id']]);
+            }
+        }
+    } catch (\Throwable $e) {
+        error_log('backfillDriverActivityCalendar: re-parse error for driver ' . $driverId . ': ' . $e->getMessage());
+    }
+
     // Count available source rows
     $countStmt = $db->prepare(
         "SELECT COUNT(*) FROM ddd_activity_days d
