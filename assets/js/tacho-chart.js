@@ -1303,11 +1303,20 @@
 
     /* State */
     var numWeeks = 4;
-    /* Default to the current month's first week so the chart shows the
-     * current period on first load regardless of where the data is. */
-    var _now = new Date();
-    var _firstOfMonth = new Date(_now.getFullYear(), _now.getMonth(), 1);
-    var startWk = monDay(_firstOfMonth);
+    /* Auto-position to the latest week that contains data, so the most recent
+     * activity is visible immediately without manual navigation.
+     * The latest data week is shown as the last visible row. */
+    var _weekKeys = Object.keys(weekMap).sort();
+    var _latestKey = _weekKeys.length ? _weekKeys[_weekKeys.length - 1] : null;
+    var startWk;
+    if (_latestKey) {
+      /* Position so the latest data week is the last (bottom) visible row */
+      var _latestWkStart = new Date(_latestKey + 'T00:00:00');
+      startWk = addD(_latestWkStart, -(numWeeks - 1) * 7);
+    } else {
+      var _now = new Date();
+      startWk = monDay(new Date(_now.getFullYear(), _now.getMonth(), 1));
+    }
 
     function getVisibleWeeks() {
       var res=[];
