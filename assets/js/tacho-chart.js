@@ -610,6 +610,7 @@
       '<div style="font-size:12px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
       '<div style="margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
+      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(totals[0]||0)+'</div>' +
       wkBadge;
 
     /* SVG */
