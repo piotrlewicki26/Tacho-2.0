@@ -1303,20 +1303,13 @@
 
     /* State */
     var numWeeks = 4;
-    /* Auto-position to the latest week that contains data, so the most recent
-     * activity is visible immediately without manual navigation.
-     * The latest data week is shown as the last visible row. */
+    /* Keep track of the latest data week for the "Dane ▶" button */
     var _weekKeys = Object.keys(weekMap).sort();
     var _latestKey = _weekKeys.length ? _weekKeys[_weekKeys.length - 1] : null;
-    var startWk;
-    if (_latestKey) {
-      /* Position so the latest data week is the last (bottom) visible row */
-      var _latestWkStart = new Date(_latestKey + 'T00:00:00');
-      startWk = addD(_latestWkStart, -(numWeeks - 1) * 7);
-    } else {
-      var _now = new Date();
-      startWk = monDay(new Date(_now.getFullYear(), _now.getMonth(), 1));
-    }
+    /* Default: show the 4 weeks starting from the Monday of the current month's
+     * first week so the timeline always opens at the current month. */
+    var _now = new Date();
+    var startWk = monDay(new Date(_now.getFullYear(), _now.getMonth(), 1));
 
     function getVisibleWeeks() {
       var res=[];
