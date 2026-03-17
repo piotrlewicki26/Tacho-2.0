@@ -48,6 +48,15 @@
     m = Math.round(m);
     return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
   }
+  /* Format minutes as "Xd HH:MM" for durations >= 1 day, else plain "HH:MM" */
+  function ddhhmm(m) {
+    m = Math.round(m);
+    var d = Math.floor(m / 1440);
+    var rem = m % 1440;
+    var hh = String(Math.floor(rem / 60)).padStart(2, '0');
+    var mm = String(rem % 60).padStart(2, '0');
+    return d > 0 ? d + 'd ' + hh + ':' + mm : hh + ':' + mm;
+  }
   function hm(m) {
     var h = Math.floor(m/60), mm = m%60;
     return mm ? h+'h '+mm+'m' : h+'h';
@@ -304,7 +313,7 @@
       }
       if (bw > 35) {
         var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-        t.textContent = hhmm(rs.dur); g.appendChild(t);
+        t.textContent = ddhhmm(rs.dur); g.appendChild(t);
       }
       if ((isWeekly || isReducedWeekly) && bw > 55) {
         var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.9)', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
@@ -331,7 +340,7 @@
             '</div>' +
             '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(startMin) + (endDay > startDay ? ' (D' + (startDay+1) + ')' : '') +
               '&nbsp;\u2192&nbsp;' + hhmm(endMin) + (endDay !== startDay ? ' (D' + (endDay+1) + ')' : '') + '</div>' +
-            '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + hhmm(span.dur) + '</div>';
+            '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + ddhhmm(span.dur) + '</div>';
           tip.style.display = 'block';
           tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 260) + 'px';
           tip.style.top  = Math.min(ev.clientY + 15, window.innerHeight - 120) + 'px';
@@ -543,15 +552,22 @@
       var rsegs = rday && rday.segs ? rday.segs : [];
       var dayBase = rdi * 1440;
       if (!rsegs.length) {
-        /* Empty day – extend any pending rest through the whole day */
+        /* Empty day – no tachograph data (card removed = driver resting).
+         * Extend any existing rest span through the whole day; if no rest
+         * was pending yet (e.g. start of week), start one from this day's
+         * midnight so that continuous multi-day rest is fully captured. */
         if (pending) {
           pending.absEnd = (rdi + 1) * 1440;
           pending.dur    = pending.absEnd - pending.absStart;
+        } else {
+          pending = {absStart: dayBase, absEnd: (rdi + 1) * 1440, dur: 1440};
         }
         continue;
       }
       /* Day has segments – extend any pending rest to cover the gap
-       * before this day's first segment (cross-midnight continuity). */
+       * before this day's first segment (cross-midnight continuity).
+       * If no rest was pending (e.g. first day of week with morning gap),
+       * create an implicit rest from midnight to first segment start. */
       var firstSegStart = rsegs[0].start;
       if (pending) {
         var gapEnd = dayBase + firstSegStart;
@@ -559,6 +575,9 @@
           pending.absEnd = gapEnd;
           pending.dur    = pending.absEnd - pending.absStart;
         }
+      } else if (firstSegStart > 0) {
+        /* No prior rest context – implicit rest from midnight to first segment */
+        pending = {absStart: dayBase, absEnd: dayBase + firstSegStart, dur: firstSegStart};
       }
       /* Process each segment */
       for (var rsi = 0; rsi < rsegs.length; rsi++) {
@@ -606,7 +625,7 @@
         pending = {absStart: lastAbsEnd, absEnd: (rdi + 1) * 1440, dur: 1440 - lastSeg.end};
       }
     }
-    if (pending) { spans.push(pending); }
+    if (pending && pending.dur > 0) { spans.push(pending); }
     return spans;
   }
 
@@ -621,10 +640,20 @@
       });
       dist += (d.dist||0);
     });
-    /* Weekly rest = total duration of all rest spans (explicit + implicit gaps) */
+    /* Weekly rest = find the best qualifying continuous rest span (>= 24h).
+     * If none qualifies, fall back to total of all rest spans. */
+    var WKREST_REG = 45 * 60;  /* 2700 min = regular weekly rest  */
+    var WKREST_RED = 24 * 60;  /* 1440 min = reduced weekly rest  */
     var weekRestSpans = buildRestSpans(weekDays);
     var weekRest = 0;
     weekRestSpans.forEach(function(rs) { weekRest += rs.dur; });
+    var topQualRest = 0;
+    weekRestSpans.forEach(function(rs) {
+      if (rs.dur >= WKREST_RED && rs.dur > topQualRest) topQualRest = rs.dur;
+    });
+    /* Display value: qualifying rest if available, else total rest */
+    var restDispVal = topQualRest > 0 ? topQualRest : weekRest;
+    var restTypeSfx = topQualRest >= WKREST_REG ? ' (tyg.)' : topQualRest >= WKREST_RED ? ' (skr.)' : '';
     var weekViols  = computeWeekViolations(weekDays);
     var dayViols   = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
     var hasWkErr   = weekViols.some(function(v){ return v.sev==='error'; });
@@ -659,7 +688,7 @@
       '<div style="font-size:12px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
       '<div style="margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
-      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(weekRest||0)+'</div>' +
+      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+ddhhmm(restDispVal)+restTypeSfx+'</div>' +
       wkBadge;
 
     /* SVG */

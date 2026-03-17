@@ -489,7 +489,7 @@ include __DIR__ . '/templates/header.php';
                  class="btn btn-xs btn-outline-primary me-1" title="Edytuj">
                 <i class="bi bi-pencil"></i>
               </a>
-              <a href="/modules/driver_calendar/?driver_id=<?= $d['id'] ?>&tab=violations"
+              <a href="/modules/driver_calendar/?driver_id=<?= $d['id'] ?>&tab=timeline"
                  class="btn btn-xs btn-outline-info me-1" title="Analiza">
                 <i class="bi bi-bar-chart-line"></i>
               </a>
@@ -657,7 +657,7 @@ $totalM = $profileTotalDrive % 60;
             <i class="bi bi-activity text-primary"></i>
             <span class="tp-card-title">Oś czasu aktywności tachografu</span>
             <span class="badge bg-secondary ms-2">ostatnie 90 dni</span>
-            <a href="/modules/driver_calendar/?driver_id=<?= $driverId ?>&tab=violations"
+            <a href="/modules/driver_calendar/?driver_id=<?= $driverId ?>&tab=timeline"
                class="btn btn-sm btn-outline-primary ms-auto" target="_blank">
               <i class="bi bi-box-arrow-up-right me-1"></i>Pełna analiza
             </a>
