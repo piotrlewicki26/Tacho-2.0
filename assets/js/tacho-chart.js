@@ -1338,13 +1338,25 @@
     }
     var prevBtn  = mkBtn('\u25C4 Poprzedni');
     var nextBtn  = mkBtn('Nast\u0119pny \u25BA');
+    /* "Dane ▶" button: jump back to the auto-positioned data range */
+    var dataBtn  = mkBtn('Dane \u25BA', 'background:#E8F5E9;border-color:#A5D6A7;color:#2E7D32;');
     var dateRange = document.createElement('span');
     dateRange.style.cssText = 'font-size:13px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
 
     prevBtn.addEventListener('click',  function(){ startWk=addD(startWk,-7); renderWeeks(); });
     nextBtn.addEventListener('click',  function(){ startWk=addD(startWk, 7); renderWeeks(); });
+    dataBtn.addEventListener('click',  function(){
+      if (_latestKey) {
+        var _lws = new Date(_latestKey + 'T00:00:00');
+        startWk = addD(_lws, -(numWeeks - 1) * 7);
+      } else {
+        var _n = new Date();
+        startWk = monDay(new Date(_n.getFullYear(), _n.getMonth(), 1));
+      }
+      renderWeeks();
+    });
 
-    [prevBtn, nextBtn, dateRange].forEach(function(el){ toolbar.appendChild(el); });
+    [prevBtn, nextBtn, dataBtn, dateRange].forEach(function(el){ toolbar.appendChild(el); });
     container.appendChild(toolbar);
 
     /* Legend */
