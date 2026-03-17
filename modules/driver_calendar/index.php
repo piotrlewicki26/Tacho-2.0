@@ -47,7 +47,7 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$activeTab = in_array($_GET['tab'] ?? '', ['calendar','violations','files','pojazdy'])
+$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy'])
     ? $_GET['tab'] : 'calendar';
 
 $stmt = $db->prepare(
@@ -114,15 +114,10 @@ if ($driverId) {
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
             // First driver selection (no dates in URL).
-            // Default to current month; if driver has no data there, show the
-            // most recent available data range so something is always visible.
-            if ($dataDateMax !== null && $dataDateMax < $curMonthFrom) {
-                $dateFrom = $dataDateMin;
-                $dateTo   = $dataDateMax;
-            } else {
-                $dateFrom = $curMonthFrom;
-                $dateTo   = $curMonthTo;
-            }
+            // Always default to the current month; the user can click quick-select
+            // buttons ("Wszystko", "28 dni", etc.) to navigate to historical data.
+            $dateFrom = $curMonthFrom;
+            $dateTo   = $curMonthTo;
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $curMonthFrom;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $curMonthTo;
@@ -510,6 +505,13 @@ include __DIR__ . '/../../templates/header.php';
                href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=pojazdy"
                role="tab">
               <i class="bi bi-truck me-1"></i>Pojazdy
+            </a>
+          </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='timeline'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=timeline"
+               role="tab">
+              <i class="bi bi-activity me-1"></i>Oś czasu
             </a>
           </li>
         </ul>
