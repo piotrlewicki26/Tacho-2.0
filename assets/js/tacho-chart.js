@@ -260,12 +260,26 @@
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
 
     /* Build merged rest spans that cross midnight:
-     * each entry = {absStart, absEnd, dur}  (absolute minutes 0..7*1440) */
+     * each entry = {absStart, absEnd, dur}  (absolute minutes 0..7*1440)
+     * Rule: a day with NO segments means the driver's card was not inserted
+     * (common during weekly rest).  Any pending rest span is extended through
+     * the entire empty day rather than being cut off, ensuring continuity from
+     * the end of the last activity to the start of the next one. */
     var restSpans = [];
     var pending = null;   /* rest span being built (might cross midnight) */
     for (var rdi = 0; rdi < 7; rdi++) {
       var rday = weekDays[rdi];
       var rsegs = rday && rday.segs ? rday.segs : [];
+      if (!rsegs.length) {
+        /* Empty day – no tachograph data (card removed = driver resting).
+         * Extend any existing rest span through the whole day; if no rest
+         * was pending, do nothing (we cannot assume rest started here). */
+        if (pending) {
+          pending.absEnd = (rdi + 1) * 1440;
+          pending.dur    = pending.absEnd - pending.absStart;
+        }
+        continue;
+      }
       /* Collect rest segments for this day */
       for (var rsi = 0; rsi < rsegs.length; rsi++) {
         var rs = rsegs[rsi];
@@ -280,8 +294,6 @@
           pending = {absStart: aS, absEnd: aE, dur: aE - aS};
         }
       }
-      /* If day has no segs at all, the rest span ends here */
-      if (!rsegs.length && pending) { restSpans.push(pending); pending = null; }
     }
     if (pending) { restSpans.push(pending); }
 
@@ -463,11 +475,46 @@
         })(tk, xt);
       }
     } else {
-      /* Normal full-week separators + day labels (no axis line) */
+      /* Normal full-week view: horizontal time axis + 6-hourly grid marks + day labels */
+
+      /* Horizontal axis line separating chart area from the time labels */
+      svgEl.appendChild(mkSVG('line', {
+        x1:0, y1:T2Y+T2H+2, x2:cw, y2:T2Y+T2H+2,
+        stroke:'#B0BEC5', 'stroke-width':1
+      }));
+
+      /* Day separator lines */
       for (var di2=1; di2<7; di2++) {
         var xsep = px(di2*1440);
-        if (xsep>=0 && xsep<=cw) svgEl.appendChild(mkSVG('line', {x1:xsep, y1:T1Y-8, x2:xsep, y2:T2Y+T2H+4, stroke:'#66BB6A', 'stroke-width':1.8, 'stroke-dasharray':'4,3', opacity:0.5}));
+        if (xsep>=0 && xsep<=cw) svgEl.appendChild(mkSVG('line', {x1:xsep, y1:T1Y-8, x2:xsep, y2:T2Y+T2H+2, stroke:'#66BB6A', 'stroke-width':1.8, 'stroke-dasharray':'4,3', opacity:0.5}));
       }
+
+      /* 6-hourly grid lines + tick marks + hour labels (time axis) */
+      var dayPx = cw / 7;                          /* pixels per day          */
+      var tickHours = dayPx >= 100 ? [6, 12, 18] : [12]; /* adapt to width   */
+      for (var dih=0; dih<7; dih++) {
+        tickHours.forEach(function(hr) {
+          var xh = px(dih * 1440 + hr * 60);
+          if (xh < 0 || xh > cw) return;
+          /* Light vertical guide through both tracks */
+          svgEl.appendChild(mkSVG('line', {
+            x1:xh, y1:T1Y, x2:xh, y2:T2Y+T2H,
+            stroke:'#E8EAF0', 'stroke-width':0.8, opacity:0.7
+          }));
+          /* Short tick on the axis line */
+          svgEl.appendChild(mkSVG('line', {
+            x1:xh, y1:T2Y+T2H+2, x2:xh, y2:T2Y+T2H+7,
+            stroke:'#B0BEC5', 'stroke-width':1
+          }));
+          /* Hour label (e.g. "6h", "12h", "18h") */
+          var hl = mkSVG('text', {x:xh, y:AXY+1, 'text-anchor':'middle',
+            fill:'#90A4AE', 'font-size':9, 'font-family':'Inter,sans-serif'});
+          hl.textContent = hr + 'h';
+          svgEl.appendChild(hl);
+        });
+      }
+
+      /* Day labels (date) centred in each day column */
       for (var di3=0; di3<7; di3++) {
         var xm = px(di3*1440+720); if (xm<22||xm>cw-22) continue;
         var dLbl = addD(weekStart, di3);
