@@ -177,15 +177,21 @@
         setTimeout(() => {
           const bsModal = bootstrap.Modal.getInstance(document.getElementById('dddUploadModal'));
           bsModal?.hide();
-          // After uploading a driver card, redirect to the driver calendar for that driver.
-          // Include the file's data period so the calendar opens on the correct date range
-          // and the user immediately sees the newly parsed activity data.
+          // After uploading a driver card, decide where to navigate:
+          // – On the driver profile page: reload to refresh the chart with new data.
+          // – On files.php or any other page: redirect to driver_calendar.
           if (data.driver_id && fileTypeEl.value === 'driver') {
-            let url = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=calendar';
-            if (data.period_start && data.period_end) {
-              url += '&from=' + encodeURIComponent(data.period_start) + '&to=' + encodeURIComponent(data.period_end);
+            const onDriverProfile = window.location.pathname === '/drivers.php' &&
+                                    /[?&]action=profile/.test(window.location.search);
+            if (onDriverProfile) {
+              window.location.reload();
+            } else {
+              let url = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=calendar';
+              if (data.period_start && data.period_end) {
+                url += '&from=' + encodeURIComponent(data.period_start) + '&to=' + encodeURIComponent(data.period_end);
+              }
+              window.location.href = url;
             }
-            window.location.href = url;
           } else if (window.location.pathname === '/files.php') {
             window.location.reload();
           }

@@ -251,30 +251,50 @@ if ($action === 'profile' && $editDriver) {
         ];
     }
 
-    // ── Vehicles tab data ────────────────────────────────────────
+    // ── Vehicles tab data (parsed directly from driver DDD files) ────────────
     $nowDt   = new DateTime('today');
     $vehFrom = isset($_GET['veh_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_from'])
              ? $_GET['veh_from']
-             : $nowDt->format('Y-m-01');
+             : $nowDt->modify('-12 months')->format('Y-m-d');
+    $nowDt   = new DateTime('today');
     $vehTo   = isset($_GET['veh_to']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_to'])
              ? $_GET['veh_to']
-             : $nowDt->format('Y-m-t');
+             : $nowDt->format('Y-m-d');
     try {
-        $vStmt = $db->prepare(
-            "SELECT v.registration,
-                    MIN(dac.date) AS period_start,
-                    MAX(dac.date) AS period_end,
-                    SUM(dac.dist_km) AS total_dist
-             FROM driver_activity_calendar dac
-             JOIN ddd_files df ON df.id = dac.source_file_id AND df.vehicle_id IS NOT NULL
-             JOIN vehicles v ON v.id = df.vehicle_id
-             WHERE dac.driver_id = ? AND dac.company_id = ?
-               AND dac.date BETWEEN ? AND ?
-             GROUP BY v.id, v.registration
-             ORDER BY MIN(dac.date)"
+        // Fetch all driver DDD files for this driver
+        $vfStmt = $db->prepare(
+            "SELECT * FROM ddd_files
+             WHERE company_id=? AND driver_id=? AND file_type='driver' AND is_deleted=0
+             ORDER BY download_date DESC"
         );
-        $vStmt->execute([$driverId, $companyId, $vehFrom, $vehTo]);
-        $profileVehicles = $vStmt->fetchAll();
+        $vfStmt->execute([$companyId, $driverId]);
+        $vehFiles = $vfStmt->fetchAll();
+
+        $rawVehicles = [];
+        foreach ($vehFiles as $vfRow) {
+            $fp = dddPhysPath($vfRow, $companyId);
+            if (!is_file($fp)) continue;
+            $rawData = file_get_contents($fp);
+            if ($rawData === false) continue;
+            $recs = parseDriverCardVehicles($rawData);
+            foreach ($recs as $r) {
+                // Include vehicle if its usage period overlaps the filter window
+                if ($r['last_use']  < $vehFrom) continue;
+                if ($r['first_use'] > $vehTo)   continue;
+                $rawVehicles[] = $r;
+            }
+        }
+
+        // Deduplicate by (reg, first_use) – keep entry with highest distance
+        $vUniq = [];
+        foreach ($rawVehicles as $r) {
+            $key = $r['reg'] . '|' . $r['first_use'];
+            if (!isset($vUniq[$key]) || $r['distance'] > $vUniq[$key]['distance']) {
+                $vUniq[$key] = $r;
+            }
+        }
+        usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+        $profileVehicles = array_values($vUniq);
     } catch (Throwable $vErr) {
         error_log('drivers.php vehicles tab: ' . $vErr->getMessage());
     }
@@ -824,25 +844,27 @@ $totalM = $profileTotalDrive % 60;
                 <thead>
                   <tr>
                     <th>Nr rejestracyjny</th>
-                    <th>Początek terminu</th>
-                    <th>Koniec terminu</th>
+                    <th>Kraj</th>
+                    <th>Pierwsze użycie</th>
+                    <th>Ostatnie użycie</th>
                     <th class="text-end">Odległość</th>
                   </tr>
                 </thead>
                 <tbody>
                   <?php foreach ($profileVehicles as $pv): ?>
                   <tr>
-                    <td class="fw-bold"><?= e($pv['registration']) ?></td>
-                    <td><?= fmtDate($pv['period_start']) ?></td>
-                    <td><?= fmtDate($pv['period_end']) ?></td>
-                    <td class="text-end"><?= $pv['total_dist'] ? number_format((int)$pv['total_dist'], 0, ',', ' ') . ' km' : '—' ?></td>
+                    <td class="fw-bold"><code><?= e($pv['reg']) ?></code></td>
+                    <td><?= e($pv['nation'] ?: '—') ?></td>
+                    <td><?= fmtDate($pv['first_use']) ?></td>
+                    <td><?= fmtDate($pv['last_use']) ?></td>
+                    <td class="text-end"><?= $pv['distance'] > 0 ? number_format((int)$pv['distance'], 0, ',', ' ') . ' km' : '—' ?></td>
                   </tr>
                   <?php endforeach; ?>
                 </tbody>
                 <tfoot>
                   <tr class="table-secondary fw-bold">
-                    <td colspan="3">Łącznie</td>
-                    <td class="text-end"><?= number_format(array_sum(array_column($profileVehicles, 'total_dist')), 0, ',', ' ') ?> km</td>
+                    <td colspan="4">Łącznie</td>
+                    <td class="text-end"><?= number_format(array_sum(array_column($profileVehicles, 'distance')), 0, ',', ' ') ?> km</td>
                   </tr>
                 </tfoot>
               </table>
@@ -862,12 +884,27 @@ $totalM = $profileTotalDrive % 60;
 <?php endif; // profile vs list ?>
 
 <style>.btn-xs{padding:.2rem .5rem;font-size:.8rem;}</style>
-<?php if ($action === 'profile' && $profileChartDays): ?>
+<?php if ($action === 'profile'): ?>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   var days = <?= json_encode($profileChartDays, JSON_UNESCAPED_UNICODE) ?>;
-  if (days.length && window.TachoChart) {
+
+  function renderProfileChart() {
+    if (!window.TachoChart) return;
     TachoChart.render('profileTachoTimeline', days);
+  }
+
+  // Initial render (activity pane is active on page load)
+  if (days.length) {
+    renderProfileChart();
+  }
+
+  // Re-render whenever the Aktywność tab is shown (fixes blank chart after tab switch)
+  var actTab = document.getElementById('tab-activity');
+  if (actTab) {
+    actTab.addEventListener('shown.bs.tab', function () {
+      if (days.length) renderProfileChart();
+    });
   }
 });
 </script>
