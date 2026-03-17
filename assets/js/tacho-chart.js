@@ -282,43 +282,8 @@
     var REDUCED_WEEKLY  = 24 * 60;  /* 1440 min = reduced weekly rest     */
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
 
-    /* Build merged rest spans that cross midnight:
-     * each entry = {absStart, absEnd, dur}  (absolute minutes 0..7*1440)
-     * Rule: a day with NO segments means the driver's card was not inserted
-     * (common during weekly rest).  Any pending rest span is extended through
-     * the entire empty day rather than being cut off, ensuring continuity from
-     * the end of the last activity to the start of the next one. */
-    var restSpans = [];
-    var pending = null;   /* rest span being built (might cross midnight) */
-    for (var rdi = 0; rdi < 7; rdi++) {
-      var rday = weekDays[rdi];
-      var rsegs = rday && rday.segs ? rday.segs : [];
-      if (!rsegs.length) {
-        /* Empty day – no tachograph data (card removed = driver resting).
-         * Extend any existing rest span through the whole day; if no rest
-         * was pending, do nothing (we cannot assume rest started here). */
-        if (pending) {
-          pending.absEnd = (rdi + 1) * 1440;
-          pending.dur    = pending.absEnd - pending.absStart;
-        }
-        continue;
-      }
-      /* Collect rest segments for this day */
-      for (var rsi = 0; rsi < rsegs.length; rsi++) {
-        var rs = rsegs[rsi];
-        if (rs.act !== 0) { if (pending) { restSpans.push(pending); pending = null; } continue; }
-        var aS = rdi * 1440 + rs.start, aE = rdi * 1440 + rs.end;
-        if (pending && aS <= pending.absEnd + 1) {
-          /* continuation of previous rest (cross-midnight merge) */
-          pending.absEnd = aE;
-          pending.dur = pending.absEnd - pending.absStart;
-        } else {
-          if (pending) { restSpans.push(pending); }
-          pending = {absStart: aS, absEnd: aE, dur: aE - aS};
-        }
-      }
-    }
-    if (pending) { restSpans.push(pending); }
+    /* Build rest spans using shared helper (explicit rest + implicit cross-midnight gaps) */
+    var restSpans = buildRestSpans(weekDays);
 
     /* Render merged rest spans */
     restSpans.forEach(function(rs) {
@@ -565,6 +530,86 @@
     }
   }
 
+  /* == Build cross-midnight rest spans for one week ===============
+   * Returns array of {absStart, absEnd, dur} objects representing
+   * continuous rest periods (explicit act=0 segments + implicit gaps
+   * between the last activity of one day and the first of the next).
+   * Empty days (card removed) extend any pending rest through them. */
+  function buildRestSpans(weekDays) {
+    var spans = [];
+    var pending = null;
+    for (var rdi = 0; rdi < 7; rdi++) {
+      var rday  = weekDays[rdi];
+      var rsegs = rday && rday.segs ? rday.segs : [];
+      var dayBase = rdi * 1440;
+      if (!rsegs.length) {
+        /* Empty day – extend any pending rest through the whole day */
+        if (pending) {
+          pending.absEnd = (rdi + 1) * 1440;
+          pending.dur    = pending.absEnd - pending.absStart;
+        }
+        continue;
+      }
+      /* Day has segments – extend any pending rest to cover the gap
+       * before this day's first segment (cross-midnight continuity). */
+      var firstSegStart = rsegs[0].start;
+      if (pending) {
+        var gapEnd = dayBase + firstSegStart;
+        if (gapEnd > pending.absEnd) {
+          pending.absEnd = gapEnd;
+          pending.dur    = pending.absEnd - pending.absStart;
+        }
+      }
+      /* Process each segment */
+      for (var rsi = 0; rsi < rsegs.length; rsi++) {
+        var rs = rsegs[rsi];
+        var aS = dayBase + rs.start, aE = dayBase + rs.end;
+        if (rs.act === 0) {
+          /* Explicit rest segment – merge with pending if adjacent */
+          if (pending && aS <= pending.absEnd + 1) {
+            pending.absEnd = aE;
+            pending.dur    = pending.absEnd - pending.absStart;
+          } else {
+            if (pending) { spans.push(pending); }
+            pending = {absStart: aS, absEnd: aE, dur: aE - aS};
+          }
+        } else {
+          /* Non-rest activity – cut off pending rest at segment start */
+          if (pending) {
+            if (pending.absEnd > aS) {
+              pending.absEnd = aS;
+              pending.dur    = pending.absEnd - pending.absStart;
+            }
+            spans.push(pending);
+            pending = null;
+          }
+        }
+      }
+      /* After all segments: create an implicit rest from the end of the
+       * last non-rest segment to midnight (or beyond, for the pending that
+       * will extend through empty days to the first segment of the next day).
+       * This ensures cross-midnight continuity even when the last segment
+       * reaches exactly midnight (lastSeg.end === 1440). */
+      var lastSeg = rsegs[rsegs.length - 1];
+      var lastAbsEnd = dayBase + lastSeg.end;
+      if (pending) {
+        /* There's already a pending rest (last seg was rest or we extended one):
+         * extend it to midnight to bridge the gap to the next day. */
+        if (pending.absEnd < (rdi + 1) * 1440) {
+          pending.absEnd = (rdi + 1) * 1440;
+          pending.dur    = pending.absEnd - pending.absStart;
+        }
+      } else if (lastSeg.act !== 0) {
+        /* Last segment was non-rest – start an implicit rest from its end.
+         * If it reached midnight (end===1440) the span starts with dur=0 and
+         * will grow when the next day's first-segment gap is applied. */
+        pending = {absStart: lastAbsEnd, absEnd: (rdi + 1) * 1440, dur: 1440 - lastSeg.end};
+      }
+    }
+    if (pending) { spans.push(pending); }
+    return spans;
+  }
+
   /* == Build one week row ========================================= */
   function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
@@ -576,6 +621,10 @@
       });
       dist += (d.dist||0);
     });
+    /* Weekly rest = total duration of all rest spans (explicit + implicit gaps) */
+    var weekRestSpans = buildRestSpans(weekDays);
+    var weekRest = 0;
+    weekRestSpans.forEach(function(rs) { weekRest += rs.dur; });
     var weekViols  = computeWeekViolations(weekDays);
     var dayViols   = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
     var hasWkErr   = weekViols.some(function(v){ return v.sev==='error'; });
@@ -610,7 +659,7 @@
       '<div style="font-size:12px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
       '<div style="margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
-      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(totals[0]||0)+'</div>' +
+      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(weekRest||0)+'</div>' +
       wkBadge;
 
     /* SVG */
@@ -1327,10 +1376,24 @@
 
     /* State */
     var numWeeks = 4;
-    /* Default: show the 4 weeks starting from the Monday of the current month's
-     * first week so the timeline always opens at the current month. */
+    /* Default: show 4 weeks starting from the Monday of the current month's
+     * first week.  If the dataset contains no data in that window (e.g. the
+     * driver's most-recent file is from a prior month), auto-rewind to the
+     * latest week that actually has data so the chart is never blank on open. */
     var _now = new Date();
     var startWk = monDay(new Date(_now.getFullYear(), _now.getMonth(), 1));
+
+    /* Auto-position: if latest data is before the current 4-week window,
+     * show the 4 weeks ending at the latest data week. */
+    var _sortedKeys = Object.keys(weekMap).sort();
+    if (_sortedKeys.length) {
+      var _latestDataWk = new Date(_sortedKeys[_sortedKeys.length - 1]);
+      var _curWindowEnd = addD(startWk, (numWeeks - 1) * 7);
+      if (_latestDataWk < startWk) {
+        /* Latest data is before current month – rewind to show it */
+        startWk = addD(_latestDataWk, -(numWeeks - 1) * 7);
+      }
+    }
 
     function getVisibleWeeks() {
       var res=[];

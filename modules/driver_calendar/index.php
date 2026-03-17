@@ -265,9 +265,42 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
     $vehicleRecords = array_values($vUniq);
 }
 
-// ── The timeline uses the same from/to date range as the calendar ──
-// (No secondary tl_from/tl_to filter – the left panel from/to is the single control)
-$filteredChartDays = $chartDays;
+// ── The timeline always shows all available data (independent of calendar date filter) ──
+// Load chart days for the full data range (or last 180 days) for timeline tab
+$timelineChartDays = $chartDays; // fallback: same as calendar range
+if ($driverId && $driverInfo && $dataDateMin) {
+    try {
+        $tlFrom180 = (new DateTime('today'))->modify('-180 days')->format('Y-m-d');
+        $tlDateFrom = max($tlFrom180, $dataDateMin);
+        $tlDateTo   = $dataDateMax ?? date('Y-m-d');
+        // Only load separate timeline data if it differs from current calendar range
+        if ($tlDateFrom !== $dateFrom || $tlDateTo !== $dateTo) {
+            $tlStmt = $db->prepare(
+                'SELECT date, segments, dist_km, border_crossings
+                 FROM driver_activity_calendar
+                 WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
+                 ORDER BY date ASC'
+            );
+            $tlStmt->execute([$companyId, $driverId, $tlDateFrom, $tlDateTo]);
+            $timelineChartDays = [];
+            foreach ($tlStmt->fetchAll() as $tlRow) {
+                $tlSegs     = json_decode($tlRow['segments']         ?? '[]', true) ?: [];
+                $tlCrossings= json_decode($tlRow['border_crossings'] ?? '[]', true) ?: [];
+                if (is_int($tlCrossings)) $tlCrossings = [];
+                $timelineChartDays[] = [
+                    'date'      => $tlRow['date'],
+                    'segs'      => $tlSegs,
+                    'dist'      => (int)$tlRow['dist_km'],
+                    'crossings' => $tlCrossings,
+                ];
+            }
+        }
+    } catch (Throwable $tlErr) {
+        error_log('driver_calendar: timeline data load error: ' . $tlErr->getMessage());
+        $timelineChartDays = $chartDays; // fallback
+    }
+}
+$filteredChartDays = $chartDays; // used for violations/summary tabs (respects date filter)
 
 // ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
@@ -669,14 +702,14 @@ include __DIR__ . '/../../templates/header.php';
         <div id="tachoTimelineMain" style="width:100%;overflow-x:auto;min-height:200px;"></div>
         <script>
         document.addEventListener('DOMContentLoaded', function () {
-          var days = <?= json_encode(array_values($filteredChartDays), JSON_UNESCAPED_UNICODE) ?>;
+          var days = <?= json_encode(array_values($timelineChartDays), JSON_UNESCAPED_UNICODE) ?>;
           if (days.length && window.TachoChart) {
             TachoChart.render('tachoTimelineMain', days);
           }
         });
         </script>
 
-        <?php if (empty($filteredChartDays)): ?>
+        <?php if (empty($timelineChartDays)): ?>
         <div class="tp-empty-state py-4">
           <i class="bi bi-activity" style="font-size:2rem;color:#94a3b8"></i>
           <p class="mt-2 text-muted small">Brak danych do wyświetlenia na osi czasu dla wybranego zakresu.</p>
