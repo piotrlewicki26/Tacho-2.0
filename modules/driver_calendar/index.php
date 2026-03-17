@@ -115,7 +115,7 @@ if ($driverId) {
         } else {
             // First driver selection (no dates in URL).
             // Always default to the current month; the user can click quick-select
-            // buttons ("Wszystko", "28 dni", etc.) to navigate to historical data.
+            // buttons ("Bież. mies.", "28 dni", "3 mies.") to navigate to historical data.
             $dateFrom = $curMonthFrom;
             $dateTo   = $curMonthTo;
         }
@@ -340,22 +340,20 @@ include __DIR__ . '/../../templates/header.php';
           <?php if ($dataDateMin): ?>
           <div class="d-flex gap-1 mb-2 flex-wrap">
             <?php
-              $q28From = date('Y-m-d', strtotime('-27 days'));
-              $q28To   = date('Y-m-d');
-              $q3mFrom = date('Y-m-d', strtotime('-3 months'));
-              $q3mTo   = date('Y-m-d');
-              $qAllFrom = $dataDateMin;
-              $qAllTo   = $dataDateMax;
-              $isAll = ($dateFrom === $qAllFrom && $dateTo === $qAllTo);
+              $qCurFrom = date('Y-m-01');
+              $qCurTo   = date('Y-m-t');
+              $q28From  = date('Y-m-d', strtotime('-27 days'));
+              $q28To    = date('Y-m-d');
+              $q3mFrom  = date('Y-m-d', strtotime('-3 months'));
+              $q3mTo    = date('Y-m-d');
+              $isCur = ($dateFrom === $qCurFrom && $dateTo === $qCurTo);
             ?>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $qCurFrom ?>&to=<?= $qCurTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= $isCur ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">Bież. mies.</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs btn-outline-primary flex-fill">28 dni</a>
+               class="btn btn-xs btn-outline-secondary flex-fill">28 dni</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $q3mFrom ?>&to=<?= $q3mTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs btn-outline-secondary flex-fill">3 mies.</a>
-            <a href="?driver_id=<?= $driverId ?>&from=<?= $qAllFrom ?>&to=<?= $qAllTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs <?= $isAll ? 'btn-success' : 'btn-outline-success' ?> flex-fill">
-              <i class="bi bi-collection me-1"></i>Wszystko
-            </a>
+               class="btn btn-xs btn-outline-success flex-fill">3 mies.</a>
           </div>
           <?php endif; ?>
           <div class="mb-2">
@@ -667,14 +665,6 @@ include __DIR__ . '/../../templates/header.php';
         <!-- ════════════════════════════════════════════════════
              TAB: TIMELINE / ANALIZATOR
              ════════════════════════════════════════════════════ -->
-
-        <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
-          <span class="text-muted small">
-            <i class="bi bi-calendar-range me-1"></i>
-            <?= $dateFrom ? fmtDate($dateFrom) . ' – ' . fmtDate($dateTo) : 'Pełny zakres' ?>
-          </span>
-          <span class="badge bg-secondary ms-auto"><?= count($filteredChartDays) ?> dni</span>
-        </div>
 
         <div id="tachoTimelineMain" style="width:100%;overflow-x:auto;min-height:200px;"></div>
         <script>

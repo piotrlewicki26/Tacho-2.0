@@ -77,6 +77,29 @@
   }
   function sum(arr, fn) { return arr.reduce(function(a,x){ return a + fn(x); }, 0); }
 
+  /* Merge consecutive rest (act=0) segments within a day into single spans */
+  function mergeRestSegs(segs) {
+    if (!segs || !segs.length) return segs;
+    var result = [];
+    var pending = null;
+    segs.forEach(function(s) {
+      if (s.act === 0) {
+        if (pending && s.start <= pending.end + 1) {
+          pending.end = s.end;
+          pending.dur = pending.end - pending.start;
+        } else {
+          if (pending) result.push(pending);
+          pending = {act: 0, start: s.start, end: s.end, dur: s.dur};
+        }
+      } else {
+        if (pending) { result.push(pending); pending = null; }
+        result.push(s);
+      }
+    });
+    if (pending) result.push(pending);
+    return result;
+  }
+
   /* == EU Violation Engine ========================================= */
   function computeDayViolations(segs) {
     if (!segs || !segs.length) return [];
@@ -191,7 +214,7 @@
     /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
     weekDays.forEach(function(day, di) {
       if (!day || !day.segs) return;
-      day.segs.forEach(function(s) {
+      mergeRestSegs(day.segs).forEach(function(s) {
         var absS = di*1440 + s.start, absE = di*1440 + s.end;
         if (absE <= rangeMin || absS >= rangeMax) return; /* outside zoom */
         var x1 = clampX(Math.max(absS, rangeMin));
@@ -1303,9 +1326,6 @@
 
     /* State */
     var numWeeks = 4;
-    /* Keep track of the latest data week for the "Dane ▶" button */
-    var _weekKeys = Object.keys(weekMap).sort();
-    var _latestKey = _weekKeys.length ? _weekKeys[_weekKeys.length - 1] : null;
     /* Default: show the 4 weeks starting from the Monday of the current month's
      * first week so the timeline always opens at the current month. */
     var _now = new Date();
@@ -1331,25 +1351,13 @@
     }
     var prevBtn  = mkBtn('\u25C4 Poprzedni');
     var nextBtn  = mkBtn('Nast\u0119pny \u25BA');
-    /* "Dane ▶" button: jump back to the auto-positioned data range */
-    var dataBtn  = mkBtn('Dane \u25BA', 'background:#E8F5E9;border-color:#A5D6A7;color:#2E7D32;');
     var dateRange = document.createElement('span');
     dateRange.style.cssText = 'font-size:13px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
 
     prevBtn.addEventListener('click',  function(){ startWk=addD(startWk,-7); renderWeeks(); });
     nextBtn.addEventListener('click',  function(){ startWk=addD(startWk, 7); renderWeeks(); });
-    dataBtn.addEventListener('click',  function(){
-      if (_latestKey) {
-        var _lws = new Date(_latestKey + 'T00:00:00');
-        startWk = addD(_lws, -(numWeeks - 1) * 7);
-      } else {
-        var _n = new Date();
-        startWk = monDay(new Date(_n.getFullYear(), _n.getMonth(), 1));
-      }
-      renderWeeks();
-    });
 
-    [prevBtn, nextBtn, dataBtn, dateRange].forEach(function(el){ toolbar.appendChild(el); });
+    [prevBtn, nextBtn, dateRange].forEach(function(el){ toolbar.appendChild(el); });
     container.appendChild(toolbar);
 
     /* Legend */
