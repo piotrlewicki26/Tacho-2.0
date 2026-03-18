@@ -337,7 +337,7 @@ include __DIR__ . '/../../templates/header.php';
         <form method="GET" novalidate id="filterForm">
           <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
           <div class="mb-3">
-            <select name="driver_id" class="form-select" onchange="var f=this.form;f.elements['from'].value='';f.elements['to'].value='';f.submit();" title="Wybierz kierowcę">
+            <select name="driver_id" class="form-select" onchange="var f=this.form;var ef=f.elements['from'],et=f.elements['to'];if(ef)ef.value='';if(et)et.value='';f.submit();" title="Wybierz kierowcę">
               <option value="">— Wybierz kierowcę —</option>
               <?php foreach ($allDrivers as $d): ?>
               <option value="<?= $d['id'] ?>"<?= $d['id']==$driverId?' selected':'' ?>>

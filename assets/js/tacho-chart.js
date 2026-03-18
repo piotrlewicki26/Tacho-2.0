@@ -313,7 +313,7 @@
       }
       if (bw > 35) {
         var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-        t.textContent = ddhhmm(rs.dur); g.appendChild(t);
+        t.textContent = hhmm(rs.dur); g.appendChild(t);
       }
       if ((isWeekly || isReducedWeekly) && bw > 55) {
         var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.9)', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
@@ -340,7 +340,7 @@
             '</div>' +
             '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(startMin) + (endDay > startDay ? ' (D' + (startDay+1) + ')' : '') +
               '&nbsp;\u2192&nbsp;' + hhmm(endMin) + (endDay !== startDay ? ' (D' + (endDay+1) + ')' : '') + '</div>' +
-            '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + ddhhmm(span.dur) + '</div>';
+            '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + hhmm(span.dur) + '</div>';
           tip.style.display = 'block';
           tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 260) + 'px';
           tip.style.top  = Math.min(ev.clientY + 15, window.innerHeight - 120) + 'px';
@@ -688,7 +688,7 @@
       '<div style="font-size:12px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
       '<div style="margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
-      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+ddhhmm(restDispVal)+restTypeSfx+'</div>' +
+      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(restDispVal)+restTypeSfx+'</div>' +
       wkBadge;
 
     /* SVG */
