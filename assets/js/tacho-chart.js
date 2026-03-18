@@ -337,8 +337,21 @@
         t.textContent = hhmm(rs.dur); g.appendChild(t);
       }
       if ((isWeekly || isReducedWeekly) && bw > 55) {
-        var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.9)', 'font-size':10, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-        wl.textContent = isWeekly ? 'TYGODNIOWY' : 'SKR\u00d3CONY'; g.appendChild(wl);
+        /* Compute actual period dates for the bottom bar label */
+        var _wlAas = rs.absStart - (rs.extra || 0);
+        var _wlSd  = addD(weekStart, Math.floor(_wlAas / 1440));
+        var _wlSt  = ((_wlAas % 1440) + 1440) % 1440;
+        var _wlEd  = addD(weekStart, Math.floor(rs.absEnd / 1440));
+        var _wlEt  = rs.absEnd % 1440;
+        var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.92)', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+        if (bw > 195) {
+          wl.textContent = fmtDate(_wlSd) + ' ' + hhmm(_wlSt) + ' \u2192 ' + fmtDate(_wlEd) + ' ' + hhmm(_wlEt);
+        } else if (bw > 105) {
+          wl.textContent = fmtDate(_wlSd) + ' \u2192 ' + fmtDate(_wlEd);
+        } else {
+          wl.textContent = isWeekly ? 'TYG.' : 'SKR.';
+        }
+        g.appendChild(wl);
       }
       /* Clickable tooltip for rest span */
       (function(span) {
@@ -350,18 +363,23 @@
           var label = span.dur >= WEEKLY_REST_MIN ? 'Odpoczynek tygodniowy' :
                       span.dur >= REDUCED_WEEKLY  ? 'Odpoczynek skrócony tygodniowy' :
                                                     'Odpoczynek dobowy';
-          var startDay = Math.floor(span.absStart / 1440);
-          var startMin = span.absStart % 1440;
-          var endDay   = Math.floor(span.absEnd   / 1440);
-          var endMin   = span.absEnd   % 1440;
+          /* Compute actual start date (accounting for carry-over from previous week) */
+          var _tipAas = span.absStart - (span.extra || 0);
+          var _tipSd  = addD(weekStart, Math.floor(_tipAas / 1440));
+          var _tipSt  = ((_tipAas % 1440) + 1440) % 1440;
+          var _tipEd  = addD(weekStart, Math.floor(span.absEnd / 1440));
+          var _tipEt  = span.absEnd % 1440;
           tip.innerHTML =
             '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
               '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
               '<strong style="font-size:15px;color:#ECEFF1;">' + label + '</strong>' +
             '</div>' +
-            (span.extra > 0 ? '<div style="font-size:11px;color:#90A4AE;margin-bottom:4px;">\u21A9 kontynuacja z poprzedniego tygodnia (+' + hhmm(span.extra) + ')</div>' : '') +
-            '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(startMin) + (endDay > startDay ? ' (D' + (startDay+1) + ')' : '') +
-              '&nbsp;\u2192&nbsp;' + hhmm(endMin) + (endDay !== startDay ? ' (D' + (endDay+1) + ')' : '') + '</div>' +
+            '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
+            '<div style="color:#B0BEC5;font-size:13px;">' +
+              fmtDate(_tipSd) + ' <b style="color:#ECEFF1;">' + hhmm(_tipSt) + '</b>' +
+              '&nbsp;\u2192&nbsp;' +
+              fmtDate(_tipEd) + ' <b style="color:#ECEFF1;">' + hhmm(_tipEt) + '</b>' +
+            '</div>' +
             '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + hhmm(span.dur) + '</div>';
           tip.style.display = 'block';
           tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 260) + 'px';
@@ -560,10 +578,10 @@
       }
     }
 
-    /* Rest duration pill labels on the time axis – show abbreviated duration
-     * (e.g. "11h", "45h") as a small coloured badge centred on each rest span,
-     * rendered just below the T2 track boundary.  These appear in both zoomed
-     * and full-week views so the viewer can read the rest length on the axis. */
+    /* Rest duration pill labels on the time axis – show period dates and duration
+     * as a small coloured badge centred on each rest span, rendered just below the
+     * T2 track boundary.  For qualifying rest (weekly/reduced) the badge shows the
+     * exact date range so the viewer can immediately read which period counts. */
     _restSpansPre.forEach(function(rs) {
       if (rs.dur < _DAILY_REST_PRE) return;
       if (rs.absEnd <= rangeMin || rs.absStart >= rangeMax) return;
@@ -574,17 +592,32 @@
       var isRed  = !isWkly && rs.dur >= _REDUCED_WK_PRE;
       var lblCol = isWkly ? '#1565C0' : isRed ? '#1E88E5' : '#00BCD4';
       var hrs = Math.round(rs.dur / 60);
-      var lblText = hrs + 'h';
+      /* Compute actual period dates for qualifying rest (accounting for prev-week carry-over) */
+      var _pillAas = rs.absStart - (rs.extra || 0);
+      var _pillSd  = addD(weekStart, Math.floor(_pillAas / 1440));
+      var _pillSt  = ((_pillAas % 1440) + 1440) % 1440;
+      var _pillEd  = addD(weekStart, Math.floor(rs.absEnd / 1440));
+      var _pillEt  = rs.absEnd % 1440;
+      /* Choose label text based on rest type and available pixel width */
+      var lblText;
+      if ((isWkly || isRed) && rbw > 190) {
+        lblText = fmtDate(_pillSd) + ' ' + hhmm(_pillSt) + ' \u2013 ' + fmtDate(_pillEd) + ' ' + hhmm(_pillEt) + '  ' + hhmm(rs.dur);
+      } else if ((isWkly || isRed) && rbw > 110) {
+        lblText = fmtDate(_pillSd) + ' \u2013 ' + fmtDate(_pillEd) + '  ' + hrs + 'h';
+      } else {
+        lblText = hrs + 'h';
+      }
       /* Clamp centre so the badge stays inside the chart */
       var rxc = Math.min(Math.max(rx1 + rbw / 2, 14), cw - 14);
       var pillW = lblText.length * 5 + 8;
+      var rxcC  = Math.min(Math.max(rxc, pillW / 2 + 2), cw - pillW / 2 - 2);
       /* Coloured pill background */
       svgEl.appendChild(mkSVG('rect', {
-        x: rxc - pillW / 2, y: T2Y + T2H + 4, width: pillW, height: 11,
+        x: rxcC - pillW / 2, y: T2Y + T2H + 4, width: pillW, height: 11,
         fill: lblCol, rx: 3, opacity: 0.85, 'pointer-events': 'none'
       }));
-      /* White abbreviated-time text inside pill */
-      var rl = mkSVG('text', {x: rxc, y: T2Y + T2H + 13,
+      /* White text inside pill */
+      var rl = mkSVG('text', {x: rxcC, y: T2Y + T2H + 13,
         'text-anchor': 'middle', fill: '#fff',
         'font-size': 8, 'font-family': 'Inter,sans-serif',
         'font-weight': 700, 'pointer-events': 'none'});
@@ -772,8 +805,9 @@
     var weekRest = 0;
     weekRestSpans.forEach(function(rs) { weekRest += rs.dur; });
     var topQualRest = 0;
+    var topQualSpan = null;
     weekRestSpans.forEach(function(rs) {
-      if (rs.dur >= WKREST_RED && rs.dur > topQualRest) topQualRest = rs.dur;
+      if (rs.dur >= WKREST_RED && rs.dur > topQualRest) { topQualRest = rs.dur; topQualSpan = rs; }
     });
     /* Display value: qualifying rest if available, else total rest */
     var restDispVal = topQualRest > 0 ? topQualRest : weekRest;
@@ -811,9 +845,65 @@
       '</div>' +
       '<div style="font-size:12px;color:#9AA0AA;line-height:1.4;">'+fmtDate(weekStart)+'</div>' +
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
-      '<div style="margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
-      '<div style="font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(restDispVal)+restTypeSfx+'</div>' +
+      '<div data-tperiod="drive" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
+      '<div data-tperiod="rest" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(restDispVal)+restTypeSfx+'</div>' +
       wkBadge;
+
+    /* Click handlers for sidebar drive time and rest time values */
+    var _sbDriveEl = sb.querySelector('[data-tperiod="drive"]');
+    var _sbRestEl  = sb.querySelector('[data-tperiod="rest"]');
+    if (_sbDriveEl && weekDrive > 0) {
+      _sbDriveEl.addEventListener('click', function(ev) {
+        ev.stopPropagation(); ev._tachoSeg = true;
+        var tip = getTip();
+        tip.innerHTML =
+          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
+            '<div style="width:11px;height:11px;border-radius:3px;background:#F44336;flex-shrink:0;"></div>' +
+            '<strong style="font-size:15px;color:#ECEFF1;">Jazda W'+String(isoWeek(weekStart)).padStart(2,'0')+'</strong>' +
+          '</div>' +
+          '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#B0BEC5;font-size:13px;">' +
+            fmtDate(weekStart) + ' <b style="color:#ECEFF1;">00:00</b>' +
+            '&nbsp;\u2192&nbsp;' +
+            fmtDate(addD(weekStart,6)) + ' <b style="color:#ECEFF1;">24:00</b>' +
+          '</div>' +
+          '<div style="font-size:17px;font-weight:700;color:#F44336;margin-top:3px;">'+hhmm(weekDrive)+'</div>';
+        tip.style.display = 'block';
+        var _r = _sbDriveEl.getBoundingClientRect();
+        tip.style.left = Math.min(_r.right + 8, window.innerWidth - 265) + 'px';
+        tip.style.top  = Math.min(_r.top, window.innerHeight - 115) + 'px';
+      });
+    }
+    if (_sbRestEl && topQualSpan) {
+      _sbRestEl.addEventListener('click', function(ev) {
+        ev.stopPropagation(); ev._tachoSeg = true;
+        var tip = getTip();
+        var _rAas = topQualSpan.absStart - (topQualSpan.extra || 0);
+        var _rSd  = addD(weekStart, Math.floor(_rAas / 1440));
+        var _rSt  = ((_rAas % 1440) + 1440) % 1440;
+        var _rEd  = addD(weekStart, Math.floor(topQualSpan.absEnd / 1440));
+        var _rEt  = topQualSpan.absEnd % 1440;
+        var _rLabel = topQualRest >= WKREST_REG ? 'Odpoczynek tygodniowy' :
+                      topQualRest >= WKREST_RED ? 'Odpoczynek skrócony tyg.' : 'Odpoczynek dobowy';
+        var _rCol   = topQualRest >= WKREST_REG ? '#1565C0' : topQualRest >= WKREST_RED ? '#1E88E5' : '#00BCD4';
+        tip.innerHTML =
+          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
+            '<div style="width:11px;height:11px;border-radius:3px;background:'+_rCol+';flex-shrink:0;"></div>' +
+            '<strong style="font-size:15px;color:#ECEFF1;">'+_rLabel+'</strong>' +
+          '</div>' +
+          '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#B0BEC5;font-size:13px;">' +
+            fmtDate(_rSd) + ' <b style="color:#ECEFF1;">' + hhmm(_rSt) + '</b>' +
+            '&nbsp;\u2192&nbsp;' +
+            fmtDate(_rEd) + ' <b style="color:#ECEFF1;">' + hhmm(_rEt) + '</b>' +
+          '</div>' +
+          '<div style="font-size:17px;font-weight:700;color:'+_rCol+';margin-top:3px;">'+hhmm(topQualRest)+'</div>';
+        tip.style.display = 'block';
+        var _r2 = _sbRestEl.getBoundingClientRect();
+        tip.style.left = Math.min(_r2.right + 8, window.innerWidth - 265) + 'px';
+        tip.style.top  = Math.min(_r2.top, window.innerHeight - 115) + 'px';
+      });
+    }
 
     /* SVG */
     var svgEl = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
