@@ -30,9 +30,9 @@
   var T1Y = 46;
   var T1H = 130;
   var T2Y = 190;
-  var T2H = 60;
-  var AXY = 270;
-  var RH  = 305;
+  var T2H = 80;
+  var AXY = 290;
+  var RH  = 325;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
@@ -333,26 +333,8 @@
         ico.textContent = '\u22A2'; g.appendChild(ico);
       }
       if (bw > 35) {
-        var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+        var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+5, 'text-anchor':'middle', fill:'#fff', 'font-size':15, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
         t.textContent = hhmm(rs.dur); g.appendChild(t);
-      }
-      if ((isWeekly || isReducedWeekly) && bw > 55) {
-        /* Compute actual period dates for the bottom bar label */
-        var _wlAas = rs.absStart - (rs.extra || 0);
-        var _wlSd  = addD(weekStart, Math.floor(_wlAas / 1440));
-        var _wlSt  = ((_wlAas % 1440) + 1440) % 1440;
-        var _wlActualEnd = rs.absEnd + (rs.nextExtra || 0);
-        var _wlEd  = addD(weekStart, Math.floor(_wlActualEnd / 1440));
-        var _wlEt  = _wlActualEnd % 1440;
-        var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.92)', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
-        if (bw > 195) {
-          wl.textContent = fmtDate(_wlSd) + ' ' + hhmm(_wlSt) + ' \u2192 ' + fmtDate(_wlEd) + ' ' + hhmm(_wlEt);
-        } else if (bw > 105) {
-          wl.textContent = fmtDate(_wlSd) + ' \u2192 ' + fmtDate(_wlEd);
-        } else {
-          wl.textContent = isWeekly ? 'TYG.' : 'SKR.';
-        }
-        g.appendChild(wl);
       }
       /* Clickable tooltip for rest span */
       (function(span) {
@@ -939,7 +921,7 @@
       zSb.innerHTML = '<div style="font-size:12px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay?'DZIE\u0143':'ZOOM')+'</div>'+
         '<div style="font-size:12px;color:#5A6070;">'+(isFullDay?fmtDate(startD):hm(dur))+'</div>';
       var zSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
-      fillChartSVG(zSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols, null, prevPendingDur || 0);
+      fillChartSVG(zSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols, null, prevPendingDur || 0, nextWeekDays || null);
       zRow.appendChild(zSb); zRow.appendChild(zSvg);
       inlineZoom.appendChild(zRow);
 
