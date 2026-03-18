@@ -341,8 +341,9 @@
         var _wlAas = rs.absStart - (rs.extra || 0);
         var _wlSd  = addD(weekStart, Math.floor(_wlAas / 1440));
         var _wlSt  = ((_wlAas % 1440) + 1440) % 1440;
-        var _wlEd  = addD(weekStart, Math.floor(rs.absEnd / 1440));
-        var _wlEt  = rs.absEnd % 1440;
+        var _wlActualEnd = rs.absEnd + (rs.nextExtra || 0);
+        var _wlEd  = addD(weekStart, Math.floor(_wlActualEnd / 1440));
+        var _wlEt  = _wlActualEnd % 1440;
         var wl = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H-4, 'text-anchor':'middle', fill:'rgba(255,255,255,0.92)', 'font-size':9, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
         if (bw > 195) {
           wl.textContent = fmtDate(_wlSd) + ' ' + hhmm(_wlSt) + ' \u2192 ' + fmtDate(_wlEd) + ' ' + hhmm(_wlEt);
@@ -367,8 +368,9 @@
           var _tipAas = span.absStart - (span.extra || 0);
           var _tipSd  = addD(weekStart, Math.floor(_tipAas / 1440));
           var _tipSt  = ((_tipAas % 1440) + 1440) % 1440;
-          var _tipEd  = addD(weekStart, Math.floor(span.absEnd / 1440));
-          var _tipEt  = span.absEnd % 1440;
+          var _tipActualEnd = span.absEnd + (span.nextExtra || 0);
+          var _tipEd  = addD(weekStart, Math.floor(_tipActualEnd / 1440));
+          var _tipEt  = _tipActualEnd % 1440;
           tip.innerHTML =
             '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
               '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
@@ -577,53 +579,6 @@
         }
       }
     }
-
-    /* Rest duration pill labels on the time axis – show period dates and duration
-     * as a small coloured badge centred on each rest span, rendered just below the
-     * T2 track boundary.  For qualifying rest (weekly/reduced) the badge shows the
-     * exact date range so the viewer can immediately read which period counts. */
-    _restSpansPre.forEach(function(rs) {
-      if (rs.dur < _DAILY_REST_PRE) return;
-      if (rs.absEnd <= rangeMin || rs.absStart >= rangeMax) return;
-      var rx1 = clampX(Math.max(rs.absStart, rangeMin));
-      var rx2 = clampX(Math.min(rs.absEnd,   rangeMax));
-      var rbw = rx2 - rx1; if (rbw < 6) return;
-      var isWkly = rs.dur >= _WEEKLY_REST_PRE;
-      var isRed  = !isWkly && rs.dur >= _REDUCED_WK_PRE;
-      var lblCol = isWkly ? '#1565C0' : isRed ? '#1E88E5' : '#00BCD4';
-      var hrs = Math.round(rs.dur / 60);
-      /* Compute actual period dates for qualifying rest (accounting for prev-week carry-over) */
-      var _pillAas = rs.absStart - (rs.extra || 0);
-      var _pillSd  = addD(weekStart, Math.floor(_pillAas / 1440));
-      var _pillSt  = ((_pillAas % 1440) + 1440) % 1440;
-      var _pillEd  = addD(weekStart, Math.floor(rs.absEnd / 1440));
-      var _pillEt  = rs.absEnd % 1440;
-      /* Choose label text based on rest type and available pixel width */
-      var lblText;
-      if ((isWkly || isRed) && rbw > 190) {
-        lblText = fmtDate(_pillSd) + ' ' + hhmm(_pillSt) + ' \u2013 ' + fmtDate(_pillEd) + ' ' + hhmm(_pillEt) + '  ' + hhmm(rs.dur);
-      } else if ((isWkly || isRed) && rbw > 110) {
-        lblText = fmtDate(_pillSd) + ' \u2013 ' + fmtDate(_pillEd) + '  ' + hrs + 'h';
-      } else {
-        lblText = hrs + 'h';
-      }
-      /* Clamp centre so the badge stays inside the chart */
-      var rxc = Math.min(Math.max(rx1 + rbw / 2, 14), cw - 14);
-      var pillW = lblText.length * 5 + 8;
-      var rxcC  = Math.min(Math.max(rxc, pillW / 2 + 2), cw - pillW / 2 - 2);
-      /* Coloured pill background */
-      svgEl.appendChild(mkSVG('rect', {
-        x: rxcC - pillW / 2, y: T2Y + T2H + 4, width: pillW, height: 11,
-        fill: lblCol, rx: 3, opacity: 0.85, 'pointer-events': 'none'
-      }));
-      /* White text inside pill */
-      var rl = mkSVG('text', {x: rxcC, y: T2Y + T2H + 13,
-        'text-anchor': 'middle', fill: '#fff',
-        'font-size': 8, 'font-family': 'Inter,sans-serif',
-        'font-weight': 700, 'pointer-events': 'none'});
-      rl.textContent = lblText;
-      svgEl.appendChild(rl);
-    });
   }
 
   /* == Compute rest continuation into the next week =================
@@ -775,7 +730,7 @@
          * here automatically updates the already-pushed span object. */
         if (nextWeekDays) {
           var nxtCont = computeRestContinuation(nextWeekDays);
-          if (nxtCont > 0) { pending.dur += nxtCont; }
+          if (nxtCont > 0) { pending.dur += nxtCont; pending.nextExtra = nxtCont; }
         }
       }
     }
@@ -881,8 +836,9 @@
         var _rAas = topQualSpan.absStart - (topQualSpan.extra || 0);
         var _rSd  = addD(weekStart, Math.floor(_rAas / 1440));
         var _rSt  = ((_rAas % 1440) + 1440) % 1440;
-        var _rEd  = addD(weekStart, Math.floor(topQualSpan.absEnd / 1440));
-        var _rEt  = topQualSpan.absEnd % 1440;
+        var _rActualEnd = topQualSpan.absEnd + (topQualSpan.nextExtra || 0);
+        var _rEd  = addD(weekStart, Math.floor(_rActualEnd / 1440));
+        var _rEt  = _rActualEnd % 1440;
         var _rLabel = topQualRest >= WKREST_REG ? 'Odpoczynek tygodniowy' :
                       topQualRest >= WKREST_RED ? 'Odpoczynek skrócony tyg.' : 'Odpoczynek dobowy';
         var _rCol   = topQualRest >= WKREST_REG ? '#1565C0' : topQualRest >= WKREST_RED ? '#1E88E5' : '#00BCD4';
