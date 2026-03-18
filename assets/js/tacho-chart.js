@@ -358,7 +358,7 @@
               '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
               '<strong style="font-size:15px;color:#ECEFF1;">' + label + '</strong>' +
             '</div>' +
-            '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+            '<div style="color:#78909C;font-size:15px;margin-bottom:3px;">Okres obliczenia:</div>' +
             '<div style="color:#B0BEC5;font-size:15px;">' +
               fmtDate(_tipSd) + ' <b style="color:#ECEFF1;">' + hhmm(_tipSt) + '</b>' +
               '&nbsp;\u2192&nbsp;' +
@@ -798,7 +798,7 @@
             '<div style="width:11px;height:11px;border-radius:3px;background:#F44336;flex-shrink:0;"></div>' +
             '<strong style="font-size:15px;color:#ECEFF1;">Jazda W'+String(isoWeek(weekStart)).padStart(2,'0')+'</strong>' +
           '</div>' +
-          '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#78909C;font-size:15px;margin-bottom:3px;">Okres obliczenia:</div>' +
           '<div style="color:#B0BEC5;font-size:15px;">' +
             fmtDate(weekStart) + ' <b style="color:#ECEFF1;">00:00</b>' +
             '&nbsp;\u2192&nbsp;' +
@@ -829,7 +829,7 @@
             '<div style="width:11px;height:11px;border-radius:3px;background:'+_rCol+';flex-shrink:0;"></div>' +
             '<strong style="font-size:15px;color:#ECEFF1;">'+_rLabel+'</strong>' +
           '</div>' +
-          '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#78909C;font-size:15px;margin-bottom:3px;">Okres obliczenia:</div>' +
           '<div style="color:#B0BEC5;font-size:15px;">' +
             fmtDate(_rSd) + ' <b style="color:#ECEFF1;">' + hhmm(_rSt) + '</b>' +
             '&nbsp;\u2192&nbsp;' +
