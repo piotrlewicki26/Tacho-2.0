@@ -220,6 +220,30 @@
     /* Activity track background – no border lines, pure white */
     svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF'}));
 
+    /* Pre-compute rest spans so we can overlay them on the activity track */
+    var _DAILY_REST_PRE  = 9  * 60;
+    var _WEEKLY_REST_PRE = 45 * 60;
+    var _REDUCED_WK_PRE  = 24 * 60;
+    var _restSpansPre = buildRestSpans(weekDays, prevPendingDur || 0, nextWeekDays || null).spans;
+
+    /* Rest period overlays on activity track (T1) – semi-transparent tinted band
+     * behind the activity bars so rest periods are visible on the main timeline */
+    _restSpansPre.forEach(function(rs) {
+      if (rs.dur < _DAILY_REST_PRE) return;
+      if (rs.absEnd <= rangeMin || rs.absStart >= rangeMax) return;
+      var ox1 = clampX(Math.max(rs.absStart, rangeMin));
+      var ox2 = clampX(Math.min(rs.absEnd,   rangeMax));
+      var obw = ox2 - ox1; if (obw < 0.4) return;
+      var isWkly = rs.dur >= _WEEKLY_REST_PRE;
+      var isRed  = !isWkly && rs.dur >= _REDUCED_WK_PRE;
+      /* Soft tint: weekly=blue, reduced=mid-blue, daily=cyan */
+      var tintFill = isWkly ? 'rgba(21,101,192,0.13)' : isRed ? 'rgba(30,136,229,0.11)' : 'rgba(0,188,212,0.10)';
+      svgEl.appendChild(mkSVG('rect', {x:ox1, y:T1Y, width:obw, height:T1H, fill:tintFill, 'pointer-events':'none'}));
+      /* Top border stripe to make the rest boundary clearly visible */
+      var stripeCol = isWkly ? '#1565C0' : isRed ? '#1E88E5' : '#00BCD4';
+      svgEl.appendChild(mkSVG('rect', {x:ox1, y:T1Y, width:obw, height:3, fill:stripeCol, opacity:0.55, 'pointer-events':'none'}));
+    });
+
     /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
     weekDays.forEach(function(day, di) {
       if (!day || !day.segs) return;
@@ -286,13 +310,13 @@
     }
 
     /* Daily / weekly rest track – pure white background, no border */
-    var DAILY_REST_MIN  = 9  * 60;  /* 540 min = minimum daily rest       */
-    var WEEKLY_REST_MIN = 45 * 60;  /* 2700 min = regular weekly rest     */
-    var REDUCED_WEEKLY  = 24 * 60;  /* 1440 min = reduced weekly rest     */
+    var DAILY_REST_MIN  = _DAILY_REST_PRE;
+    var WEEKLY_REST_MIN = _WEEKLY_REST_PRE;
+    var REDUCED_WEEKLY  = _REDUCED_WK_PRE;
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
 
-    /* Build rest spans using shared helper (explicit rest + implicit cross-midnight gaps) */
-    var restSpans = buildRestSpans(weekDays, prevPendingDur || 0, nextWeekDays || null).spans;
+    /* Reuse pre-computed rest spans (built before T1 rendering above) */
+    var restSpans = _restSpansPre;
 
     /* Render merged rest spans */
     restSpans.forEach(function(rs) {
