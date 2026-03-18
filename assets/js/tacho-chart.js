@@ -188,7 +188,7 @@
    * Draws tracks, activity bars, violations, axis into an existing  *
    * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) *
    * onDateClick(di) – called when a day-label is clicked (full view) */
-  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick) {
+  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick, prevPendingDur) {
     var rangeSpan = rangeMax - rangeMin;
     var isZoomed  = rangeSpan < TOTAL_MIN * 0.9999;
     var px = function(m) { return (m - rangeMin) / rangeSpan * cw; };
@@ -292,7 +292,7 @@
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
 
     /* Build rest spans using shared helper (explicit rest + implicit cross-midnight gaps) */
-    var restSpans = buildRestSpans(weekDays);
+    var restSpans = buildRestSpans(weekDays, prevPendingDur || 0).spans;
 
     /* Render merged rest spans */
     restSpans.forEach(function(rs) {
@@ -338,6 +338,7 @@
               '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
               '<strong style="font-size:15px;color:#ECEFF1;">' + label + '</strong>' +
             '</div>' +
+            (span.extra > 0 ? '<div style="font-size:11px;color:#90A4AE;margin-bottom:4px;">\u21A9 kontynuacja z poprzedniego tygodnia (+' + hhmm(span.extra) + ')</div>' : '') +
             '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(startMin) + (endDay > startDay ? ' (D' + (startDay+1) + ')' : '') +
               '&nbsp;\u2192&nbsp;' + hhmm(endMin) + (endDay !== startDay ? ' (D' + (endDay+1) + ')' : '') + '</div>' +
             '<div style="font-size:17px;font-weight:700;color:' + restFill + ';margin-top:3px;">' + hhmm(span.dur) + '</div>';
@@ -544,9 +545,28 @@
    * continuous rest periods (explicit act=0 segments + implicit gaps
    * between the last activity of one day and the first of the next).
    * Empty days (card removed) extend any pending rest through them. */
-  function buildRestSpans(weekDays) {
+  /* Build rest spans for a week.
+   * prevPendingDur: minutes of uninterrupted rest already accumulated at end
+   * of the PREVIOUS week that are still in progress at the start of this week.
+   * This enables cross-week weekly rest to be correctly classified (e.g. rest
+   * that starts on Saturday evening and ends on Monday morning is attributed
+   * to the following week with the full duration including the Saturday portion).
+   * Returns { spans, endPendingDur } where endPendingDur is the accumulated
+   * rest duration still in progress at the end of this week, to be passed as
+   * prevPendingDur to the next week. */
+  function buildRestSpans(weekDays, prevPendingDur) {
     var spans = [];
     var pending = null;
+    var extraDur = prevPendingDur || 0; /* carry-over minutes from previous week */
+
+    /* Helper: compute span duration including any carry-over extra */
+    function calcDur(p) { return (p.absEnd - p.absStart) + (p.extra || 0); }
+    /* Helper: update pending end and recompute dur */
+    function extendPending(p, newAbsEnd) {
+      p.absEnd = newAbsEnd;
+      p.dur    = calcDur(p);
+    }
+
     for (var rdi = 0; rdi < 7; rdi++) {
       var rday  = weekDays[rdi];
       var rsegs = rday && rday.segs ? rday.segs : [];
@@ -555,29 +575,35 @@
         /* Empty day – no tachograph data (card removed = driver resting).
          * Extend any existing rest span through the whole day; if no rest
          * was pending yet (e.g. start of week), start one from this day's
-         * midnight so that continuous multi-day rest is fully captured. */
+         * midnight so that continuous multi-day rest is fully captured.
+         * Include any carry-over extra from the previous week. */
         if (pending) {
-          pending.absEnd = (rdi + 1) * 1440;
-          pending.dur    = pending.absEnd - pending.absStart;
+          extendPending(pending, (rdi + 1) * 1440);
         } else {
-          pending = {absStart: dayBase, absEnd: (rdi + 1) * 1440, dur: 1440};
+          var ex0 = extraDur; extraDur = 0;
+          pending = {absStart: dayBase, absEnd: (rdi + 1) * 1440, extra: ex0, dur: 1440 + ex0};
         }
         continue;
       }
       /* Day has segments – extend any pending rest to cover the gap
        * before this day's first segment (cross-midnight continuity).
        * If no rest was pending (e.g. first day of week with morning gap),
-       * create an implicit rest from midnight to first segment start. */
+       * create an implicit rest from midnight to first segment start and
+       * include the carry-over extra from the previous week. */
       var firstSegStart = rsegs[0].start;
       if (pending) {
         var gapEnd = dayBase + firstSegStart;
         if (gapEnd > pending.absEnd) {
-          pending.absEnd = gapEnd;
-          pending.dur    = pending.absEnd - pending.absStart;
+          extendPending(pending, gapEnd);
         }
       } else if (firstSegStart > 0) {
         /* No prior rest context – implicit rest from midnight to first segment */
-        pending = {absStart: dayBase, absEnd: dayBase + firstSegStart, dur: firstSegStart};
+        var ex1 = extraDur; extraDur = 0;
+        pending = {absStart: dayBase, absEnd: dayBase + firstSegStart, extra: ex1, dur: firstSegStart + ex1};
+      } else {
+        /* Driver was active at midnight – the previous week's pending rest
+         * ended exactly at the week boundary, no continuation here. */
+        extraDur = 0;
       }
       /* Process each segment */
       for (var rsi = 0; rsi < rsegs.length; rsi++) {
@@ -586,18 +612,16 @@
         if (rs.act === 0) {
           /* Explicit rest segment – merge with pending if adjacent */
           if (pending && aS <= pending.absEnd + 1) {
-            pending.absEnd = aE;
-            pending.dur    = pending.absEnd - pending.absStart;
+            extendPending(pending, aE);
           } else {
             if (pending) { spans.push(pending); }
-            pending = {absStart: aS, absEnd: aE, dur: aE - aS};
+            pending = {absStart: aS, absEnd: aE, extra: 0, dur: aE - aS};
           }
         } else {
           /* Non-rest activity – cut off pending rest at segment start */
           if (pending) {
             if (pending.absEnd > aS) {
-              pending.absEnd = aS;
-              pending.dur    = pending.absEnd - pending.absStart;
+              extendPending(pending, aS);
             }
             spans.push(pending);
             pending = null;
@@ -615,22 +639,27 @@
         /* There's already a pending rest (last seg was rest or we extended one):
          * extend it to midnight to bridge the gap to the next day. */
         if (pending.absEnd < (rdi + 1) * 1440) {
-          pending.absEnd = (rdi + 1) * 1440;
-          pending.dur    = pending.absEnd - pending.absStart;
+          extendPending(pending, (rdi + 1) * 1440);
         }
       } else if (lastSeg.act !== 0) {
         /* Last segment was non-rest – start an implicit rest from its end.
          * If it reached midnight (end===1440) the span starts with dur=0 and
          * will grow when the next day's first-segment gap is applied. */
-        pending = {absStart: lastAbsEnd, absEnd: (rdi + 1) * 1440, dur: 1440 - lastSeg.end};
+        pending = {absStart: lastAbsEnd, absEnd: (rdi + 1) * 1440, extra: 0, dur: 1440 - lastSeg.end};
       }
     }
-    if (pending && pending.dur > 0) { spans.push(pending); }
-    return spans;
+    var endPendingDur = 0;
+    if (pending && pending.dur > 0) {
+      spans.push(pending);
+      /* Only carry forward if rest reaches exactly the end of the week
+       * (i.e. it was still ongoing – not cut off mid-week). */
+      if (pending.absEnd >= 7 * 1440) { endPendingDur = pending.dur; }
+    }
+    return { spans: spans, endPendingDur: endPendingDur };
   }
 
   /* == Build one week row ========================================= */
-  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete) {
+  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(d) {
       if (!d) return;
@@ -641,10 +670,14 @@
       dist += (d.dist||0);
     });
     /* Weekly rest = find the best qualifying continuous rest span (>= 24h).
+     * Include carry-over from previous week so that cross-week rest periods
+     * (e.g. rest starting Saturday evening and ending Monday morning) are
+     * correctly classified as weekly rest in the following week.
      * If none qualifies, fall back to total of all rest spans. */
     var WKREST_REG = 45 * 60;  /* 2700 min = regular weekly rest  */
     var WKREST_RED = 24 * 60;  /* 1440 min = reduced weekly rest  */
-    var weekRestSpans = buildRestSpans(weekDays);
+    var weekRestResult = buildRestSpans(weekDays, prevPendingDur || 0);
+    var weekRestSpans = weekRestResult.spans;
     var weekRest = 0;
     weekRestSpans.forEach(function(rs) { weekRest += rs.dur; });
     var topQualRest = 0;
@@ -696,7 +729,7 @@
     fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols, function(di) {
       /* Date label click → zoom the whole day */
       if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440, isDateClick:true});
-    });
+    }, prevPendingDur || 0);
 
     /* Selection overlay rects */
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
@@ -769,7 +802,7 @@
       zSb.innerHTML = '<div style="font-size:12px;color:#1565C0;font-weight:700;margin-bottom:2px;">'+(isFullDay?'DZIE\u0143':'ZOOM')+'</div>'+
         '<div style="font-size:12px;color:#5A6070;">'+(isFullDay?fmtDate(startD):hm(dur))+'</div>';
       var zSvg = mkSVG('svg', {width:cw, height:RH, style:'display:block;flex-shrink:0;overflow:visible;cursor:default;'});
-      fillChartSVG(zSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols);
+      fillChartSVG(zSvg, weekStart, weekDays, cw, startMin, endMin, null, dayViols, null, prevPendingDur || 0);
       zRow.appendChild(zSb); zRow.appendChild(zSvg);
       inlineZoom.appendChild(zRow);
 
@@ -912,6 +945,7 @@
     ftR.appendChild(expandBtn);
     wrapper.appendChild(dtWrap);
     chartArea.appendChild(wrapper);
+    return weekRestResult.endPendingDur;
   }
 
   /* == Zoomed view panel ========================================== *
@@ -1490,15 +1524,32 @@
       var cw = Math.max(400, container.clientWidth - LW - 4);
       var visible = getVisibleWeeks();
       dateRange.textContent = fmtDate(visible[0].start) + ' \u2013 ' + fmtDate(addD(visible[visible.length-1].start, 6));
+
+      /* Seed cross-week rest carry-over from the week immediately before the
+       * first visible week (if it has actual tachograph data). */
+      var prevWkStart = addD(startWk, -7);
+      var prevWkKey   = prevWkStart.toISOString().slice(0, 10);
+      var prevWkEntry = weekMap[prevWkKey];
+      var pendingDur  = 0;
+      if (prevWkEntry) {
+        var prevHasData = prevWkEntry.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
+        if (prevHasData) pendingDur = buildRestSpans(prevWkEntry.days, 0).endPendingDur;
+      }
+
       visible.forEach(function(w) {
-        buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
+        /* Only propagate carry-over if the current week has actual data.
+         * If all days are null/empty we cannot tell if the driver was
+         * resting or simply has no data uploaded, so reset to 0. */
+        var wkHasData = w.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
+        if (!wkHasData) { pendingDur = 0; }
+        pendingDur = buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
           if (info.isDateClick) {
             /* Build date string using local calendar fields to avoid UTC offset bug */
             var d = addD(info.weekStart, Math.floor(info.startMin / 1440));
             var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
             showDayModal(dateStr, daysData);
           }
-        });
+        }, pendingDur);
       });
     }
 
