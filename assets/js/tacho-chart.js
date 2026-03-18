@@ -188,7 +188,7 @@
    * Draws tracks, activity bars, violations, axis into an existing  *
    * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) *
    * onDateClick(di) – called when a day-label is clicked (full view) */
-  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick, prevPendingDur) {
+  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick, prevPendingDur, nextWeekDays) {
     var rangeSpan = rangeMax - rangeMin;
     var isZoomed  = rangeSpan < TOTAL_MIN * 0.9999;
     var px = function(m) { return (m - rangeMin) / rangeSpan * cw; };
@@ -292,7 +292,7 @@
     svgEl.appendChild(mkSVG('rect', {x:0, y:T2Y, width:cw, height:T2H, fill:'#FFFFFF'}));
 
     /* Build rest spans using shared helper (explicit rest + implicit cross-midnight gaps) */
-    var restSpans = buildRestSpans(weekDays, prevPendingDur || 0).spans;
+    var restSpans = buildRestSpans(weekDays, prevPendingDur || 0, nextWeekDays || null).spans;
 
     /* Render merged rest spans */
     restSpans.forEach(function(rs) {
@@ -540,6 +540,29 @@
     }
   }
 
+  /* == Compute rest continuation into the next week =================
+   * Given that rest was still ongoing at the end of a week, find the
+   * first non-rest (act !== 0) activity in nextWeekDays and return the
+   * number of minutes from the start of that week until that activity.
+   * Empty days are treated as continuous rest (card removed = resting).
+   * Returns 0 when the first activity in the next week starts at midnight,
+   * or 7*1440 if the entire next week has no non-rest activity. */
+  function computeRestContinuation(nextWeekDays) {
+    if (!nextWeekDays) return 0;
+    for (var di = 0; di < 7; di++) {
+      var day  = nextWeekDays[di];
+      var segs = day && day.segs ? day.segs : [];
+      if (!segs.length) continue; /* empty day – rest continues */
+      for (var si = 0; si < segs.length; si++) {
+        if (segs[si].act !== 0) {
+          return di * 1440 + segs[si].start;
+        }
+      }
+      /* all segments on this day are rest – continue to next day */
+    }
+    return 7 * 1440; /* entire next week has no non-rest activity */
+  }
+
   /* == Build cross-midnight rest spans for one week ===============
    * Returns array of {absStart, absEnd, dur} objects representing
    * continuous rest periods (explicit act=0 segments + implicit gaps
@@ -548,13 +571,16 @@
   /* Build rest spans for a week.
    * prevPendingDur: minutes of uninterrupted rest already accumulated at end
    * of the PREVIOUS week that are still in progress at the start of this week.
-   * This enables cross-week weekly rest to be correctly classified (e.g. rest
-   * that starts on Saturday evening and ends on Monday morning is attributed
-   * to the following week with the full duration including the Saturday portion).
+   * nextWeekDays (optional): days array for the NEXT week.  When provided and
+   * the pending rest reaches the end of this week, the last span's display
+   * duration is extended by however far the rest continues into the next week,
+   * so the bar in the current week shows the FULL rest duration even though it
+   * visually ends at the week boundary.  endPendingDur is NOT affected by this
+   * extension – it always reflects only this week's accumulated rest.
    * Returns { spans, endPendingDur } where endPendingDur is the accumulated
    * rest duration still in progress at the end of this week, to be passed as
    * prevPendingDur to the next week. */
-  function buildRestSpans(weekDays, prevPendingDur) {
+  function buildRestSpans(weekDays, prevPendingDur, nextWeekDays) {
     var spans = [];
     var pending = null;
     var extraDur = prevPendingDur || 0; /* carry-over minutes from previous week */
@@ -653,13 +679,25 @@
       spans.push(pending);
       /* Only carry forward if rest reaches exactly the end of the week
        * (i.e. it was still ongoing – not cut off mid-week). */
-      if (pending.absEnd >= 7 * 1440) { endPendingDur = pending.dur; }
+      if (pending.absEnd >= 7 * 1440) {
+        endPendingDur = pending.dur;
+        /* Extend the display duration of this span to include however far the
+         * rest continues into the next week.  endPendingDur is NOT changed –
+         * it must reflect only this week's accumulated rest so the next week's
+         * carry-over calculation remains correct.
+         * Because spans.push(pending) stores a reference, mutating pending.dur
+         * here automatically updates the already-pushed span object. */
+        if (nextWeekDays) {
+          var nxtCont = computeRestContinuation(nextWeekDays);
+          if (nxtCont > 0) { pending.dur += nxtCont; }
+        }
+      }
     }
     return { spans: spans, endPendingDur: endPendingDur };
   }
 
   /* == Build one week row ========================================= */
-  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur) {
+  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur, nextWeekDays) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(d) {
       if (!d) return;
@@ -676,7 +714,7 @@
      * If none qualifies, fall back to total of all rest spans. */
     var WKREST_REG = 45 * 60;  /* 2700 min = regular weekly rest  */
     var WKREST_RED = 24 * 60;  /* 1440 min = reduced weekly rest  */
-    var weekRestResult = buildRestSpans(weekDays, prevPendingDur || 0);
+    var weekRestResult = buildRestSpans(weekDays, prevPendingDur || 0, nextWeekDays || null);
     var weekRestSpans = weekRestResult.spans;
     var weekRest = 0;
     weekRestSpans.forEach(function(rs) { weekRest += rs.dur; });
@@ -729,7 +767,7 @@
     fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols, function(di) {
       /* Date label click → zoom the whole day */
       if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440, isDateClick:true});
-    }, prevPendingDur || 0);
+    }, prevPendingDur || 0, nextWeekDays || null);
 
     /* Selection overlay rects */
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
@@ -1541,7 +1579,8 @@
         pendingDur = buildRestSpans(_lwkEntry.days, pendingDur).endPendingDur;
       }
 
-      visible.forEach(function(w) {
+      for (var _wi = 0; _wi < visible.length; _wi++) {
+        var w = visible[_wi];
         /* Only propagate carry-over if the current week has actual data.
          * If all days are null/empty we cannot tell if the driver was
          * resting or simply has no data uploaded, so reset to 0.
@@ -1550,6 +1589,15 @@
          * which must NOT be forwarded to the following week. */
         var wkHasData = w.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
         if (!wkHasData) { pendingDur = 0; }
+        /* Look ahead to the next week so cross-week rest bars in this week
+         * can display the FULL rest duration (including the next-week portion). */
+        var _nextW = visible[_wi + 1];
+        if (!_nextW) {
+          var _nextWkKey = addD(w.start, 7).toISOString().slice(0, 10);
+          _nextW = weekMap[_nextWkKey] || null;
+        }
+        var _nextWeekDays = (_nextW && _nextW.days.some(function(d) { return d && d.segs && d.segs.length > 0; }))
+          ? _nextW.days : null;
         pendingDur = buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
           if (info.isDateClick) {
             /* Build date string using local calendar fields to avoid UTC offset bug */
@@ -1557,11 +1605,11 @@
             var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
             showDayModal(dateStr, daysData);
           }
-        }, pendingDur);
+        }, pendingDur, _nextWeekDays);
         /* Reset carry-over for weeks without real tachograph data so the
          * implicit "7 days of rest" endPendingDur is not propagated forward. */
         if (!wkHasData) { pendingDur = 0; }
-      });
+      }
     }
 
     requestAnimationFrame(renderWeeks);
