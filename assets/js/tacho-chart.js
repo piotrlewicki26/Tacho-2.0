@@ -30,9 +30,9 @@
   var T1Y = 46;
   var T1H = 130;
   var T2Y = 190;
-  var T2H = 80;
-  var AXY = 290;
-  var RH  = 325;
+  var T2H = 110;
+  var AXY = 320;
+  var RH  = 355;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
@@ -358,8 +358,8 @@
               '<div style="width:11px;height:11px;border-radius:3px;background:' + restFill + ';flex-shrink:0;"></div>' +
               '<strong style="font-size:15px;color:#ECEFF1;">' + label + '</strong>' +
             '</div>' +
-            '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
-            '<div style="color:#B0BEC5;font-size:13px;">' +
+            '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+            '<div style="color:#B0BEC5;font-size:15px;">' +
               fmtDate(_tipSd) + ' <b style="color:#ECEFF1;">' + hhmm(_tipSt) + '</b>' +
               '&nbsp;\u2192&nbsp;' +
               fmtDate(_tipEd) + ' <b style="color:#ECEFF1;">' + hhmm(_tipEt) + '</b>' +
@@ -798,8 +798,8 @@
             '<div style="width:11px;height:11px;border-radius:3px;background:#F44336;flex-shrink:0;"></div>' +
             '<strong style="font-size:15px;color:#ECEFF1;">Jazda W'+String(isoWeek(weekStart)).padStart(2,'0')+'</strong>' +
           '</div>' +
-          '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
-          '<div style="color:#B0BEC5;font-size:13px;">' +
+          '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#B0BEC5;font-size:15px;">' +
             fmtDate(weekStart) + ' <b style="color:#ECEFF1;">00:00</b>' +
             '&nbsp;\u2192&nbsp;' +
             fmtDate(addD(weekStart,6)) + ' <b style="color:#ECEFF1;">24:00</b>' +
@@ -829,8 +829,8 @@
             '<div style="width:11px;height:11px;border-radius:3px;background:'+_rCol+';flex-shrink:0;"></div>' +
             '<strong style="font-size:15px;color:#ECEFF1;">'+_rLabel+'</strong>' +
           '</div>' +
-          '<div style="color:#78909C;font-size:11px;margin-bottom:3px;">Okres obliczenia:</div>' +
-          '<div style="color:#B0BEC5;font-size:13px;">' +
+          '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Okres obliczenia:</div>' +
+          '<div style="color:#B0BEC5;font-size:15px;">' +
             fmtDate(_rSd) + ' <b style="color:#ECEFF1;">' + hhmm(_rSt) + '</b>' +
             '&nbsp;\u2192&nbsp;' +
             fmtDate(_rEd) + ' <b style="color:#ECEFF1;">' + hhmm(_rEt) + '</b>' +
