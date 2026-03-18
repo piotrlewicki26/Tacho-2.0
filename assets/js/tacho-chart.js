@@ -525,10 +525,10 @@
             x1:xh, y1:T2Y+T2H+2, x2:xh, y2:T2Y+T2H+7,
             stroke:'#B0BEC5', 'stroke-width':1
           }));
-          /* Hour label (e.g. "6h", "12h", "18h") */
+          /* Hour label (e.g. "6:00", "12:00", "18:00") */
           var hl = mkSVG('text', {x:xh, y:AXY+1, 'text-anchor':'middle',
-            fill:'#90A4AE', 'font-size':9, 'font-family':'Inter,sans-serif'});
-          hl.textContent = hr + 'h';
+            fill:'#78909C', 'font-size':10, 'font-family':'Inter,sans-serif'});
+          hl.textContent = hr + ':00';
           svgEl.appendChild(hl);
         });
       }
