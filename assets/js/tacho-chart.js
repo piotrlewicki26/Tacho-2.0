@@ -1525,21 +1525,29 @@
       var visible = getVisibleWeeks();
       dateRange.textContent = fmtDate(visible[0].start) + ' \u2013 ' + fmtDate(addD(visible[visible.length-1].start, 6));
 
-      /* Seed cross-week rest carry-over from the week immediately before the
-       * first visible week (if it has actual tachograph data). */
-      var prevWkStart = addD(startWk, -7);
-      var prevWkKey   = prevWkStart.toISOString().slice(0, 10);
-      var prevWkEntry = weekMap[prevWkKey];
-      var pendingDur  = 0;
-      if (prevWkEntry) {
-        var prevHasData = prevWkEntry.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
-        if (prevHasData) pendingDur = buildRestSpans(prevWkEntry.days, 0).endPendingDur;
+      /* Seed cross-week rest carry-over by chaining up to 2 weeks before the
+       * first visible week.  This handles rests that start in W-2, span all
+       * of W-1, and end in W0 (first visible week).  Each step is reset to 0
+       * if the corresponding week has no tachograph data (cannot distinguish
+       * "driver resting" from "data not yet uploaded"). */
+      var pendingDur = 0;
+      for (var _lb = 2; _lb >= 1; _lb--) {
+        var _lwkStart = addD(startWk, -_lb * 7);
+        var _lwkKey   = _lwkStart.toISOString().slice(0, 10);
+        var _lwkEntry = weekMap[_lwkKey];
+        if (!_lwkEntry) { pendingDur = 0; continue; }
+        var _lwkHasData = _lwkEntry.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
+        if (!_lwkHasData) { pendingDur = 0; continue; }
+        pendingDur = buildRestSpans(_lwkEntry.days, pendingDur).endPendingDur;
       }
 
       visible.forEach(function(w) {
         /* Only propagate carry-over if the current week has actual data.
          * If all days are null/empty we cannot tell if the driver was
-         * resting or simply has no data uploaded, so reset to 0. */
+         * resting or simply has no data uploaded, so reset to 0.
+         * IMPORTANT: also reset AFTER building an empty week – buildWeekRow
+         * returns endPendingDur based on 7 implicit all-day rest spans (≈168h)
+         * which must NOT be forwarded to the following week. */
         var wkHasData = w.days.some(function(d) { return d && d.segs && d.segs.length > 0; });
         if (!wkHasData) { pendingDur = 0; }
         pendingDur = buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
@@ -1550,6 +1558,9 @@
             showDayModal(dateStr, daysData);
           }
         }, pendingDur);
+        /* Reset carry-over for weeks without real tachograph data so the
+         * implicit "7 days of rest" endPendingDur is not propagated forward. */
+        if (!wkHasData) { pendingDur = 0; }
       });
     }
 
