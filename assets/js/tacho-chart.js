@@ -239,9 +239,6 @@
       /* Soft tint: weekly=blue, reduced=mid-blue, daily=cyan */
       var tintFill = isWkly ? 'rgba(21,101,192,0.13)' : isRed ? 'rgba(30,136,229,0.11)' : 'rgba(0,188,212,0.10)';
       svgEl.appendChild(mkSVG('rect', {x:ox1, y:T1Y, width:obw, height:T1H, fill:tintFill, 'pointer-events':'none'}));
-      /* Top border stripe to make the rest boundary clearly visible */
-      var stripeCol = isWkly ? '#1565C0' : isRed ? '#1E88E5' : '#00BCD4';
-      svgEl.appendChild(mkSVG('rect', {x:ox1, y:T1Y, width:obw, height:3, fill:stripeCol, opacity:0.55, 'pointer-events':'none'}));
     });
 
     /* Activity slots – variable heights, bottom-aligned (drive=full, work=72%, available=44%, rest=22%) */
@@ -562,6 +559,38 @@
         }
       }
     }
+
+    /* Rest duration pill labels on the time axis – show abbreviated duration
+     * (e.g. "11h", "45h") as a small coloured badge centred on each rest span,
+     * rendered just below the T2 track boundary.  These appear in both zoomed
+     * and full-week views so the viewer can read the rest length on the axis. */
+    _restSpansPre.forEach(function(rs) {
+      if (rs.dur < _DAILY_REST_PRE) return;
+      if (rs.absEnd <= rangeMin || rs.absStart >= rangeMax) return;
+      var rx1 = clampX(Math.max(rs.absStart, rangeMin));
+      var rx2 = clampX(Math.min(rs.absEnd,   rangeMax));
+      var rbw = rx2 - rx1; if (rbw < 6) return;
+      var isWkly = rs.dur >= _WEEKLY_REST_PRE;
+      var isRed  = !isWkly && rs.dur >= _REDUCED_WK_PRE;
+      var lblCol = isWkly ? '#1565C0' : isRed ? '#1E88E5' : '#00BCD4';
+      var hrs = Math.round(rs.dur / 60);
+      var lblText = hrs + 'h';
+      /* Clamp centre so the badge stays inside the chart */
+      var rxc = Math.min(Math.max(rx1 + rbw / 2, 14), cw - 14);
+      var pillW = lblText.length * 5 + 8;
+      /* Coloured pill background */
+      svgEl.appendChild(mkSVG('rect', {
+        x: rxc - pillW / 2, y: T2Y + T2H + 4, width: pillW, height: 11,
+        fill: lblCol, rx: 3, opacity: 0.85, 'pointer-events': 'none'
+      }));
+      /* White abbreviated-time text inside pill */
+      var rl = mkSVG('text', {x: rxc, y: T2Y + T2H + 13,
+        'text-anchor': 'middle', fill: '#fff',
+        'font-size': 8, 'font-family': 'Inter,sans-serif',
+        'font-weight': 700, 'pointer-events': 'none'});
+      rl.textContent = lblText;
+      svgEl.appendChild(rl);
+    });
   }
 
   /* == Compute rest continuation into the next week =================
