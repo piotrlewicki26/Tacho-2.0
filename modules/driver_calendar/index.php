@@ -462,7 +462,7 @@ include __DIR__ . '/../../templates/header.php';
     <?php else: ?>
     <!-- ── Summary stats ───────────────────────────────────── -->
     <div class="row g-3 mb-3">
-      <div class="col-6 col-sm-3">
+      <div class="col-12 col-sm-6 col-xl-3">
         <div class="tp-stat">
           <div class="tp-stat-icon primary"><i class="bi bi-speedometer2"></i></div>
           <div>
@@ -471,7 +471,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col-12 col-sm-6 col-xl-3">
         <div class="tp-stat">
           <div class="tp-stat-icon warning"><i class="bi bi-briefcase"></i></div>
           <div>
@@ -480,7 +480,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col-12 col-sm-6 col-xl-3">
         <div class="tp-stat">
           <div class="tp-stat-icon success"><i class="bi bi-signpost-split"></i></div>
           <div>
@@ -489,7 +489,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col-12 col-sm-6 col-xl-3">
         <div class="tp-stat">
           <div class="tp-stat-icon <?= $summary['violations'] > 0 ? 'danger' : 'success' ?>">
             <i class="bi bi-<?= $summary['violations'] > 0 ? 'exclamation-triangle' : 'shield-check' ?>"></i>

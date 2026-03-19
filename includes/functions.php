@@ -402,19 +402,34 @@ function parseDddFile(string $path): array {
     }
     if (!$cands) return $empty;
 
-    // ── Step 2: Deduplicate by date – keep median presenceCounter per date ─────
+    // ── Step 2: Group by date – keep all candidates sorted around the median ──────
+    // The median presenceCounter candidate is tried first; if its activity entries
+    // fail the total-minutes validation (Step 6), the next-closest candidate is
+    // tried as a fallback.  This prevents a coincidental binary pattern (false
+    // positive) that happens to have the median presenceCounter from silently
+    // dropping a real day's record (e.g. February 17th).
     $byDate = [];
     foreach ($cands as $c) {
         $byDate[gmdate('Y-m-d', $c['ts'])][] = $c;
     }
-    $deduped = [];
-    foreach ($byDate as $arr) {
+    $dateGroups  = []; // date → [candidates ordered: median first, then neighbours]
+    $dedupedMain = []; // one median candidate per date (for IQR computation)
+    foreach ($byDate as $date => $arr) {
         usort($arr, fn($a,$b) => $a['pres'] - $b['pres']);
-        $deduped[] = $arr[(int)(count($arr) / 2)];
+        $cnt = count($arr);
+        $mid = (int)($cnt / 2);
+        // Build ordered list: median, then alternately one step below / above
+        $ordered = [$arr[$mid]];
+        for ($d = 1; isset($arr[$mid - $d]) || isset($arr[$mid + $d]); $d++) {
+            if (isset($arr[$mid - $d])) $ordered[] = $arr[$mid - $d];
+            if (isset($arr[$mid + $d])) $ordered[] = $arr[$mid + $d];
+        }
+        $dateGroups[$date] = $ordered;
+        $dedupedMain[]     = $arr[$mid];
     }
 
-    // ── Step 3: Sort by presenceCounter (chronological order) ─────────────────
-    usort($deduped, fn($a,$b) => $a['pres'] - $b['pres']);
+    // ── Step 3: Sort medians by presenceCounter (chronological order) ──────────
+    usort($dedupedMain, fn($a,$b) => $a['pres'] - $b['pres']);
 
     // ── Step 4: IQR outlier filtering ─────────────────────────────────────────
     // Only the lower fence is applied: records with presenceCounter below p_min
@@ -423,104 +438,119 @@ function parseDddFile(string $path): array {
     // RECENT activity – a driver who switched to a vehicle with a higher-counter
     // tachograph will produce records outside the main cluster on the high side.
     // Removing those would silently discard the latest weeks of driving data.
-    $presVals = array_column($deduped, 'pres');
+    $presVals = array_column($dedupedMain, 'pres');
     sort($presVals);
-    $n = count($presVals);
+    $n    = count($presVals);
+    $pMin = PHP_INT_MIN;
     if ($n >= 4) {
-        $p25 = $presVals[(int)($n * 0.25)];
-        $p75 = $presVals[(int)($n * 0.75)];
-        $iqr = $p75 - $p25;
+        $p25  = $presVals[(int)($n * 0.25)];
+        $p75  = $presVals[(int)($n * 0.75)];
+        $iqr  = $p75 - $p25;
         $pMin = $p25 - 3 * $iqr;
-        $filtered = array_values(array_filter($deduped, fn($c) => $c['pres'] >= $pMin));
-    } else {
-        $filtered = $deduped;
     }
-    if (!$filtered) return $empty;
+    // Filter date groups: drop any date whose median presenceCounter is below lower fence
+    $filteredGroups = [];
+    foreach ($dateGroups as $date => $candidates) {
+        if ($candidates[0]['pres'] >= $pMin) {
+            $filteredGroups[$date] = $candidates;
+        }
+    }
+    if (!$filteredGroups) return $empty;
 
-    // ── Step 5: Build next-record-offset lookup ────────────────────────────────
-    $offsets = array_column($filtered, 'off');
+    // ── Step 5: Build next-record-offset lookup (using primary/median candidates) ─
+    $offsets = array_map(fn($cands) => $cands[0]['off'], $filteredGroups);
     sort($offsets);
     $offMap  = array_flip($offsets);
 
     // ── Step 6: Parse activity entries per record ──────────────────────────────
+    // For each date, try candidates in order (median first); use the first one
+    // whose activity entries produce a valid 1350–1460 minute total.
     $days = [];
-    foreach ($filtered as $r) {
-        $myIdx   = $offMap[$r['off']] ?? -1;
-        $nextRec = ($myIdx >= 0 && $myIdx < count($offsets) - 1)
-                   ? $offsets[$myIdx + 1]
-                   : $r['off'] + 400;
-        $bound   = min($nextRec, $r['off'] + 600, $len - 1);
-
-        $pts = [];
-        for ($j = $r['off'] + 8; $j < $bound - 1; $j += 2) {
-            $raw  = unpack('n', substr($data, $j, 2))[1];
-            $slot = ($raw >> 15) & 1;
-            $act  = ($raw >> 11) & 7;
-            $tmin = $raw & 0x7FF;
-            if ($slot === 0 && $act <= 3 && $tmin >= 0 && $tmin <= 1440) {
-                $pts[] = ['act' => $act, 'tmin' => $tmin];
+    foreach ($filteredGroups as $dateKey => $candidates) {
+        foreach ($candidates as $cidx => $r) {
+            if ($cidx === 0) {
+                // Primary candidate: use the next-record boundary for a tighter scan
+                $myIdx   = $offMap[$r['off']] ?? -1;
+                $nextRec = ($myIdx >= 0 && $myIdx < count($offsets) - 1)
+                           ? $offsets[$myIdx + 1]
+                           : $r['off'] + 400;
+                $bound   = min($nextRec, $r['off'] + 600, $len - 1);
+            } else {
+                // Fallback candidates: use a fixed 600-byte scan window
+                $bound   = min($r['off'] + 600, $len - 1);
             }
-        }
 
-        // Strictly-monotonic time filter – only strictly-increasing tmin
-        $mono = []; $lt = -1;
-        foreach ($pts as $p) {
-            if ($p['tmin'] > $lt) { $mono[] = $p; $lt = $p['tmin']; }
-        }
-
-        // Build duration slots
-        $slots = [];
-        $mCnt  = count($mono);
-        for ($k = 0; $k < $mCnt; $k++) {
-            $end = ($k < $mCnt - 1) ? $mono[$k + 1]['tmin'] : 1440;
-            $dur = $end - $mono[$k]['tmin'];
-            if ($dur > 0) {
-                $slots[] = ['act' => $mono[$k]['act'], 'start' => $mono[$k]['tmin'], 'end' => $end, 'dur' => $dur];
+            $pts = [];
+            for ($j = $r['off'] + 8; $j < $bound - 1; $j += 2) {
+                $raw  = unpack('n', substr($data, $j, 2))[1];
+                $slot = ($raw >> 15) & 1;
+                $act  = ($raw >> 11) & 7;
+                $tmin = $raw & 0x7FF;
+                if ($slot === 0 && $act <= 3 && $tmin >= 0 && $tmin <= 1440) {
+                    $pts[] = ['act' => $act, 'tmin' => $tmin];
+                }
             }
-        }
 
-        // Validate total minutes (accept 1350–1460 to handle minor truncation)
-        $total = array_sum(array_column($slots, 'dur'));
-        if ($total < 1350 || $total > 1460) continue;
+            // Strictly-monotonic time filter – only strictly-increasing tmin
+            $mono = []; $lt = -1;
+            foreach ($pts as $p) {
+                if ($p['tmin'] > $lt) { $mono[] = $p; $lt = $p['tmin']; }
+            }
 
-        $dateKey    = gmdate('Y-m-d', $r['ts']);
-        $driveTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 3), 'dur'));
-        $restTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 0), 'dur'));
-        $workTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 2), 'dur'));
-        $availTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 1), 'dur'));
+            // Build duration slots
+            $slots = [];
+            $mCnt  = count($mono);
+            for ($k = 0; $k < $mCnt; $k++) {
+                $end = ($k < $mCnt - 1) ? $mono[$k + 1]['tmin'] : 1440;
+                $dur = $end - $mono[$k]['tmin'];
+                if ($dur > 0) {
+                    $slots[] = ['act' => $mono[$k]['act'], 'start' => $mono[$k]['tmin'], 'end' => $end, 'dur' => $dur];
+                }
+            }
 
-        $viol = [];
-        if ($driveTotal > $EU_MAX_DAY_X) {
-            $msg = 'Przekroczenie czasu jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m (max '.floor($EU_MAX_DAY_X/60).'h)';
-            $viol[] = array_merge(['type'=>'error','msg'=>$msg], violPenalty('error', $msg));
-        } elseif ($driveTotal > $EU_MAX_DAY) {
-            $msg = 'Wydłużony czas jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m';
-            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
-        }
-        if ($restTotal < $EU_MIN_REST && $driveTotal > 60) {
-            $msg = 'Niewystarczający odpoczynek: '.floor($restTotal/60).'h '.($restTotal%60).'m (min 11h)';
-            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
-        }
-        $cont = 0; $maxCont = 0;
-        foreach ($slots as $seg) {
-            if ($seg['act'] === 3) { $cont += $seg['dur']; $maxCont = max($maxCont, $cont); }
-            elseif ($seg['act'] === 0 && $seg['dur'] >= 15) { $cont = 0; }
-        }
-        if ($maxCont > $EU_MAX_CONT) {
-            $msg = 'Przekroczenie ciągłego czasu jazdy: '.floor($maxCont/60).'h '.($maxCont%60).'m (max 4h30m)';
-            $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
-        }
+            // Validate total minutes (accept 1350–1460 to handle minor truncation)
+            $total = array_sum(array_column($slots, 'dur'));
+            if ($total < 1350 || $total > 1460) continue; // try next candidate
 
-        $days[$dateKey] = [
-            'date'  => $dateKey,
-            'drive' => $driveTotal,
-            'work'  => $workTotal,
-            'avail' => $availTotal,
-            'rest'  => $restTotal,
-            'dist'  => $r['dist'],
-            'segs'  => $slots,
-            'viol'  => $viol,
-        ];
+            $driveTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 3), 'dur'));
+            $restTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 0), 'dur'));
+            $workTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 2), 'dur'));
+            $availTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 1), 'dur'));
+
+            $viol = [];
+            if ($driveTotal > $EU_MAX_DAY_X) {
+                $msg = 'Przekroczenie czasu jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m (max '.floor($EU_MAX_DAY_X/60).'h)';
+                $viol[] = array_merge(['type'=>'error','msg'=>$msg], violPenalty('error', $msg));
+            } elseif ($driveTotal > $EU_MAX_DAY) {
+                $msg = 'Wydłużony czas jazdy: '.floor($driveTotal/60).'h '.($driveTotal%60).'m';
+                $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
+            }
+            if ($restTotal < $EU_MIN_REST && $driveTotal > 60) {
+                $msg = 'Niewystarczający odpoczynek: '.floor($restTotal/60).'h '.($restTotal%60).'m (min 11h)';
+                $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
+            }
+            $cont = 0; $maxCont = 0;
+            foreach ($slots as $seg) {
+                if ($seg['act'] === 3) { $cont += $seg['dur']; $maxCont = max($maxCont, $cont); }
+                elseif ($seg['act'] === 0 && $seg['dur'] >= 15) { $cont = 0; }
+            }
+            if ($maxCont > $EU_MAX_CONT) {
+                $msg = 'Przekroczenie ciągłego czasu jazdy: '.floor($maxCont/60).'h '.($maxCont%60).'m (max 4h30m)';
+                $viol[] = array_merge(['type'=>'warn','msg'=>$msg], violPenalty('warn', $msg));
+            }
+
+            $days[$dateKey] = [
+                'date'  => $dateKey,
+                'drive' => $driveTotal,
+                'work'  => $workTotal,
+                'avail' => $availTotal,
+                'rest'  => $restTotal,
+                'dist'  => $r['dist'],
+                'segs'  => $slots,
+                'viol'  => $viol,
+            ];
+            break; // valid record found – no need to try remaining candidates
+        }
     }
 
     ksort($days);
