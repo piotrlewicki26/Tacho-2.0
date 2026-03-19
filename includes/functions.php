@@ -1079,9 +1079,12 @@ function parseDriverCardVehicles(string $data): array
     $len = strlen($data);
     if ($len < 40) return [];
 
-    /* Only consider records from the past 12 months to current date + 90 days.
-     * This prevents the parser from matching ancient noise while ensuring all
-     * recent vehicle usage is captured regardless of card issue date. */
+    /* Only return records whose last_use falls within the past 12 months.
+     * firstUse is deliberately NOT checked against tsMin: a vehicle may have
+     * been on the card for years (firstUse very old) but still driven recently.
+     * Filtering on firstUse was the root cause of missed records – e.g. a truck
+     * used since 2020 but last driven in December 2025 was incorrectly rejected
+     * because its firstUse (2020) predated the 12-month window. */
     $tsMin   = strtotime('-12 months');
     $tsMax   = time() + 90 * 86400;
 
@@ -1197,9 +1200,13 @@ function parseDriverCardVehicles(string $data): array
 
             $pos += $recSize;
 
-            if ($firstUse < $tsMin || $firstUse > $tsMax) continue;
-            if ($lastUse  < $tsMin || $lastUse  > $tsMax) continue;
-            if ($lastUse  < $firstUse)                    continue;
+            /* Accept the record if the vehicle was last used within the 12-month window.
+             * Do NOT require firstUse >= tsMin: vehicles often have an old firstUse
+             * (date the vehicle was first added to the card) but recent lastUse. */
+            if ($lastUse  < $tsMin)   continue;  // not driven in the last 12 months
+            if ($lastUse  > $tsMax)   continue;  // implausible future timestamp
+            if ($firstUse > $tsMax)   continue;  // implausible future timestamp
+            if ($lastUse  < $firstUse) continue; // invalid: last before first
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;

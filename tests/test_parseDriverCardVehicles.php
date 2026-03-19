@@ -245,16 +245,17 @@ $out  = parseDriverCardVehicles($blob);
 ok('future-ts record rejected', count($out) === 0);
 
 /* ══════════════════════════════════════════════════════════════════════════
- * Test 10: Too-old timestamp (before tsMin = current year – 6) rejected
+ * Test 10: lastUse too old (before tsMin) → record rejected.
+ *          firstUse is also old, but rejection is driven by lastUse.
  * ══════════════════════════════════════════════════════════════════════════ */
-echo "\nTest 10: Too-old timestamp rejected\n";
+echo "\nTest 10: Too-old lastUse rejected\n";
 
 $ancient = gmmktime(0, 0, 0, 1, 1, 2010); // well before any valid window
 $rec  = buildGen2Rec('OLD0001', 'PL', 40, $ancient, $ancient + 86400);
 $blob = buildTlvBlob($rec, 1);
 $out  = parseDriverCardVehicles($blob);
 
-ok('ancient-ts record rejected', count($out) === 0);
+ok('ancient lastUse record rejected', count($out) === 0);
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 11: Odometer value > 9 999 999 rejected
@@ -411,6 +412,23 @@ ok('17d: first_use = 2025-08-22',   ($result17[0]['first_use'] ?? '') === '2025-
 ok('17e: odo_begin correct',        ($result17[0]['odo_begin'] ?? -1) === 264270);
 ok('17f: odo_end stored correctly', ($result17[1]['odo_end'] ?? -1) === 264620);
 ok('17g: distance for rec2',        ($result17[1]['distance'] ?? -1) === 262);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 18: firstUse older than 12 months but lastUse recent → ACCEPTED.
+ *          Root-cause regression test: vehicles on the card for years but
+ *          still driven within the 12-month window must not be filtered out.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 18: Old firstUse + recent lastUse accepted\n";
+
+$oldFirstUse   = time() - 800 * 86400;  // ~2.2 years ago (well outside 12 months)
+$recentLastUse = time() -  30 * 86400;  // 30 days ago (clearly inside window)
+$rec  = buildGen2Rec('TR9988AB', 'PL', 40, $oldFirstUse, $recentLastUse);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('18a: old-firstUse/recent-lastUse accepted', count($out) === 1);
+ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR9988AB');
+ok('18c: last_use is recent',                   ($out[0]['last_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
