@@ -1071,43 +1071,67 @@ function parseDriverCardVehicles(string $data): array
     ];
 
     /* Helper: try to parse N vehicle records starting at $pos within $data[0..$limit-1].
+     *
+     * $recSize: 32 for Gen-2 cards (Reg. 165/2014, NationAlpha present),
+     *           29 for Gen-1 cards (Reg. 3821/85 / 1360/2002, no NationAlpha field).
+     *
+     * Gen-2 record layout (32 bytes):
+     *   +0  nationNumeric (1 byte)
+     *   +1  nationAlpha   (3 bytes, IA5, 0x00/0xFF-padded)
+     *   +4  codePage      (1 byte)
+     *   +5  regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
+     *   +18 vehicleFirstUse  (TimeReal 4 bytes)
+     *   +22 vehicleLastUse   (TimeReal 4 bytes)
+     *   +26 vehicleOdometerBegin (3 bytes)
+     *   +29 vehicleOdometerEnd   (3 bytes)
+     *
+     * Gen-1 record layout (29 bytes):
+     *   +0  nationNumeric (1 byte)               [no NationAlpha]
+     *   +1  codePage      (1 byte)
+     *   +2  regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
+     *   +15 vehicleFirstUse  (TimeReal 4 bytes)
+     *   +19 vehicleLastUse   (TimeReal 4 bytes)
+     *   +23 vehicleOdometerBegin (3 bytes)
+     *   +26 vehicleOdometerEnd   (3 bytes)
+     *
      * Returns validated records array (empty = block is not vehicle data). */
-    $parseBlock = function (int $pos, int $maxRecs, int $limit) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
+    $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
         $parsed = [];
+        $isGen1 = ($recSize === 29);
+        /* Field offsets derived from record size */
+        $regOff   = $isGen1 ? 2  : 5;   /* start of regNumber within record */
+        $tsOff    = $isGen1 ? 15 : 18;  /* vehicleFirstUse offset */
+        $odoOff   = $isGen1 ? 23 : 26;  /* vehicleOdometerBegin offset */
+
         for ($v = 0; $v < $maxRecs && $v < 200; $v++) {
-            if ($pos + 32 > $limit) break;
+            if ($pos + $recSize > $limit) break;
 
-            /* Record layout (32 bytes):
-             *  +0  nationNumeric (1 byte)
-             *  +1  nationAlpha   (3 bytes, IA5, 0x00/0xFF-padded)
-             *  +4  codePage      (1 byte)
-             *  +5  regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
-             *  +18 vehicleFirstUse (TimeReal 4 bytes)
-             *  +22 vehicleLastUse  (TimeReal 4 bytes)
-             *  +26 vehicleOdometerBegin (3 bytes)
-             *  +29 vehicleOdometerEnd   (3 bytes)
-             */
-            $nationNum  = ord($data[$pos]);
-            $nationRaw  = substr($data, $pos + 1, 3);
-            $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
+            $nationNum   = ord($data[$pos]);
+            $nationAlpha = '';
+            if (!$isGen1) {
+                $nationRaw   = substr($data, $pos + 1, 3);
+                $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
+            }
 
-            $regRaw  = substr($data, $pos + 5, 13);
-            $reg     = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
-            $reg     = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
-            $reg     = trim($reg);
+            $regRaw = substr($data, $pos + $regOff, 13);
+            $reg    = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
+            $reg    = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
+            $reg    = trim($reg);
 
-            $firstUse = unpack('N', substr($data, $pos + 18, 4))[1];
-            $lastUse  = unpack('N', substr($data, $pos + 22, 4))[1];
+            $firstUse = unpack('N', substr($data, $pos + $tsOff,     4))[1];
+            $lastUse  = unpack('N', substr($data, $pos + $tsOff + 4, 4))[1];
 
-            $odoB = (ord($data[$pos + 26]) << 16) | (ord($data[$pos + 27]) << 8) | ord($data[$pos + 28]);
-            $odoE = (ord($data[$pos + 29]) << 16) | (ord($data[$pos + 30]) << 8) | ord($data[$pos + 31]);
+            $odoB = (ord($data[$pos + $odoOff])     << 16) | (ord($data[$pos + $odoOff + 1]) << 8) | ord($data[$pos + $odoOff + 2]);
+            $odoE = (ord($data[$pos + $odoOff + 3]) << 16) | (ord($data[$pos + $odoOff + 4]) << 8) | ord($data[$pos + $odoOff + 5]);
 
-            $pos += 32;
+            $pos += $recSize;
 
             if ($firstUse < $tsMin || $firstUse > $tsMax) continue;
             if ($lastUse  < $tsMin || $lastUse  > $tsMax) continue;
             if ($lastUse  < $firstUse)                    continue;
             if (strlen($reg) < 2)                          continue;
+            /* Registration must contain at least one letter (rules out pure-digit noise) */
+            if (!preg_match('/[A-Z]/', $reg))              continue;
             if ($odoB > 9_999_999 || $odoE > 9_999_999)   continue;
 
             /* Determine nation string */
@@ -1140,53 +1164,63 @@ function parseDriverCardVehicles(string $data): array
             if (ord($data[$i]) !== $t1 || ord($data[$i + 1]) !== $t2) continue;
 
             $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            if ($bl < 36 || $bl > 65000 || $i + 4 + $bl > $len) continue;
+            /* Minimum: 4-byte header + at least one Gen-1 record (29 bytes) = 33 */
+            if ($bl < 33 || $bl > 65000 || $i + 4 + $bl > $len) continue;
 
-            $base      = $i + 4;
-            $noOfVeh   = (ord($data[$base]) << 8) | ord($data[$base + 1]);
-            $totalRecs = (int)(($bl - 4) / 32);
+            $base    = $i + 4;
+            $noOfVeh = (ord($data[$base]) << 8) | ord($data[$base + 1]);
 
-            /* noOfVehicleUsed must be non-negative and not exceed block capacity */
-            if ($noOfVeh < 0 || $noOfVeh > $totalRecs || $totalRecs < 1) continue;
+            /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
+            foreach ([32, 29] as $recSize) {
+                $totalRecs = (int)(($bl - 4) / $recSize);
+                if ($noOfVeh > $totalRecs || $totalRecs < 1) continue;
 
-            /* Parse up to max(noOfVeh, totalRecs) records from base+4 */
-            $maxRecs = max($noOfVeh, 1);
-            $parsed  = $parseBlock($base + 4, $maxRecs, $i + 4 + $bl);
+                /* Parse up to noOfVehicleUsed records (at least 1) */
+                $maxRecs = max($noOfVeh, 1);
+                $parsed  = $parseBlock($base + 4, $maxRecs, $i + 4 + $bl, $recSize);
 
-            if (!empty($parsed)) {
-                usort($parsed, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-                return $parsed;
+                if (!empty($parsed)) {
+                    usort($parsed, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+                    return $parsed;
+                }
             }
         }
     }
 
     /* ── Phase 2: Whole-file fallback scan ───────────────────────────────────── */
     /* Some manufacturers don't use standard TLV tags.  Scan the entire file for
-     * contiguous groups of valid 32-byte vehicle records (≥ 2 records required
-     * to avoid single-record false positives). */
-    $result = [];
-    $seen   = [];
-    for ($i = 0; $i <= $len - 64; $i++) {
-        /* Check if two consecutive 32-byte records look valid */
-        $recs = $parseBlock($i, 2, $len);
-        if (count($recs) < 2) continue;
+     * contiguous groups of valid vehicle records.  Try Gen-2 (32-byte) records
+     * first; if nothing found, try Gen-1 (29-byte) records.
+     * Require ≥ 3 consecutive valid records to reduce false positives. */
+    foreach ([32, 29] as $recSize) {
+        $result = [];
+        $seen   = [];
+        for ($i = 0; $i <= $len - 3 * $recSize; $i++) {
+            /* Require three consecutive valid records before committing */
+            $recs = $parseBlock($i, 3, $len, $recSize);
+            if (count($recs) < 3) continue;
 
-        /* Extend as far as consecutive records remain valid */
-        $recs = $parseBlock($i, 200, $len);
-        if (count($recs) < 2) continue;
+            /* Extend as far as consecutive records remain valid */
+            $recs = $parseBlock($i, 200, $len, $recSize);
+            if (count($recs) < 3) continue;
 
-        foreach ($recs as $r) {
-            $key = $r['reg'] . '_' . $r['first_use'];
-            if (isset($seen[$key])) continue;
-            $seen[$key] = true;
-            $result[]   = $r;
+            foreach ($recs as $r) {
+                $key = $r['reg'] . '_' . $r['first_use'];
+                if (isset($seen[$key])) continue;
+                $seen[$key] = true;
+                $result[]   = $r;
+            }
+            /* Skip past this block */
+            $i += count($recs) * $recSize - 1;
         }
-        /* Skip past this block */
-        $i += count($recs) * 32 - 1;
+
+        if (!empty($result)) {
+            usort($result, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+            return $result;
+        }
     }
 
-    usort($result, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-    return $result;
+    return [];
 }
 
 /**
