@@ -1101,7 +1101,8 @@ function parseDriverCardVehicles(string $data): array
      *
      * $recSize: 32 for Gen-2 cards (Reg. 165/2014, NationAlpha present),
      *           29 for Gen-1 cards (Reg. 3821/85 / 1360/2002, no NationAlpha field),
-     *           31 for proprietary format (odoBegin first, no NationAlpha, 2-byte counter).
+     *           31 for proprietary format (odoBegin first, no NationAlpha, 2-byte counter),
+     *           24 for compact variant (no odometer, 1-byte padding before timestamps).
      *
      * Gen-2 record layout (32 bytes):
      *   +0  nationNumeric (1 byte)
@@ -1132,13 +1133,26 @@ function parseDriverCardVehicles(string $data): array
      *   +26 circularBufferCounter (2 bytes, ignored)
      *   +28 vehicleOdometerEnd   (3 bytes)
      *
+     * Compact 24-byte record layout (no odometer, found in tag 0x050b):
+     *   +0  nationNumeric (1 byte)
+     *   +1  codePage      (1 byte)
+     *   +2  regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
+     *   +15 padding/unknown (1 byte)
+     *   +16 vehicleFirstUse  (TimeReal 4 bytes)
+     *   +20 vehicleLastUse   (TimeReal 4 bytes)
+     *
      * Returns validated records array (empty = block is not vehicle data). */
     $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
         $parsed = [];
         $isGen1  = ($recSize === 29);
         $isAlt31 = ($recSize === 31);
+        $isGen24 = ($recSize === 24);
         /* Field offsets derived from record layout */
-        if ($isAlt31) {
+        if ($isGen24) {
+            /* Compact 24-byte: nation(1)+cp(1)+reg(13)+pad(1)+firstUse(4)+lastUse(4), no odo */
+            $nationNumOff = 0;   $regOff = 2;   $tsOff = 16;
+            $odoBeginOff  = -1;  $odoEndOff = -1;
+        } elseif ($isAlt31) {
             /* Proprietary 31-byte: odoBegin(3)+firstUse(4)+lastUse(4)+nation(1)+cp(1)+reg(13)+ctr(2)+odoEnd(3) */
             $nationNumOff = 11;  $regOff = 13;  $tsOff = 3;
             $odoBeginOff  = 0;   $odoEndOff = 28;
@@ -1157,7 +1171,7 @@ function parseDriverCardVehicles(string $data): array
 
             $nationNum   = ord($data[$pos + $nationNumOff]);
             $nationAlpha = '';
-            if (!$isGen1 && !$isAlt31) {
+            if (!$isGen1 && !$isAlt31 && !$isGen24) {
                 $nationRaw   = substr($data, $pos + 1, 3);
                 $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
             }
@@ -1171,8 +1185,13 @@ function parseDriverCardVehicles(string $data): array
             $firstUse = unpack('N', substr($data, $pos + $tsOff,     4))[1];
             $lastUse  = unpack('N', substr($data, $pos + $tsOff + 4, 4))[1];
 
-            $odoB = (ord($data[$pos + $odoBeginOff])     << 16) | (ord($data[$pos + $odoBeginOff + 1]) << 8) | ord($data[$pos + $odoBeginOff + 2]);
-            $odoE = (ord($data[$pos + $odoEndOff])       << 16) | (ord($data[$pos + $odoEndOff   + 1]) << 8) | ord($data[$pos + $odoEndOff   + 2]);
+            if ($odoBeginOff >= 0) {
+                $odoB = (ord($data[$pos + $odoBeginOff])     << 16) | (ord($data[$pos + $odoBeginOff + 1]) << 8) | ord($data[$pos + $odoBeginOff + 2]);
+                $odoE = (ord($data[$pos + $odoEndOff])       << 16) | (ord($data[$pos + $odoEndOff   + 1]) << 8) | ord($data[$pos + $odoEndOff   + 2]);
+            } else {
+                $odoB = 0;
+                $odoE = 0;
+            }
 
             $pos += $recSize;
 
@@ -1182,7 +1201,7 @@ function parseDriverCardVehicles(string $data): array
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;
-            if ($odoB > 9_999_999 || $odoE > 9_999_999)   continue;
+            if ($odoBeginOff >= 0 && ($odoB > 9_999_999 || $odoE > 9_999_999)) continue;
             /* Reject strings whose middle space-separated token is a lone letter –
              * e.g. "AIA M 3": valid plates never have an isolated single letter
              * sandwiched between other tokens.  This pattern indicates text/noise data
@@ -1221,16 +1240,17 @@ function parseDriverCardVehicles(string $data): array
     };
 
     /* ── Phase 1: Structured TLV scan ───────────────────────────────────────── */
-    /* Known TLV tag byte-pairs for EF_CardVehiclesUsed (Gen 1: 0x0504, variants: 0x0528) */
-    $tryTags = [[0x05, 0x04], [0x05, 0x28]];
+    /* Known TLV tag byte-pairs for EF_CardVehiclesUsed (Gen 1: 0x0504, Gen 1 variant: 0x0528,
+     * compact 24-byte format: 0x050b) */
+    $tryTags = [[0x05, 0x04], [0x05, 0x28], [0x05, 0x0b]];
 
     foreach ($tryTags as [$t1, $t2]) {
         for ($i = 0; $i < $len - 36; $i++) {
             if (ord($data[$i]) !== $t1 || ord($data[$i + 1]) !== $t2) continue;
 
             $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            /* Minimum: 4-byte header + at least one Gen-1 record (29 bytes) = 33 */
-            if ($bl < 33 || $bl > 65000 || $i + 4 + $bl > $len) continue;
+            /* Minimum: 4-byte header + at least one compact-24 record = 28 */
+            if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) continue;
 
             $base    = $i + 4;
             $noOfVeh = (ord($data[$base]) << 8) | ord($data[$base + 1]);
@@ -1254,7 +1274,7 @@ function parseDriverCardVehicles(string $data): array
              * header (or use a non-standard value there) and store records directly
              * at the start of the TLV value.  Try all supported record sizes treating
              * the entire block as a raw circular buffer of records (≥2 required). */
-            foreach ([32, 31, 29] as $recSize) {
+            foreach ([32, 31, 29, 24] as $recSize) {
                 $totalNoHdr = (int)($bl / $recSize);
                 if ($totalNoHdr < 2) continue;
                 $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize);
@@ -1269,11 +1289,12 @@ function parseDriverCardVehicles(string $data): array
     /* ── Phase 2: Whole-file fallback scan ───────────────────────────────────── */
     /* Some manufacturers don't use standard TLV tags.  Scan the entire file for
      * contiguous groups of valid vehicle records.  Try Gen-2 (32-byte) records
-     * first; if nothing found, try Gen-1 (29-byte) and proprietary 31-byte records.
+     * first; if nothing found, try Gen-1 (29-byte), proprietary 31-byte, and
+     * compact 24-byte records.
      * Require ≥ 2 consecutive valid records to reduce false positives while still
      * finding drivers who have used only one or two vehicles.  The letter-in-
      * registration validation already eliminates the bulk of random-data noise. */
-    foreach ([32, 29, 31] as $recSize) {
+    foreach ([32, 29, 31, 24] as $recSize) {
         $result = [];
         $seen   = [];
         for ($i = 0; $i <= $len - 2 * $recSize; $i++) {
