@@ -366,6 +366,48 @@ ok('16e: no-digit rejected', dddParseVehicleReg(makeVehicleDddBlob('ABCDE')) ===
 // 16f: empty blob returns null
 ok('16f: empty → null', dddParseVehicleReg('') === null);
 
+/* ── Test 17: Proprietary 31-byte record format ──────────────────────────── */
+/* Layout: odoBegin(3)+firstUse(4)+lastUse(4)+nation(1)+codepage(1)+reg(13)+ctr(2)+odoEnd(3) */
+echo "\nTest 17: Proprietary 31-byte record format (odo-first, no nationAlpha)\n";
+
+function make31byteRec(string $reg, int $odoBegin, int $firstUse, int $lastUse, int $nation, int $odoEnd): string {
+    $r  = chr(($odoBegin >> 16) & 0xFF) . chr(($odoBegin >> 8) & 0xFF) . chr($odoBegin & 0xFF);  // odoBegin
+    $r .= pack('N', $firstUse);                                                                      // firstUse
+    $r .= pack('N', $lastUse);                                                                       // lastUse
+    $r .= chr($nation);                                                                              // nationNumeric
+    $r .= chr(0x02);                                                                                 // codePage
+    $r .= str_pad(substr($reg, 0, 13), 13, "\x20");                                                  // registration
+    $r .= "\x08\x06";                                                                                // counter (ignored)
+    $r .= chr(($odoEnd >> 16) & 0xFF) . chr(($odoEnd >> 8) & 0xFF) . chr($odoEnd & 0xFF);           // odoEnd
+    return $r;
+}
+
+$ts1 = mktime(0, 0, 0, 8, 22, 2025);
+$ts2 = mktime(23, 59, 59, 8, 22, 2025);
+$ts3 = mktime(0, 0, 0, 8, 23, 2025);
+$ts4 = mktime(23, 59, 59, 8, 23, 2025);
+
+// Build two consecutive 31-byte records for "PY 90501" (nationNumeric=40=PL)
+$rec1 = make31byteRec('PY 90501', 264270, $ts1, $ts2, 40, 264270);
+$rec2 = make31byteRec('PY 90501', 264358, $ts3, $ts4, 40, 264620);
+assert(strlen($rec1) === 31 && strlen($rec2) === 31, '31-byte records built');
+
+// Wrap in a TLV 0x0504 block without a standard noOfVeh/ptr header
+$records = $rec1 . $rec2;
+$bl      = strlen($records);
+$blob    = "\x05\x04" . chr(($bl >> 8) & 0xFF) . chr($bl & 0xFF) . $records;
+// Pad to at least 40 bytes total
+$blob   .= str_repeat("\x00", max(0, 40 - strlen($blob)));
+
+$result17 = parseDriverCardVehicles($blob);
+ok('17a: finds records in 31-byte format', count($result17) >= 2);
+ok('17b: registration = PY 90501', ($result17[0]['reg'] ?? '') === 'PY 90501');
+ok('17c: nation = PL',              ($result17[0]['nation'] ?? '') === 'PL');
+ok('17d: first_use = 2025-08-22',   ($result17[0]['first_use'] ?? '') === '2025-08-22');
+ok('17e: odo_begin correct',        ($result17[0]['odo_begin'] ?? -1) === 264270);
+ok('17f: odo_end stored correctly', ($result17[1]['odo_end'] ?? -1) === 264620);
+ok('17g: distance for rec2',        ($result17[1]['distance'] ?? -1) === 262);
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";
