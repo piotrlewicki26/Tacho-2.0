@@ -1133,6 +1133,21 @@ function parseDriverCardVehicles(string $data): array
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;
             if ($odoB > 9_999_999 || $odoE > 9_999_999)   continue;
+            /* Reject strings whose middle space-separated token is a lone letter –
+             * e.g. "AIA M 3": valid plates never have an isolated single letter
+             * sandwiched between other tokens.  This pattern indicates text/noise data
+             * accidentally decoded as a registration number. */
+            $regTokens = preg_split('/\s+/', $reg);
+            if (count($regTokens) >= 3) {
+                $midOk = true;
+                for ($ti = 1, $tc = count($regTokens) - 1; $ti < $tc; $ti++) {
+                    if (strlen($regTokens[$ti]) === 1 && ctype_alpha($regTokens[$ti])) {
+                        $midOk = false;
+                        break;
+                    }
+                }
+                if (!$midOk) continue;
+            }
 
             /* Determine nation string */
             $nation = '';
