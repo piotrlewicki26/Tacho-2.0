@@ -623,6 +623,8 @@ include __DIR__ . '/../../templates/header.php';
               $hasError = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
               $hasWarn  = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
               $isWeekend= in_array(date('N', strtotime($dateStr)), ['6','7']);
+              $dowNames = ['','Pn','Wt','Śr','Cz','Pt','Sb','Nd'];
+              $dowLabel = $dowNames[(int)date('N', strtotime($dateStr))];
               $cellCls  = 'dc-cell' . ($isWeekend ? ' dc-weekend' : '');
               if ($day) {
                   $total = $day['drive'] + $day['work'] + $day['avail'] + $day['rest'];
@@ -654,7 +656,10 @@ include __DIR__ . '/../../templates/header.php';
               }
             ?>
             <div class="<?= $cellCls ?>" <?= $tooltip ?> <?= $day ? 'data-date="'.$dateStr.'"' : '' ?>>
-              <span class="dc-day-num"><?= $d ?></span>
+              <div class="dc-day-header">
+                <span class="dc-day-num"><?= $d ?></span>
+                <span class="dc-day-dow"><?= $dowLabel ?></span>
+              </div>
               <?php if ($day): ?>
               <div class="dc-sum">
                 <?php if ($day['drive'] > 0): $h=floor($day['drive']/60);$m=$day['drive']%60; ?>
@@ -662,6 +667,12 @@ include __DIR__ . '/../../templates/header.php';
                 <?php endif; ?>
                 <?php if ($day['work'] > 0): $h=floor($day['work']/60);$m=$day['work']%60; ?>
                 <div class="dc-si"><span class="dc-si-dot dc-si-work"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <?php endif; ?>
+                <?php if ($day['rest'] > 0): $h=floor($day['rest']/60);$m=$day['rest']%60; ?>
+                <div class="dc-si"><span class="dc-si-dot dc-si-rest"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <?php endif; ?>
+                <?php if ($day['avail'] > 0): $h=floor($day['avail']/60);$m=$day['avail']%60; ?>
+                <div class="dc-si"><span class="dc-si-dot dc-si-avail"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
                 <?php endif; ?>
                 <?php if ($day['dist'] > 0): ?>
                 <div class="dc-si dc-si-km"><?= $day['dist'] ?>&nbsp;km</div>
@@ -1092,7 +1103,7 @@ include __DIR__ . '/../../templates/header.php';
 }
 .dc-cell {
   border-radius: 5px;
-  min-height: 90px;
+  min-height: 120px;
   padding: 4px 5px 3px;
   position: relative;
   cursor: default;
@@ -1153,9 +1164,23 @@ include __DIR__ . '/../../templates/header.php';
 }
 .dc-si-drive { background: var(--tp-primary, #2563eb); }
 .dc-si-work  { background: #f59e0b; }
+.dc-si-rest  { background: #94a3b8; }
+.dc-si-avail { background: #10b981; }
 .dc-si-km {
   color: #64748b;
   padding-left: 9px;
+}
+.dc-day-header {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  line-height: 1;
+}
+.dc-day-dow {
+  font-size: .58rem;
+  font-weight: 500;
+  color: #9ca3af;
+  line-height: 1;
 }
 .dc-bar { height: 100%; }
 .dc-bar-drive { background: var(--tp-primary, #2563eb); }

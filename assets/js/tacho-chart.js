@@ -755,6 +755,46 @@
     var hasWkWarn  = weekViols.some(function(v){ return v.sev==='warn'; });
     var dCol = hasWkErr ? '#E53935' : hasWkWarn ? '#FF9800' : '#43A047';
 
+    /* ── Weekly summary computation ───────────────────────────────────── */
+    var WK_DRV_LIMIT = 3360; /* 56h weekly driving limit (EU Art. 6 §3) */
+    /* Categorise rest spans: weekly rest (≥24h) vs daily rest */
+    var _cnt11h = 0, _cnt9h = 0, _cntShortRest = 0;
+    weekRestSpans.forEach(function(rs) {
+      if (rs.dur >= 1440) return;          /* ≥24h = weekly rest – skip   */
+      if (rs.dur >= 660)  { _cnt11h++; }       /* ≥11h regular daily rest     */
+      else if (rs.dur >= 540) { _cnt9h++; }    /* 9–11h reduced daily rest    */
+      else if (rs.dur >= 300) { _cntShortRest++; } /* <9h – insufficient      */
+    });
+    /* Per-day drive minutes (Mon=0 … Sun=6) */
+    var _dayDriveMins = weekDays.map(function(d) {
+      if (!d || !d.segs) return 0;
+      return d.segs.reduce(function(a, s) { return s.act === 3 ? a + s.dur : a; }, 0);
+    });
+    /* Days that used the extended 10h driving allowance */
+    var _days10h = _dayDriveMins.filter(function(m) { return m > 540; }).length;
+    /* Weekly drive balance */
+    var _wkDrvOver = Math.max(0, weekDrive - WK_DRV_LIMIT);
+    var _wkDrvLeft = Math.max(0, WK_DRV_LIMIT - weekDrive);
+    var _wkDrvPct  = Math.min(100, Math.round(weekDrive / WK_DRV_LIMIT * 100));
+    var _wkDrvCol  = weekDrive >= WK_DRV_LIMIT ? '#E53935' : weekDrive >= 3000 ? '#FF9800' : '#1E88E5';
+    /* Weekly rest type label & timing string */
+    var _DOW_PL = ['Nd','Pn','Wt','\u015ar','Cz','Pt','Sb','Nd'];
+    var _wkRstLabel = topQualRest >= WKREST_REG ? 'Tygodniowy pe\u0142ny (\u226545h)' :
+                      topQualRest >= WKREST_RED  ? 'Tygodniowy skr\u00f3cony (\u226524h)' :
+                      topQualRest >= 660          ? 'Dobowy (brak tyg.)' : 'BRAK';
+    var _wkRstCol  = topQualRest >= WKREST_REG ? '#1565C0' :
+                     topQualRest >= WKREST_RED  ? '#1976D2' :
+                     topQualRest >= 660          ? '#00838F' : '#E53935';
+    var _wkRstTime = '';
+    if (topQualSpan) {
+      var _tsAs = topQualSpan.absStart - (topQualSpan.extra || 0);
+      var _tsAe = topQualSpan.absEnd   + (topQualSpan.nextExtra || 0);
+      var _tsDs = addD(weekStart, Math.floor(_tsAs / 1440));
+      var _tsDe = addD(weekStart, Math.floor(_tsAe / 1440));
+      _wkRstTime = _DOW_PL[_tsDs.getDay()] + ' ' + hhmm(((_tsAs % 1440) + 1440) % 1440) +
+                   ' \u2013 ' + _DOW_PL[_tsDe.getDay()] + ' ' + hhmm(_tsAe % 1440);
+    }
+
     /* Wrapper */
     var wrapper = document.createElement('div');
     wrapper.style.cssText = 'border-bottom:1px solid #E2E4EA;background:#FFF;';
@@ -983,6 +1023,118 @@
 
     mainRow.appendChild(sb); mainRow.appendChild(svgEl); wrapper.appendChild(mainRow);
     wrapper.appendChild(inlineZoom);
+
+    /* ── Weekly summary panel ──────────────────────────────────────────
+     * Displayed between the SVG chart and the footer; shows:
+     *   Card 1 – weekly drive total + daily mini-bar chart
+     *   Card 2 – daily rest breakdown (≥11h / 9–11h / <9h)
+     *   Card 3 – weekly rest type + timing
+     * Collapsed / expanded by clicking the header bar.                  */
+    var _sumPanel = document.createElement('div');
+    _sumPanel.style.cssText = 'background:#F0F4FB;border-top:2px solid #C8D4E8;font-family:Inter,sans-serif;';
+
+    /* Header (click to toggle) */
+    var _sumHdr = document.createElement('div');
+    _sumHdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 12px;background:#E2EAF8;border-bottom:1px solid #C8D4E8;cursor:pointer;user-select:none;-webkit-user-select:none;';
+    var _sumArrow = document.createElement('span');
+    _sumArrow.textContent = '\u25BE';
+    _sumArrow.style.cssText = 'font-size:11px;color:#4A72B0;flex-shrink:0;';
+    var _sumTitle = document.createElement('span');
+    _sumTitle.style.cssText = 'font-size:10px;font-weight:700;letter-spacing:1px;color:#4A72B0;text-transform:uppercase;';
+    _sumTitle.textContent = 'Podsumowanie W' + String(isoWeek(weekStart)).padStart(2, '0');
+    var _sumQS = document.createElement('div');
+    _sumQS.style.cssText = 'margin-left:auto;display:flex;gap:14px;align-items:center;';
+    _sumQS.innerHTML =
+      '<span style="font-size:12px;font-weight:700;color:' + _wkDrvCol + ';">\u25BA\u00a0' + hhmm(weekDrive) + '</span>' +
+      '<span style="font-size:12px;color:#0277BD;">\u25A0\u00a0' + hhmm(restDispVal) +
+        (restTypeSfx ? '<em style="font-size:10px;color:#5096C0;"> ' + restTypeSfx + '</em>' : '') + '</span>';
+    _sumHdr.appendChild(_sumArrow); _sumHdr.appendChild(_sumTitle); _sumHdr.appendChild(_sumQS);
+
+    /* Body: 3-card grid */
+    var _sumBody = document.createElement('div');
+    _sumBody.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px 12px 10px;';
+
+    /* ── Card 1: Weekly driving ── */
+    var _DAY_LBL = ['Pn', 'Wt', '\u015ar', 'Cz', 'Pt', 'Sb', 'Nd'];
+    var _c1 = document.createElement('div');
+    _c1.style.cssText = 'background:#fff;border:1px solid #C8D4E8;border-left:3px solid ' + _wkDrvCol + ';border-radius:0 7px 7px 0;padding:9px 11px;';
+    _c1.innerHTML =
+      '<div style="font-size:9px;font-weight:700;letter-spacing:0.8px;color:#9AA0AA;margin-bottom:4px;">JAZDA TYGODNIOWA</div>' +
+      '<div style="font-size:22px;font-weight:800;color:' + _wkDrvCol + ';line-height:1;margin-bottom:1px;">' + hhmm(weekDrive) + '</div>' +
+      '<div style="font-size:10px;color:#9AA0AA;margin-bottom:5px;">limit 56:00&nbsp;&nbsp;\u2022&nbsp;&nbsp;' + _wkDrvPct + '%</div>' +
+      '<div style="height:7px;background:#E4EAF4;border-radius:4px;overflow:hidden;margin-bottom:5px;">' +
+        '<div style="height:100%;width:' + _wkDrvPct + '%;background:' + _wkDrvCol + ';border-radius:4px;"></div>' +
+      '</div>' +
+      (_wkDrvOver > 0
+        ? '<div style="font-size:11px;color:#E53935;font-weight:700;">\u26A0 +' + hhmm(_wkDrvOver) + ' ponad limit</div>'
+        : '<div style="font-size:11px;color:#374151;">Pozostało: <strong style="color:#1565C0;">' + hhmm(_wkDrvLeft) + '</strong></div>') +
+      (_days10h > 0 ? '<div style="font-size:10px;color:#FF9800;margin-top:2px;">' + _days10h + '\u00d7 dzie\u0144 10h (wyd\u0142u\u017cony)</div>' : '') +
+      '<div style="margin-top:7px;display:flex;gap:2px;align-items:flex-end;height:32px;">' +
+        _dayDriveMins.map(function(dm, i) {
+          var barPct = dm > 0 ? Math.max(12, Math.round(dm / 600 * 100)) : 0;
+          var barCol = dm > 600 ? '#E53935' : dm > 540 ? '#FF9800' : dm > 0 ? '#1E88E5' : 'transparent';
+          var bgCol  = dm > 0 ? 'transparent' : '#EEF2F8';
+          return '<div title="' + _DAY_LBL[i] + ': ' + hhmm(dm) + '" ' +
+            'style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;">' +
+            '<div style="width:100%;background:#EEF2F8;border-radius:2px;flex:1;overflow:hidden;position:relative;">' +
+              '<div style="position:absolute;bottom:0;left:0;right:0;height:' + barPct + '%;background:' + barCol + ';"></div>' +
+            '</div>' +
+            '<div style="font-size:7px;color:#9AA0AA;margin-top:1px;">' + _DAY_LBL[i] + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+
+    /* ── Card 2: Daily rests ── */
+    var _c2 = document.createElement('div');
+    _c2.style.cssText = 'background:#fff;border:1px solid #C8D4E8;border-left:3px solid #1E88E5;border-radius:0 7px 7px 0;padding:9px 11px;';
+    _c2.innerHTML =
+      '<div style="font-size:9px;font-weight:700;letter-spacing:0.8px;color:#9AA0AA;margin-bottom:7px;">ODPOCZYNKI DOBOWE</div>' +
+      '<div style="display:flex;flex-direction:column;gap:5px;">' +
+        '<div style="display:flex;align-items:center;gap:7px;">' +
+          '<div style="width:11px;height:11px;border-radius:2px;background:#43A047;flex-shrink:0;"></div>' +
+          '<span style="font-size:11px;color:#374151;flex:1;">&ge;11h&nbsp;<em style="color:#9AA0AA;">(pe&#322;ny)</em></span>' +
+          '<span style="font-size:18px;font-weight:800;color:#43A047;line-height:1;">' + _cnt11h + '<span style="font-size:11px;">&times;</span></span>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:7px;">' +
+          '<div style="width:11px;height:11px;border-radius:2px;background:#1E88E5;flex-shrink:0;"></div>' +
+          '<span style="font-size:11px;color:#374151;flex:1;">9&ndash;11h&nbsp;<em style="color:#9AA0AA;">(skr.)</em></span>' +
+          '<span style="font-size:18px;font-weight:800;color:#1E88E5;line-height:1;">' + _cnt9h + '<span style="font-size:11px;">&times;</span></span>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:7px;">' +
+          '<div style="width:11px;height:11px;border-radius:2px;background:' + (_cntShortRest > 0 ? '#E53935' : '#CBD5E1') + ';flex-shrink:0;"></div>' +
+          '<span style="font-size:11px;color:' + (_cntShortRest > 0 ? '#E53935' : '#9AA0AA') + ';flex:1;">&lt;9h&nbsp;<em style="opacity:0.7;">(za kr&oacute;tki)</em></span>' +
+          '<span style="font-size:18px;font-weight:800;color:' + (_cntShortRest > 0 ? '#E53935' : '#9AA0AA') + ';line-height:1;">' + _cntShortRest + '<span style="font-size:11px;">&times;</span></span>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:6px;font-size:9px;color:#B0B8C4;border-top:1px solid #EEF2F8;padding-top:4px;">EU 561/2006 – maks. 3 skr. na tydz.</div>';
+
+    /* ── Card 3: Weekly rest ── */
+    var _c3 = document.createElement('div');
+    _c3.style.cssText = 'background:#fff;border:1px solid #C8D4E8;border-left:3px solid ' + _wkRstCol + ';border-radius:0 7px 7px 0;padding:9px 11px;';
+    _c3.innerHTML =
+      '<div style="font-size:9px;font-weight:700;letter-spacing:0.8px;color:#9AA0AA;margin-bottom:4px;">ODPOCZYNEK TYGODN.</div>' +
+      '<div style="font-size:22px;font-weight:800;color:' + _wkRstCol + ';line-height:1;margin-bottom:2px;">' +
+        (topQualRest > 0 ? hhmm(topQualRest) : '--:--') +
+      '</div>' +
+      '<div style="font-size:11px;color:' + _wkRstCol + ';font-weight:600;margin-bottom:4px;">' + _wkRstLabel + '</div>' +
+      (_wkRstTime
+        ? '<div style="font-size:11px;color:#5A6070;border-top:1px solid #EEF2F8;padding-top:4px;">' + _wkRstTime + '</div>'
+        : '<div style="font-size:11px;color:#E57373;border-top:1px solid #FEE2E2;padding-top:4px;">Nie zidentyfikowano</div>') +
+      '<div style="margin-top:5px;font-size:10px;color:' + (topQualRest >= WKREST_RED ? '#43A047' : '#E53935') + ';font-weight:600;">' +
+        (topQualRest >= WKREST_RED ? '\u2714 kwalifikuje si\u0119' : '\u26A0 nie kwalifikuje') +
+      '</div>';
+
+    _sumBody.appendChild(_c1); _sumBody.appendChild(_c2); _sumBody.appendChild(_c3);
+    _sumPanel.appendChild(_sumHdr); _sumPanel.appendChild(_sumBody);
+
+    /* Toggle collapse on header click */
+    var _sumVisible = true;
+    _sumHdr.addEventListener('click', function() {
+      _sumVisible = !_sumVisible;
+      _sumBody.style.display = _sumVisible ? 'grid' : 'none';
+      _sumArrow.textContent  = _sumVisible ? '\u25BE' : '\u25B8';
+    });
+    wrapper.appendChild(_sumPanel);
 
     /* Footer */
     var footer=document.createElement('div');
