@@ -1079,8 +1079,10 @@ function parseDriverCardVehicles(string $data): array
     $len = strlen($data);
     if ($len < 40) return [];
 
-    $curYear = (int)gmdate('Y');
-    $tsMin   = mktime(0, 0, 0, 1, 1, $curYear - 6);
+    /* Only consider records from the past 12 months to current date + 90 days.
+     * This prevents the parser from matching ancient noise while ensuring all
+     * recent vehicle usage is captured regardless of card issue date. */
+    $tsMin   = strtotime('-12 months');
     $tsMax   = time() + 90 * 86400;
 
     /* NationNumeric → EU plate code (same table as parseBorderCrossings) */
@@ -1244,6 +1246,8 @@ function parseDriverCardVehicles(string $data): array
      * compact 24-byte format: 0x050b) */
     $tryTags = [[0x05, 0x04], [0x05, 0x28], [0x05, 0x0b]];
 
+    $phase1Results = [];
+
     foreach ($tryTags as [$t1, $t2]) {
         for ($i = 0; $i < $len - 36; $i++) {
             if (ord($data[$i]) !== $t1 || ord($data[$i + 1]) !== $t2) continue;
@@ -1253,37 +1257,67 @@ function parseDriverCardVehicles(string $data): array
             if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) continue;
 
             $base    = $i + 4;
-            $noOfVeh = (ord($data[$base]) << 8) | ord($data[$base + 1]);
+            /* EF_CardVehiclesUsed header layout (4 bytes):
+             *   +0 +1  vehiclePointerNewestRecord  (index of newest slot, 0-based)
+             *   +2 +3  noOfVehicleUsed             (count of valid entries)
+             * Records start at $base + 4.
+             *
+             * IMPORTANT: We scan ALL slots in the buffer (totalRecs), not just
+             * noOfVehicleUsed slots from slot 0.  This correctly handles wrapped
+             * circular buffers where newer entries are at higher slot indices than
+             * the pointer value, which the old code missed entirely. */
+            $vPtr    = (ord($data[$base])     << 8) | ord($data[$base + 1]);
+            $noOfVeh = (ord($data[$base + 2]) << 8) | ord($data[$base + 3]);
 
             /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
+            $foundRecs = false;
             foreach ([32, 29] as $recSize) {
                 $totalRecs = (int)(($bl - 4) / $recSize);
-                if ($noOfVeh > $totalRecs || $totalRecs < 1) continue;
+                if ($totalRecs < 1) continue;
+                /* Sanity: pointer and count should be within buffer bounds */
+                if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
 
-                /* Parse up to noOfVehicleUsed records (at least 1) */
-                $maxRecs = max($noOfVeh, 1);
-                $parsed  = $parseBlock($base + 4, $maxRecs, $i + 4 + $bl, $recSize);
+                /* Parse ALL slots – timestamp validation discards empty/null entries.
+                 * This finds the newest entries even when the circular buffer has wrapped. */
+                $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize);
 
                 if (!empty($parsed)) {
-                    usort($parsed, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-                    return $parsed;
+                    foreach ($parsed as $r) {
+                        $key = $r['reg'] . '|' . $r['first_use'];
+                        if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
+                            $phase1Results[$key] = $r;
+                        }
+                    }
+                    $foundRecs = true;
+                    break; /* found valid records for this recSize; skip 29-byte for same tag */
                 }
             }
 
-            /* Fallback: some manufacturers omit the standard noOfVehicleUsed/pointer
-             * header (or use a non-standard value there) and store records directly
-             * at the start of the TLV value.  Try all supported record sizes treating
-             * the entire block as a raw circular buffer of records (≥2 required). */
-            foreach ([32, 31, 29, 24] as $recSize) {
-                $totalNoHdr = (int)($bl / $recSize);
-                if ($totalNoHdr < 2) continue;
-                $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize);
-                if (count($parsed) >= 2) {
-                    usort($parsed, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-                    return $parsed;
+            /* Fallback: some manufacturers omit or garble the standard header and store
+             * records directly at the start of the TLV value.  Try all sizes. */
+            if (!$foundRecs) {
+                foreach ([32, 31, 29, 24] as $recSize) {
+                    $totalNoHdr = (int)($bl / $recSize);
+                    if ($totalNoHdr < 2) continue;
+                    $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize);
+                    if (count($parsed) >= 2) {
+                        foreach ($parsed as $r) {
+                            $key = $r['reg'] . '|' . $r['first_use'];
+                            if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
+                                $phase1Results[$key] = $r;
+                            }
+                        }
+                        break;
+                    }
                 }
             }
         }
+    }
+
+    if (!empty($phase1Results)) {
+        $out = array_values($phase1Results);
+        usort($out, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+        return $out;
     }
 
     /* ── Phase 2: Whole-file fallback scan ───────────────────────────────────── */

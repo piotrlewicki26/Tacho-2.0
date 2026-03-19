@@ -114,11 +114,15 @@ function buildTlvBlob(
     return $prefix . $header . $tlvContent . str_repeat("\x00", 64);
 }
 
-/* ── Fixed timestamps within the valid window ──────────────────────────── */
-$firstUse2023 = gmmktime(0, 0, 0, 1, 15, 2023);  // 2023-01-15
-$lastUse2023  = gmmktime(0, 0, 0, 12, 31, 2023); // 2023-12-31
-$firstUse2024 = gmmktime(0, 0, 0, 3,  1, 2024);  // 2024-03-01
-$lastUse2024  = gmmktime(0, 0, 0, 9,  30, 2024); // 2024-09-30
+/* ── Fixed timestamps within the valid window (last 12 months from now) ── */
+/* Use rolling dates relative to today so tests stay valid regardless of when run */
+$now          = time();
+$firstUse2023 = $now - 300 * 86400;               // ~10 months ago
+$lastUse2023  = $now - 270 * 86400;               // ~9 months ago
+$firstUse2024 = $now - 180 * 86400;               // ~6 months ago
+$lastUse2024  = $now -  60 * 86400;               // ~2 months ago
+$firstUse2023Fmt = gmdate('Y-m-d', $firstUse2023);
+$lastUse2023Fmt  = gmdate('Y-m-d', $lastUse2023);
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 1: TLV Phase-1, Gen-2 single record – basic valid plate
@@ -132,8 +136,8 @@ $out  = parseDriverCardVehicles($blob);
 ok('returns exactly 1 vehicle', count($out) === 1);
 ok('registration = WX12345',    ($out[0]['reg'] ?? '') === 'WX12345');
 ok('nation = PL (alpha)',        ($out[0]['nation'] ?? '') === 'PL');
-ok('first_use = 2023-01-15',    ($out[0]['first_use'] ?? '') === '2023-01-15');
-ok('last_use  = 2023-12-31',    ($out[0]['last_use']  ?? '') === '2023-12-31');
+ok('first_use matches',         ($out[0]['first_use'] ?? '') === $firstUse2023Fmt);
+ok('last_use matches',          ($out[0]['last_use']  ?? '') === $lastUse2023Fmt);
 ok('distance  = 50000',         ($out[0]['distance']  ?? -1) === 50000);
 
 /* ══════════════════════════════════════════════════════════════════════════
