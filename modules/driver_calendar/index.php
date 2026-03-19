@@ -655,6 +655,19 @@ include __DIR__ . '/../../templates/header.php';
             ?>
             <div class="<?= $cellCls ?>" <?= $tooltip ?> <?= $day ? 'data-date="'.$dateStr.'"' : '' ?>>
               <span class="dc-day-num"><?= $d ?></span>
+              <?php if ($day): ?>
+              <div class="dc-sum">
+                <?php if ($day['drive'] > 0): $h=floor($day['drive']/60);$m=$day['drive']%60; ?>
+                <div class="dc-si"><span class="dc-si-dot dc-si-drive"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <?php endif; ?>
+                <?php if ($day['work'] > 0): $h=floor($day['work']/60);$m=$day['work']%60; ?>
+                <div class="dc-si"><span class="dc-si-dot dc-si-work"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <?php endif; ?>
+                <?php if ($day['dist'] > 0): ?>
+                <div class="dc-si dc-si-km"><?= $day['dist'] ?>&nbsp;km</div>
+                <?php endif; ?>
+              </div>
+              <?php endif; ?>
               <?php if ($day && ($day['drive'] + $day['work'] + $day['avail'] + $day['rest']) > 0): ?>
               <div class="dc-bar-wrap">
                 <?php
@@ -1079,12 +1092,14 @@ include __DIR__ . '/../../templates/header.php';
 }
 .dc-cell {
   border-radius: 5px;
-  min-height: 54px;
-  padding: 3px 4px 2px;
+  min-height: 90px;
+  padding: 4px 5px 3px;
   position: relative;
   cursor: default;
   overflow: hidden;
   transition: filter .1s;
+  display: flex;
+  flex-direction: column;
 }
 .dc-empty { background: transparent; }
 .dc-no-data { background: #f1f5f9; }
@@ -1107,10 +1122,40 @@ include __DIR__ . '/../../templates/header.php';
 }
 .dc-bar-wrap {
   display: flex;
-  height: 5px;
+  height: 6px;
   border-radius: 2px;
   overflow: hidden;
-  margin-top: 4px;
+  margin-top: auto;
+}
+.dc-sum {
+  margin-top: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+}
+.dc-si {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: .62rem;
+  font-weight: 600;
+  color: #374151;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.dc-si-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dc-si-drive { background: var(--tp-primary, #2563eb); }
+.dc-si-work  { background: #f59e0b; }
+.dc-si-km {
+  color: #64748b;
+  padding-left: 9px;
 }
 .dc-bar { height: 100%; }
 .dc-bar-drive { background: var(--tp-primary, #2563eb); }
