@@ -752,81 +752,8 @@ include __DIR__ . '/../../templates/header.php';
               }
           }
         ?>
-        <?php if ($tlViolations): ?>
-        <div class="mt-4">
-          <h6 class="fw-600 mb-2">
-            <i class="bi bi-exclamation-triangle text-danger me-1"></i>Naruszenia w wybranym zakresie
-            <span class="badge bg-danger ms-1"><?= count($tlViolations) ?></span>
-          </h6>
-          <div class="table-responsive">
-            <table class="tp-table small">
-              <thead><tr><th>Data</th><th>Opis</th><th>Poziom</th></tr></thead>
-              <tbody>
-                <?php foreach ($tlViolations as $v): ?>
-                <tr class="<?= ($v['type']??'')==='error'?'table-danger':'table-warning' ?>">
-                  <td class="text-nowrap"><?= fmtDate($v['date']) ?></td>
-                  <td><?= e($v['msg'] ?? '') ?></td>
-                  <td>
-                    <?php if (($v['type']??'')==='error'): ?>
-                    <span class="violation-error"><i class="bi bi-exclamation-triangle-fill me-1"></i>Poważne</span>
-                    <?php else: ?>
-                    <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- Daily summary table under timeline -->
-        <?php
-          $tlCalDays = [];
-          foreach ($filteredChartDays as $fd) {
-              if (isset($calDays[$fd['date']])) $tlCalDays[] = $calDays[$fd['date']];
-          }
-        ?>
-        <?php if ($tlCalDays): ?>
-        <div class="mt-4">
-          <h6 class="fw-600 mb-2"><i class="bi bi-table me-1 text-secondary"></i>Podsumowanie dzienne</h6>
-          <div class="table-responsive">
-            <table class="tp-table small">
-              <thead>
-                <tr>
-                  <th>Data</th><th>Jazda</th><th>Praca</th><th>Dysp.</th><th>Odp.</th><th>Km</th><th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <?php foreach ($tlCalDays as $day): ?>
-                <?php
-                  $he = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
-                  $hw = !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
-                ?>
-                <tr class="<?= $he?'table-danger':($hw?'table-warning':'') ?>">
-                  <td><?= fmtDate($day['date']) ?></td>
-                  <td><?= floor($day['drive']/60) ?>h <?= $day['drive']%60 ?>m</td>
-                  <td><?= floor($day['work']/60)  ?>h <?= $day['work']%60  ?>m</td>
-                  <td><?= floor($day['avail']/60) ?>h <?= $day['avail']%60 ?>m</td>
-                  <td><?= floor($day['rest']/60)  ?>h <?= $day['rest']%60  ?>m</td>
-                  <td><?= $day['dist'] ? $day['dist'].' km' : '—' ?></td>
-                  <td>
-                    <?php if ($he): ?>
-                    <span class="violation-error"><i class="bi bi-exclamation-triangle-fill me-1"></i>Naruszenie</span>
-                    <?php elseif ($hw): ?>
-                    <span class="violation-warn"><i class="bi bi-exclamation-circle me-1"></i>Ostrzeżenie</span>
-                    <?php else: ?>
-                    <span class="violation-ok"><i class="bi bi-check-circle me-1"></i>OK</span>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <?php endif; ?>
+        <?php /* Infringements in selected scope – hidden per UX request */ ?>
+        <?php /* Daily summary table – hidden per UX request */ ?>
 
         <?php elseif ($activeTab === 'violations'): ?>
         <!-- ════════════════════════════════════════════════════
@@ -1092,7 +1019,8 @@ include __DIR__ . '/../../templates/header.php';
 .dc-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 3px;
+  column-gap: 3px;
+  row-gap: 10px;
 }
 .dc-dow {
   text-align: center;
