@@ -251,12 +251,26 @@ if (!function_exists('dddParseVehicleReg')) {
 /**
  * Parse vehicle registration plate from a vehicle DDD file.
  * Returns the registration string or null.
+ *
+ * Handles common EU plate formats:
+ *  - "AB 12345"  – 2-4 letter prefix, space, alphanumeric suffix (classic)
+ *  - "AB12345"   – prefix and suffix with no separator
+ *  - "B AB1234"  – single-letter city code + two-part rest (e.g. German plates)
+ *  - "AB 123CD"  – mixed-order alphanumeric suffix
  */
 function dddParseVehicleReg(string $data): ?string {
     $len = strlen($data);
     for ($i = 0; $i < $len - 14; $i++) {
-        $s = trim(str_replace("\0", '', dddReadStr($data, $i, 14)));
-        if (preg_match('/^[A-Z]{2,4}\s[A-Z0-9]{4,6}$/', $s)) {
+        $raw = dddReadStr($data, $i, 14);
+        $s   = strtoupper(trim(preg_replace('/\s+/', ' ',
+               preg_replace('/[^A-Z0-9 ]/', '', str_replace(["\x00", "\xFF"], ' ', $raw)))));
+        if ($s === '') continue;
+        $noSpc = str_replace(' ', '', $s);
+        if (strlen($noSpc) < 4 || strlen($noSpc) > 10) continue;
+        if (!preg_match('/^[A-Z]/', $s))               continue;
+        if (!preg_match('/[0-9]/', $s))                continue;
+        if (preg_match('/^[A-Z]{1,4}\s?[A-Z0-9]{3,9}$/', $s) ||
+            preg_match('/^[A-Z]{1,4}\s[A-Z0-9]{1,6}\s[A-Z0-9]{1,6}$/', $s)) {
             return $s;
         }
     }

@@ -292,12 +292,39 @@ function dddParseDriverInfo(string $data): ?array
 /**
  * Parse vehicle registration plate from a vehicle DDD binary blob.
  * Returns the registration string or null if not found.
+ *
+ * Handles common EU plate formats:
+ *  - "AB 12345"  – 2-4 letter prefix, space, alphanumeric suffix (classic)
+ *  - "AB12345"   – prefix and suffix with no separator
+ *  - "B AB1234"  – single-letter city code + two-part rest (e.g. German plates)
+ *  - "AB 123CD"  – mixed-order alphanumeric suffix
  */
 function dddParseVehicleReg(string $data): ?string {
     $len = strlen($data);
     for ($i = 0; $i < $len - 14; $i++) {
-        $s = trim(str_replace("\0", '', dddReadStr($data, $i, 14)));
-        if (preg_match('/^[A-Z]{2,4}\s[A-Z0-9]{4,6}$/', $s)) {
+        /* Read up to 14 bytes (codePage(1) + regNumber(13)); strip null/FF padding */
+        $raw = dddReadStr($data, $i, 14);
+        $s   = strtoupper(trim(preg_replace('/\s+/', ' ',
+               preg_replace('/[^A-Z0-9 ]/', '', str_replace(["\x00", "\xFF"], ' ', $raw)))));
+        if ($s === '') continue;
+        /* Accept plates that:
+         *  – contain only letters, digits and single spaces
+         *  – total visible length (no spaces) between 3 and 10 chars
+         *  – start with 1–4 letters
+         *  – contain at least one digit (avoids pure-word false positives)
+         *  – suffix is at least 3 characters (avoids partial boundary reads)
+         *
+         * Pattern A: 1–4 leading letters + optional space + 3–9 alphanumerics
+         *            covers "AB12345", "AB 12345", "B AB1234" (single-space suffix)
+         * Pattern B: 1–4 leading letters + space + 1–6 alnum + space + 1–6 alnum
+         *            covers 3-token plates like "B AB 1234"
+         */
+        $noSpc = str_replace(' ', '', $s);
+        if (strlen($noSpc) < 4 || strlen($noSpc) > 10) continue;
+        if (!preg_match('/^[A-Z]/', $s))               continue;
+        if (!preg_match('/[0-9]/', $s))                continue;  /* must contain a digit */
+        if (preg_match('/^[A-Z]{1,4}\s?[A-Z0-9]{3,9}$/', $s) ||
+            preg_match('/^[A-Z]{1,4}\s[A-Z0-9]{1,6}\s[A-Z0-9]{1,6}$/', $s)) {
             return $s;
         }
     }
@@ -1116,6 +1143,7 @@ function parseDriverCardVehicles(string $data): array
             $regRaw = substr($data, $pos + $regOff, 13);
             $reg    = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
             $reg    = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
+            $reg    = preg_replace('/\s+/', ' ', $reg);  /* collapse padding-induced extra spaces */
             $reg    = trim($reg);
 
             $firstUse = unpack('N', substr($data, $pos + $tsOff,     4))[1];

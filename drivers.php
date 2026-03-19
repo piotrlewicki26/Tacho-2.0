@@ -847,6 +847,8 @@ $totalM = $profileTotalDrive % 60;
                     <th>Kraj</th>
                     <th>Pierwsze użycie</th>
                     <th>Ostatnie użycie</th>
+                    <th class="text-end">Przebieg (pocz.)</th>
+                    <th class="text-end">Przebieg (końc.)</th>
                     <th class="text-end">Odległość</th>
                   </tr>
                 </thead>
@@ -857,13 +859,15 @@ $totalM = $profileTotalDrive % 60;
                     <td><?= e($pv['nation'] ?: '—') ?></td>
                     <td><?= fmtDate($pv['first_use']) ?></td>
                     <td><?= fmtDate($pv['last_use']) ?></td>
+                    <td class="text-end text-nowrap"><?= $pv['odo_begin'] > 0 ? number_format((int)$pv['odo_begin'], 0, ',', ' ') . ' km' : '—' ?></td>
+                    <td class="text-end text-nowrap"><?= $pv['odo_end'] > 0 ? number_format((int)$pv['odo_end'], 0, ',', ' ') . ' km' : '—' ?></td>
                     <td class="text-end"><?= $pv['distance'] > 0 ? number_format((int)$pv['distance'], 0, ',', ' ') . ' km' : '—' ?></td>
                   </tr>
                   <?php endforeach; ?>
                 </tbody>
                 <tfoot>
                   <tr class="table-secondary fw-bold">
-                    <td colspan="4">Łącznie</td>
+                    <td colspan="6">Łącznie</td>
                     <td class="text-end"><?= number_format(array_sum(array_column($profileVehicles, 'distance')), 0, ',', ' ') ?> km</td>
                   </tr>
                 </tfoot>

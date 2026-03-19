@@ -297,6 +297,75 @@ $out  = parseDriverCardVehicles($blob);
 
 ok('single isolated record not returned by Phase-2', count($out) === 0);
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 15: Null-byte padded registration ("WA\x00\x00\x0012345") is normalised
+ *           to "WA 12345" (no multiple consecutive spaces).
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 15: Null-padded registration normalised to single spaces\n";
+
+// Build a Gen-2 record manually to inject "\x00\x00" padding in the middle of the reg
+function buildGen2RecRaw(
+    string $regRaw13,   // exactly 13 bytes of raw regNumber field
+    string $nation,
+    int    $nationNum,
+    int    $firstUse,
+    int    $lastUse,
+    int    $odoB = 100000,
+    int    $odoE = 150000
+): string {
+    $nationAlpha = str_pad(substr($nation, 0, 3), 3, "\x00");
+    $codePage    = "\x00";
+    $ts1         = pack('N', $firstUse);
+    $ts2         = pack('N', $lastUse);
+    $ob          = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe          = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+    return chr($nationNum) . $nationAlpha . $codePage . $regRaw13 . $ts1 . $ts2 . $ob . $oe;
+}
+
+// "WA" + 3 null bytes + "12345" + 5 null bytes = 13 bytes total
+$regRaw13 = "WA\x00\x00\x0012345\x00\x00\x00\x00\x00";
+$rec  = buildGen2RecRaw($regRaw13, 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('padded reg: 1 result',            count($out) === 1);
+ok('padded reg: no consecutive spaces', ($out[0]['reg'] ?? '') === 'WA 12345');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 16: dddParseVehicleReg – classic plate with space
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 16: dddParseVehicleReg – various EU plate formats\n";
+
+/**
+ * Build a 14-byte blob as stored in a vehicle DDD file:
+ *   byte 0    = codePage (0x00)
+ *   bytes 1-13 = reg, padded with 0x00
+ * The function prepends random-ish bytes and appends padding so the scanner
+ * actually finds the plate somewhere in the middle.
+ */
+function makeVehicleDddBlob(string $reg): string {
+    $field = "\x00" . str_pad(substr($reg, 0, 13), 13, "\x00");
+    return str_repeat("\x01\x02\x03\x04", 50) . $field . str_repeat("\x00", 50);
+}
+
+// 16a: classic "WA 12345" (2-letter prefix + space + 5 digits)
+ok('16a: WA 12345',   dddParseVehicleReg(makeVehicleDddBlob('WA 12345')) === 'WA 12345');
+
+// 16b: plate without space "WA12345"
+ok('16b: WA12345',    dddParseVehicleReg(makeVehicleDddBlob('WA12345'))  === 'WA12345');
+
+// 16c: null-padded "WA\x0012345" → should normalise to "WA 12345"
+ok('16c: null-padded "WA12345"', dddParseVehicleReg(makeVehicleDddBlob("WA\x0012345")) === 'WA 12345');
+
+// 16d: German 3-token "B AB1234"
+ok('16d: B AB1234',   dddParseVehicleReg(makeVehicleDddBlob('B AB1234')) === 'B AB1234');
+
+// 16e: purely alphabetic "ABCDE" should NOT match (no digit)
+ok('16e: no-digit rejected', dddParseVehicleReg(makeVehicleDddBlob('ABCDE')) === null);
+
+// 16f: empty blob returns null
+ok('16f: empty → null', dddParseVehicleReg('') === null);
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";
