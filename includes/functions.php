@@ -1191,18 +1191,20 @@ function parseDriverCardVehicles(string $data): array
     /* Some manufacturers don't use standard TLV tags.  Scan the entire file for
      * contiguous groups of valid vehicle records.  Try Gen-2 (32-byte) records
      * first; if nothing found, try Gen-1 (29-byte) records.
-     * Require ≥ 3 consecutive valid records to reduce false positives. */
+     * Require ≥ 2 consecutive valid records to reduce false positives while still
+     * finding drivers who have used only one or two vehicles.  The letter-in-
+     * registration validation already eliminates the bulk of random-data noise. */
     foreach ([32, 29] as $recSize) {
         $result = [];
         $seen   = [];
-        for ($i = 0; $i <= $len - 3 * $recSize; $i++) {
-            /* Require three consecutive valid records before committing */
-            $recs = $parseBlock($i, 3, $len, $recSize);
-            if (count($recs) < 3) continue;
+        for ($i = 0; $i <= $len - 2 * $recSize; $i++) {
+            /* Require two consecutive valid records before committing */
+            $recs = $parseBlock($i, 2, $len, $recSize);
+            if (count($recs) < 2) continue;
 
             /* Extend as far as consecutive records remain valid */
             $recs = $parseBlock($i, 200, $len, $recSize);
-            if (count($recs) < 3) continue;
+            if (count($recs) < 2) continue;
 
             foreach ($recs as $r) {
                 $key = $r['reg'] . '_' . $r['first_use'];
