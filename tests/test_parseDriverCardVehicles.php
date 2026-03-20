@@ -246,11 +246,12 @@ ok('future-ts record rejected', count($out) === 0);
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 10: lastUse too old (before tsMin) → record rejected.
- *          firstUse is also old, but rejection is driven by lastUse.
+ *          The parser rejects any record whose timestamps fall outside the
+ *          plausible 20-year window.  Use a date older than 20 years to test.
  * ══════════════════════════════════════════════════════════════════════════ */
 echo "\nTest 10: Too-old lastUse rejected\n";
 
-$ancient = gmmktime(0, 0, 0, 1, 1, 2010); // well before any valid window
+$ancient = gmmktime(0, 0, 0, 1, 1, 1990); // well beyond 20-year window
 $rec  = buildGen2Rec('OLD0001', 'PL', 40, $ancient, $ancient + 86400);
 $blob = buildTlvBlob($rec, 1);
 $out  = parseDriverCardVehicles($blob);

@@ -97,30 +97,30 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: current month; fall back to most-recent data month
-        // when the current month has no data at all.
+        // Date range – default: last 12 months (12 months ago → today).
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
+        $defaultFrom  = date('Y-m-d', strtotime('-12 months'));
+        $defaultTo    = date('Y-m-d');
 
         $rawFrom = isset($_GET['from']) ? trim($_GET['from']) : '';
         $rawTo   = isset($_GET['to'])   ? trim($_GET['to'])   : '';
 
         if ($rawFrom !== '' || $rawTo !== '') {
             // User explicitly submitted the filter form – honour their choice.
-            $fallbackFrom = $dataDateMin ?? $curMonthFrom;
-            $fallbackTo   = $dataDateMax ?? $curMonthTo;
+            $fallbackFrom = $dataDateMin ?? $defaultFrom;
+            $fallbackTo   = $dataDateMax ?? $defaultTo;
             $dateFrom = $rawFrom !== '' ? $rawFrom : $fallbackFrom;
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
             // First driver selection (no dates in URL).
-            // Always default to the current month; the user can click quick-select
-            // buttons ("Bież. mies.", "28 dni", "3 mies.") to navigate to historical data.
-            $dateFrom = $curMonthFrom;
-            $dateTo   = $curMonthTo;
+            // Default to the last 12 months (12 months ago → today).
+            $dateFrom = $defaultFrom;
+            $dateTo   = $defaultTo;
         }
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $curMonthFrom;
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $curMonthTo;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $defaultFrom;
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $defaultTo;
         if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 
         // Re-parse border crossings for stale/null rows
@@ -373,16 +373,21 @@ include __DIR__ . '/../../templates/header.php';
           <?php if ($dataDateMin): ?>
           <div class="d-flex gap-1 mb-2 flex-wrap">
             <?php
-              $qCurFrom = date('Y-m-01');
-              $qCurTo   = date('Y-m-t');
-              $q28From  = date('Y-m-d', strtotime('-27 days'));
-              $q28To    = date('Y-m-d');
-              $q3mFrom  = date('Y-m-d', strtotime('-3 months'));
-              $q3mTo    = date('Y-m-d');
-              $isCur = ($dateFrom === $qCurFrom && $dateTo === $qCurTo);
+              $qCurFrom  = date('Y-m-01');
+              $qCurTo    = date('Y-m-t');
+              $q12mFrom  = date('Y-m-d', strtotime('-12 months'));
+              $q12mTo    = date('Y-m-d');
+              $q28From   = date('Y-m-d', strtotime('-27 days'));
+              $q28To     = date('Y-m-d');
+              $q3mFrom   = date('Y-m-d', strtotime('-3 months'));
+              $q3mTo     = date('Y-m-d');
+              $isCur  = ($dateFrom === $qCurFrom  && $dateTo === $qCurTo);
+              $is12m  = ($dateFrom === $q12mFrom  && $dateTo === $q12mTo);
             ?>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $q12mFrom ?>&to=<?= $q12mTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= $is12m ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">12 mies.</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $qCurFrom ?>&to=<?= $qCurTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs <?= $isCur ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">Bież. mies.</a>
+               class="btn btn-xs <?= $isCur ? 'btn-info' : 'btn-outline-info' ?> flex-fill">Bież. mies.</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>&tab=<?= e($activeTab) ?>"
                class="btn btn-xs btn-outline-secondary flex-fill">28 dni</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $q3mFrom ?>&to=<?= $q3mTo ?>&tab=<?= e($activeTab) ?>"

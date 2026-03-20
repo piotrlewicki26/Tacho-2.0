@@ -1079,13 +1079,13 @@ function parseDriverCardVehicles(string $data): array
     $len = strlen($data);
     if ($len < 40) return [];
 
-    /* Only return records whose last_use falls within the past 12 months.
-     * firstUse is deliberately NOT checked against tsMin: a vehicle may have
-     * been on the card for years (firstUse very old) but still driven recently.
-     * Filtering on firstUse was the root cause of missed records – e.g. a truck
-     * used since 2020 but last driven in December 2025 was incorrectly rejected
-     * because its firstUse (2020) predated the 12-month window. */
-    $tsMin   = strtotime('-12 months');
+    /* Accept all records whose timestamps are within a plausible range.
+     * EU tachograph driver cards store vehicle usage going back many years
+     * (the card records the last ~84 different vehicles used, regardless of age).
+     * Using a 12-month lower bound was incorrectly filtering out vehicles that
+     * hadn't been used recently but were legitimately stored on the card.
+     * We now accept any record whose timestamps fall within a 20-year window. */
+    $tsMin   = strtotime('-20 years');
     $tsMax   = time() + 90 * 86400;
 
     /* NationNumeric → EU plate code (same table as parseBorderCrossings) */
@@ -1200,10 +1200,9 @@ function parseDriverCardVehicles(string $data): array
 
             $pos += $recSize;
 
-            /* Accept the record if the vehicle was last used within the 12-month window.
-             * Do NOT require firstUse >= tsMin: vehicles often have an old firstUse
-             * (date the vehicle was first added to the card) but recent lastUse. */
-            if ($lastUse  < $tsMin)   continue;  // not driven in the last 12 months
+            /* Accept the record if both timestamps are within the plausible window.
+             * Both firstUse and lastUse must be reasonable Unix timestamps. */
+            if ($lastUse  < $tsMin)   continue;  // implausibly old timestamp
             if ($lastUse  > $tsMax)   continue;  // implausible future timestamp
             if ($firstUse > $tsMax)   continue;  // implausible future timestamp
             if ($lastUse  < $firstUse) continue; // invalid: last before first
