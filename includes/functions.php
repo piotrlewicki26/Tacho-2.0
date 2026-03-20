@@ -1069,8 +1069,8 @@ function parseVehicleDdd(string $path): array {
  *
  * EU Regulation 165/2014 Annex IC – EF_CardVehiclesUsed structure:
  *   TLV tag (2 bytes) + length (2 bytes big-endian) + value:
- *     noOfVehicleUsed:          WORD (2 bytes)
  *     vehiclePointerNewestRecord: WORD (2 bytes)
+ *     noOfVehicleUsed:          WORD (2 bytes)
  *     cardVehicleRecord[]:
  *       vehicleRegistrationNation: nationNumeric (1 byte) + nationAlpha (3 bytes)
  *       vehicleRegistrationNumber: codePage (1 byte) + regNumber (13 bytes)
@@ -1213,12 +1213,13 @@ function parseDriverCardVehicles(string $data): array
 
             $pos += $recSize;
 
-            /* Accept the record if both timestamps are within the plausible window.
+            /* Accept the record if both timestamps are within the plausible range.
              * Both firstUse and lastUse must be reasonable Unix timestamps. */
-            if ($lastUse  < $tsMin)   continue;  // implausibly old timestamp
-            if ($lastUse  > $tsMax)   continue;  // implausible future timestamp
-            if ($firstUse > $tsMax)   continue;  // implausible future timestamp
-            if ($lastUse  < $firstUse) continue; // invalid: last before first
+            if ($lastUse  < $tsMin)    continue;  // implausibly old last-use timestamp
+            if ($lastUse  > $tsMax)    continue;  // implausible future timestamp
+            if ($firstUse < $tsMin)    continue;  // null / epoch / implausibly old first-use
+            if ($firstUse > $tsMax)    continue;  // implausible future timestamp
+            if ($lastUse  < $firstUse) continue;  // invalid: last before first
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;

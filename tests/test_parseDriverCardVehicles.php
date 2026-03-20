@@ -432,6 +432,27 @@ ok('18a: old-firstUse/recent-lastUse accepted', count($out) === 1);
 ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR9988AB');
 ok('18c: last_use is recent',                   ($out[0]['last_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 19: firstUse at Unix epoch (0) + recent lastUse → REJECTED.
+ *          Records with a null/uninitialised firstUse timestamp (epoch or
+ *          pre-tsMin) must not slip through as '1970-01-01' entries.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 19: Epoch firstUse (null-like record) rejected\n";
+
+$epochFirstUse = 0;                      // Unix epoch – uninitialized field
+$recentLastUse = time() - 30 * 86400;    // 30 days ago
+$rec19  = buildGen2Rec('AB12345', 'PL', 40, $epochFirstUse, $recentLastUse);
+$blob19 = buildTlvBlob($rec19, 1);
+$out19  = parseDriverCardVehicles($blob19);
+ok('19a: epoch firstUse record rejected', count($out19) === 0);
+
+// Same with a very old but non-zero firstUse (> 20 years ago)
+$ancientFirstUse = strtotime('-25 years');
+$rec19b  = buildGen2Rec('CD67890', 'PL', 40, $ancientFirstUse, $recentLastUse);
+$blob19b = buildTlvBlob($rec19b, 1);
+$out19b  = parseDriverCardVehicles($blob19b);
+ok('19b: >20-year-old firstUse record rejected', count($out19b) === 0);
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";

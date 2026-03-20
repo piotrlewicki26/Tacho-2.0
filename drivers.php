@@ -252,10 +252,13 @@ if ($action === 'profile' && $editDriver) {
     }
 
     // ── Vehicles tab data (parsed directly from driver DDD files) ────────────
+    // Default to a 20-year lookback so that all vehicles stored on the card
+    // (driver cards hold the last ~84 vehicles regardless of age) are shown.
+    // The same 20-year tsMin is used inside parseDriverCardVehicles() itself.
     $nowDt   = new DateTime('today');
     $vehFrom = isset($_GET['veh_from']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_from'])
              ? $_GET['veh_from']
-             : $nowDt->modify('-12 months')->format('Y-m-d');
+             : (new DateTime())->modify('-20 years')->format('Y-m-d');
     $nowDt   = new DateTime('today');
     $vehTo   = isset($_GET['veh_to']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['veh_to'])
              ? $_GET['veh_to']
