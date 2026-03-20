@@ -19,6 +19,8 @@
  *  12. Short / empty data returns []
  *  13. Alternative TLV tag 0x0528
  *  14. Two-record minimum in Phase-2 fallback (single record not returned)
+ *  19. Epoch firstUse (VU unset) accepted, falls back to lastUse as display date
+ *  20. Multi-vehicle card with epoch firstUse on most records – all found
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -433,25 +435,72 @@ ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR99
 ok('18c: last_use is recent',                   ($out[0]['last_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
 
 /* ══════════════════════════════════════════════════════════════════════════
- * Test 19: firstUse at Unix epoch (0) + recent lastUse → REJECTED.
- *          Records with a null/uninitialised firstUse timestamp (epoch or
- *          pre-tsMin) must not slip through as '1970-01-01' entries.
+ * Test 19: firstUse = 0 (epoch / not recorded by VU) → ACCEPTED with
+ *          first_use falling back to lastUse (no spurious 1970-01-01).
+ *
+ * Some vehicle units leave vehicleFirstUse at zero.  The record is still
+ * valid – the driver DID use the vehicle – so we accept it and display the
+ * last-use date as both first_use and last_use rather than discarding it.
+ *
+ * 19b: A non-zero firstUse that is older than 20 years → still REJECTED
+ *      (distinguishes genuine corruption from the unset-epoch case).
  * ══════════════════════════════════════════════════════════════════════════ */
-echo "\nTest 19: Epoch firstUse (null-like record) rejected\n";
+echo "\nTest 19: Epoch firstUse (VU unset) – accepted, falls back to lastUse\n";
 
-$epochFirstUse = 0;                      // Unix epoch – uninitialized field
+$epochFirstUse = 0;                      // Unix epoch – VU didn't record firstUse
 $recentLastUse = time() - 30 * 86400;    // 30 days ago
 $rec19  = buildGen2Rec('AB12345', 'PL', 40, $epochFirstUse, $recentLastUse);
 $blob19 = buildTlvBlob($rec19, 1);
 $out19  = parseDriverCardVehicles($blob19);
-ok('19a: epoch firstUse record rejected', count($out19) === 0);
+ok('19a: epoch firstUse accepted (VU unset field)',  count($out19) === 1);
+ok('19a: first_use falls back to last_use',          ($out19[0]['first_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
+ok('19a: no spurious 1970-01-01 date',               ($out19[0]['first_use'] ?? '') !== '1970-01-01');
+ok('19a: plate is AB12345',                          ($out19[0]['reg'] ?? '') === 'AB12345');
 
-// Same with a very old but non-zero firstUse (> 20 years ago)
+// 19b: A non-zero firstUse older than 20 years → rejected (genuine corruption)
+echo "\nTest 19b: Ancient non-epoch firstUse rejected\n";
 $ancientFirstUse = strtotime('-25 years');
 $rec19b  = buildGen2Rec('CD67890', 'PL', 40, $ancientFirstUse, $recentLastUse);
 $blob19b = buildTlvBlob($rec19b, 1);
 $out19b  = parseDriverCardVehicles($blob19b);
-ok('19b: >20-year-old firstUse record rejected', count($out19b) === 0);
+ok('19b: >20-year-old non-epoch firstUse rejected',  count($out19b) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 20: Realistic multi-vehicle card where most records have firstUse=0.
+ *          Root-cause regression: the epoch-firstUse guard must NOT silently
+ *          drop all records that the VU left with an unset vehicleFirstUse.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 20: Multi-vehicle card with epoch firstUse on most records\n";
+
+// Build 10 Gen-2 records; only PY 90501 has a proper firstUse,
+// all others have firstUse = 0 (VU didn't record it)
+$pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t20recs = '';
+$t20veh = [
+    ['PO 12345', 0,       mktime(23,59,59,  1, 15, 2024)],
+    ['WA 67890', 0,       mktime(23,59,59,  3, 21, 2024)],
+    ['GD 11111', 0,       mktime(23,59,59,  6,  5, 2024)],
+    ['KR 22222', 0,       mktime(23,59,59,  9, 10, 2024)],
+    ['WR 33333', 0,       mktime(23,59,59, 11, 25, 2024)],
+    ['LU 44444', 0,       mktime(23,59,59,  2, 14, 2025)],
+    ['RZ 55555', 0,       mktime(23,59,59,  5, 30, 2025)],
+    ['BY 66666', 0,       mktime(23,59,59,  8, 20, 2025)],
+    ['PY 90501', $pyFirst, mktime(23,59,59, 11, 19, 2025)],
+    ['SZ 77777', 0,       mktime(23,59,59,  2, 26, 2026)],
+];
+foreach ($t20veh as [$treg, $tfu, $tlu]) {
+    $t20recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+$t20blob = buildTlvBlob($t20recs, count($t20veh));
+$out20   = parseDriverCardVehicles($t20blob);
+
+ok('20a: all 10 vehicles found',         count($out20) === 10);
+ok('20b: PY 90501 present',              in_array('PY 90501', array_column($out20, 'reg')));
+ok('20c: SZ 77777 present (Feb 2026)',   in_array('SZ 77777', array_column($out20, 'reg')));
+ok('20d: no 1970-01-01 first_use dates', !in_array('1970-01-01', array_column($out20, 'first_use')));
+// Records with epoch firstUse should have first_use == last_use
+$szRec = current(array_filter($out20, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('20e: SZ 77777 first_use = last_use (epoch fallback)', $szRec && $szRec['first_use'] === $szRec['last_use']);
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";

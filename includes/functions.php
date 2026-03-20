@@ -1160,7 +1160,7 @@ function parseDriverCardVehicles(string $data): array
      *   +20 vehicleLastUse   (TimeReal 4 bytes)
      *
      * Returns validated records array (empty = block is not vehicle data). */
-    $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
+    $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32, bool $allowEpochFirstUse = false) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
         $parsed = [];
         $isGen1  = ($recSize === 29);
         $isAlt31 = ($recSize === 31);
@@ -1213,13 +1213,26 @@ function parseDriverCardVehicles(string $data): array
 
             $pos += $recSize;
 
-            /* Accept the record if both timestamps are within the plausible range.
-             * Both firstUse and lastUse must be reasonable Unix timestamps. */
-            if ($lastUse  < $tsMin)    continue;  // implausibly old last-use timestamp
-            if ($lastUse  > $tsMax)    continue;  // implausible future timestamp
-            if ($firstUse < $tsMin)    continue;  // null / epoch / implausibly old first-use
-            if ($firstUse > $tsMax)    continue;  // implausible future timestamp
-            if ($lastUse  < $firstUse) continue;  // invalid: last before first
+            /* Accept the record if timestamps are within a plausible range.
+             *
+             * lastUse must always be a valid timestamp (rejects empty slots and
+             * extremely old records).
+             *
+             * firstUse = 0 (epoch / not recorded by VU) is conditionally allowed:
+             * some vehicle units do not write vehicleFirstUse and leave it at zero.
+             * This is only accepted when $allowEpochFirstUse is true (Phase-1 TLV
+             * scan) because the TLV structural context makes false-positives
+             * unlikely.  Phase-2 (blind byte scan) keeps strict firstUse validation
+             * to avoid false positives from null-padded regions of the file.
+             *
+             * A non-zero firstUse that is still older than tsMin (> 20 years) is
+             * rejected as it indicates corrupted or garbage data. */
+            if ($lastUse  < $tsMin)                                         continue;  // empty slot / implausibly old last-use
+            if ($lastUse  > $tsMax)                                         continue;  // implausible future timestamp
+            if ($firstUse === 0 && !$allowEpochFirstUse)                    continue;  // epoch not allowed in blind scan
+            if ($firstUse > 0 && $firstUse < $tsMin)                        continue;  // ancient non-epoch first-use
+            if ($firstUse > $tsMax)                                         continue;  // implausible future timestamp
+            if ($firstUse > 0 && $lastUse < $firstUse)                      continue;  // invalid: last before first
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;
@@ -1252,10 +1265,14 @@ function parseDriverCardVehicles(string $data): array
                 $nation = $nationCodes[$nationNum] ?? '';
             }
 
+            /* When the VU left firstUse at zero (epoch), use lastUse as the
+             * display date so the output never shows '1970-01-01'. */
+            $displayFirstUse = ($firstUse > 0) ? $firstUse : $lastUse;
+
             $parsed[] = [
                 'reg'        => $reg,
                 'nation'     => $nation,
-                'first_use'  => gmdate('Y-m-d', $firstUse),
+                'first_use'  => gmdate('Y-m-d', $displayFirstUse),
                 'last_use'   => gmdate('Y-m-d', $lastUse),
                 'odo_begin'  => $odoB,
                 'odo_end'    => $odoE,
@@ -1302,8 +1319,10 @@ function parseDriverCardVehicles(string $data): array
                 if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
 
                 /* Parse ALL slots – timestamp validation discards empty/null entries.
-                 * This finds the newest entries even when the circular buffer has wrapped. */
-                $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize);
+                 * This finds the newest entries even when the circular buffer has wrapped.
+                 * Pass allowEpochFirstUse=true: within a TLV block the structural context
+                 * is reliable, so VU-unset firstUse=0 records are accepted. */
+                $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize, true);
 
                 if (!empty($parsed)) {
                     foreach ($parsed as $r) {
@@ -1318,12 +1337,13 @@ function parseDriverCardVehicles(string $data): array
             }
 
             /* Fallback: some manufacturers omit or garble the standard header and store
-             * records directly at the start of the TLV value.  Try all sizes. */
+             * records directly at the start of the TLV value.  Try all sizes.
+             * Within the TLV block, pass allowEpochFirstUse=true. */
             if (!$foundRecs) {
                 foreach ([32, 31, 29, 24] as $recSize) {
                     $totalNoHdr = (int)($bl / $recSize);
                     if ($totalNoHdr < 2) continue;
-                    $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize);
+                    $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true);
                     if (count($parsed) >= 2) {
                         foreach ($parsed as $r) {
                             $key = $r['reg'] . '|' . $r['first_use'];
