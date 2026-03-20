@@ -1283,48 +1283,71 @@ function parseDriverCardVehicles(string $data): array
     };
 
     /* ── Phase 1: Structured TLV scan ───────────────────────────────────────── */
-    /* Known TLV tag byte-pairs for EF_CardVehiclesUsed (Gen 1: 0x0504, Gen 1 variant: 0x0528,
-     * compact 24-byte format: 0x050b) */
-    $tryTags = [[0x05, 0x04], [0x05, 0x28], [0x05, 0x0b]];
-
+    /* Scan for any TLV-like block whose first tag byte is 0x05.  This covers all
+     * known EF_CardVehiclesUsed tags (Gen 1: 0x0504, Gen 1 variant: 0x0528,
+     * compact 24-byte: 0x050b) AND manufacturer-specific variants (e.g. 0x050F,
+     * 0x0508, 0x050A …) that the old hard-coded tag list missed entirely.
+     *
+     * EU tachograph application files use File IDs in the range 0x0500–0x05FF,
+     * so requiring 0x05 as the first byte is a tight structural guard without
+     * being unnecessarily restrictive. */
     $phase1Results = [];
 
-    foreach ($tryTags as [$t1, $t2]) {
-        for ($i = 0; $i < $len - 36; $i++) {
-            if (ord($data[$i]) !== $t1 || ord($data[$i + 1]) !== $t2) continue;
+    for ($i = 0; $i < $len - 36; $i++) {
+        if (ord($data[$i]) !== 0x05) continue;
 
-            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            /* Minimum: 4-byte header + at least one compact-24 record = 28 */
-            if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) continue;
+        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        /* Minimum: 4-byte header + at least one compact-24 record = 28 */
+        if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) continue;
 
-            $base    = $i + 4;
-            /* EF_CardVehiclesUsed header layout (4 bytes):
-             *   +0 +1  vehiclePointerNewestRecord  (index of newest slot, 0-based)
-             *   +2 +3  noOfVehicleUsed             (count of valid entries)
-             * Records start at $base + 4.
-             *
-             * IMPORTANT: We scan ALL slots in the buffer (totalRecs), not just
-             * noOfVehicleUsed slots from slot 0.  This correctly handles wrapped
-             * circular buffers where newer entries are at higher slot indices than
-             * the pointer value, which the old code missed entirely. */
-            $vPtr    = (ord($data[$base])     << 8) | ord($data[$base + 1]);
-            $noOfVeh = (ord($data[$base + 2]) << 8) | ord($data[$base + 3]);
+        $base    = $i + 4;
+        /* EF_CardVehiclesUsed header layout (4 bytes):
+         *   +0 +1  vehiclePointerNewestRecord  (index of newest slot, 0-based)
+         *   +2 +3  noOfVehicleUsed             (count of valid entries)
+         * Records start at $base + 4.
+         *
+         * IMPORTANT: We scan ALL slots in the buffer (totalRecs), not just
+         * noOfVehicleUsed slots from slot 0.  This correctly handles wrapped
+         * circular buffers where newer entries are at higher slot indices than
+         * the pointer value, which the old code missed entirely. */
+        $vPtr    = (ord($data[$base])     << 8) | ord($data[$base + 1]);
+        $noOfVeh = (ord($data[$base + 2]) << 8) | ord($data[$base + 3]);
 
-            /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
-            $foundRecs = false;
-            foreach ([32, 29] as $recSize) {
-                $totalRecs = (int)(($bl - 4) / $recSize);
-                if ($totalRecs < 1) continue;
-                /* Sanity: pointer and count should be within buffer bounds */
-                if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
+        /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
+        $foundRecs = false;
+        foreach ([32, 29] as $recSize) {
+            $totalRecs = (int)(($bl - 4) / $recSize);
+            if ($totalRecs < 1) continue;
+            /* Sanity: pointer and count should be within buffer bounds */
+            if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
 
-                /* Parse ALL slots – timestamp validation discards empty/null entries.
-                 * This finds the newest entries even when the circular buffer has wrapped.
-                 * Pass allowEpochFirstUse=true: within a TLV block the structural context
-                 * is reliable, so VU-unset firstUse=0 records are accepted. */
-                $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize, true);
+            /* Parse ALL slots – timestamp validation discards empty/null entries.
+             * This finds the newest entries even when the circular buffer has wrapped.
+             * Pass allowEpochFirstUse=true: within a TLV block the structural context
+             * is reliable, so VU-unset firstUse=0 records are accepted. */
+            $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize, true);
 
-                if (!empty($parsed)) {
+            if (!empty($parsed)) {
+                foreach ($parsed as $r) {
+                    $key = $r['reg'] . '|' . $r['first_use'];
+                    if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
+                        $phase1Results[$key] = $r;
+                    }
+                }
+                $foundRecs = true;
+                break; /* found valid records for this recSize; skip 29-byte for same tag */
+            }
+        }
+
+        /* Fallback: some manufacturers omit or garble the standard header and store
+         * records directly at the start of the TLV value.  Try all sizes.
+         * Within the TLV block, pass allowEpochFirstUse=true. */
+        if (!$foundRecs) {
+            foreach ([32, 31, 29, 24] as $recSize) {
+                $totalNoHdr = (int)($bl / $recSize);
+                if ($totalNoHdr < 2) continue;
+                $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true);
+                if (count($parsed) >= 2) {
                     foreach ($parsed as $r) {
                         $key = $r['reg'] . '|' . $r['first_use'];
                         if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
@@ -1332,29 +1355,15 @@ function parseDriverCardVehicles(string $data): array
                         }
                     }
                     $foundRecs = true;
-                    break; /* found valid records for this recSize; skip 29-byte for same tag */
+                    break;
                 }
             }
+        }
 
-            /* Fallback: some manufacturers omit or garble the standard header and store
-             * records directly at the start of the TLV value.  Try all sizes.
-             * Within the TLV block, pass allowEpochFirstUse=true. */
-            if (!$foundRecs) {
-                foreach ([32, 31, 29, 24] as $recSize) {
-                    $totalNoHdr = (int)($bl / $recSize);
-                    if ($totalNoHdr < 2) continue;
-                    $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true);
-                    if (count($parsed) >= 2) {
-                        foreach ($parsed as $r) {
-                            $key = $r['reg'] . '|' . $r['first_use'];
-                            if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
-                                $phase1Results[$key] = $r;
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
+        /* Advance past this TLV block to avoid re-scanning its content.
+         * The loop's own $i++ will land us at $i + 4 + $bl (first byte after block). */
+        if ($foundRecs) {
+            $i += 3 + $bl;
         }
     }
 
@@ -1364,37 +1373,71 @@ function parseDriverCardVehicles(string $data): array
         return $out;
     }
 
-    /* ── Phase 2: Whole-file fallback scan ───────────────────────────────────── */
-    /* Some manufacturers don't use standard TLV tags.  Scan the entire file for
-     * contiguous groups of valid vehicle records.  Try Gen-2 (32-byte) records
-     * first; if nothing found, try Gen-1 (29-byte), proprietary 31-byte, and
-     * compact 24-byte records.
-     * Require ≥ 2 consecutive valid records to reduce false positives while still
-     * finding drivers who have used only one or two vehicles.  The letter-in-
-     * registration validation already eliminates the bulk of random-data noise. */
+    /* ── Phase 2: Whole-file fallback scan (best-group) ─────────────────────── */
+    /* Some manufacturers export raw vehicle records without any TLV wrapper.
+     * Scan the entire file for contiguous groups of valid vehicle records and
+     * return the group with the highest score.
+     *
+     * Scoring: score = count² − epoch_count
+     *   where epoch_count = records with first_use == last_use (proxy for VU-unset
+     *   vehicleFirstUse = 0, which causes displayFirstUse to fall back to lastUse
+     *   and makes both date strings equal).
+     *
+     *   Primary factor (count²) selects the longest group: real vehicle buffers
+     *   always have more records than misaligned-read garbage groups.
+     *   Tie-breaker (−epoch_count) prefers groups with more distinct firstUse /
+     *   lastUse dates, which are a sign of real (non-epoch) usage periods.
+     *
+     * Why allowEpochFirstUse=true:
+     *   Some vehicle units leave vehicleFirstUse at zero.  If all records on the
+     *   card have epoch firstUse, a strict (no-epoch) scan would find nothing here.
+     *   The lastUse validity check and the letter+digit registration guard already
+     *   reject null-padded and random binary data.
+     *
+     * We try Gen-2 (32-byte), Gen-1 (29-byte), proprietary 31-byte, and compact
+     * 24-byte record sizes. */
     foreach ([32, 29, 31, 24] as $recSize) {
-        $result = [];
-        $seen   = [];
+        $bestScore = PHP_INT_MIN;
+        $bestRecs  = [];
+
         for ($i = 0; $i <= $len - 2 * $recSize; $i++) {
-            /* Require two consecutive valid records before committing */
-            $recs = $parseBlock($i, 2, $len, $recSize);
-            if (count($recs) < 2) continue;
+            /* Quick pre-check: require ≥ 2 consecutive valid records before
+             * paying the cost of a full 200-record scan. */
+            $peek = $parseBlock($i, 2, $len, $recSize, true);
+            if (count($peek) < 2) continue;
 
-            /* Extend as far as consecutive records remain valid */
-            $recs = $parseBlock($i, 200, $len, $recSize);
-            if (count($recs) < 2) continue;
+            /* Extend to the full group. */
+            $recs = $parseBlock($i, 200, $len, $recSize, true);
+            $cnt  = count($recs);
+            if ($cnt < 2) continue;
 
+            /* Epoch proxy: records where first_use === last_use are likely from
+             * VU-unset firstUse (displayFirstUse falls back to lastUse). */
+            $epochCount = 0;
             foreach ($recs as $r) {
-                $key = $r['reg'] . '_' . $r['first_use'];
-                if (isset($seen[$key])) continue;
-                $seen[$key] = true;
-                $result[]   = $r;
+                if ($r['first_use'] === $r['last_use']) {
+                    $epochCount++;
+                }
             }
-            /* Skip past this block */
-            $i += count($recs) * $recSize - 1;
+            $score = $cnt * $cnt - $epochCount;
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestRecs  = $recs;
+            }
+            /* No skip-forward: scan all positions so the real (longer / more
+             * non-epoch) group can beat a shorter garbage group found earlier. */
         }
 
-        if (!empty($result)) {
+        if (!empty($bestRecs)) {
+            $seen   = [];
+            $result = [];
+            foreach ($bestRecs as $r) {
+                $key = $r['reg'] . '_' . $r['first_use'];
+                if (!isset($seen[$key])) {
+                    $seen[$key] = true;
+                    $result[]   = $r;
+                }
+            }
             usort($result, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
             return $result;
         }

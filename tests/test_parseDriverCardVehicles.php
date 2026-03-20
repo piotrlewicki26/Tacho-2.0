@@ -21,6 +21,9 @@
  *  14. Two-record minimum in Phase-2 fallback (single record not returned)
  *  19. Epoch firstUse (VU unset) accepted, falls back to lastUse as display date
  *  20. Multi-vehicle card with epoch firstUse on most records – all found
+ *  21. Phase-1 extended scan: unknown 0x05xx TLV tag found; all epoch-firstUse
+ *      vehicles returned (regression for "only 1 vehicle" bug)
+ *  22. Phase-2b best-group: no TLV at all + all epoch firstUse – all vehicles found
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -501,6 +504,98 @@ ok('20d: no 1970-01-01 first_use dates', !in_array('1970-01-01', array_column($o
 // Records with epoch firstUse should have first_use == last_use
 $szRec = current(array_filter($out20, fn($r) => $r['reg'] === 'SZ 77777'));
 ok('20e: SZ 77777 first_use = last_use (epoch fallback)', $szRec && $szRec['first_use'] === $szRec['last_use']);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 21: Phase-1 extended scan – unknown TLV tag with epoch firstUse.
+ *
+ * This is the primary regression test for the "only one vehicle (PY 90501)
+ * with date November 19 2025 returned" bug.
+ *
+ * When a DDD file uses a non-standard TLV tag (not 0x0504/0x0528/0x050b),
+ * the old hard-coded tag list caused Phase 1 to miss the block, leaving
+ * Phase 2 (blind scan) to run with allowEpochFirstUse=false.  Phase 2 then
+ * rejected all 9 epoch-firstUse records and returned only PY 90501.
+ *
+ * After the fix, Phase 1 scans for ANY 0x05xx tag (first byte = 0x05), so
+ * it finds the block regardless of the second tag byte.  Because Phase 1
+ * passes allowEpochFirstUse=true, all 10 vehicles are correctly returned.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 21: Phase-1 extended scan – unknown TLV tag, epoch firstUse records\n";
+
+$t21pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t21veh = [
+    ['PO 12345', 0,            mktime(23, 59, 59,  1, 15, 2024)],
+    ['WA 67890', 0,            mktime(23, 59, 59,  3, 21, 2024)],
+    ['GD 11111', 0,            mktime(23, 59, 59,  6,  5, 2024)],
+    ['KR 22222', 0,            mktime(23, 59, 59,  9, 10, 2024)],
+    ['WR 33333', 0,            mktime(23, 59, 59, 11, 25, 2024)],
+    ['LU 44444', 0,            mktime(23, 59, 59,  2, 14, 2025)],
+    ['RZ 55555', 0,            mktime(23, 59, 59,  5, 30, 2025)],
+    ['BY 66666', 0,            mktime(23, 59, 59,  8, 20, 2025)],
+    ['PY 90501', $t21pyFirst,  mktime(23, 59, 59, 11, 19, 2025)],
+    ['SZ 77777', 0,            mktime(23, 59, 59,  2, 26, 2026)],
+];
+$t21recs = '';
+foreach ($t21veh as [$treg, $tfu, $tlu]) {
+    $t21recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+// Wrap in an UNKNOWN TLV tag (0x050F) so Phase 1 cannot find the block
+$t21hdr  = pack('n', 9) . pack('n', 10);       // vPtr=9, noOfVeh=10
+$t21val  = $t21hdr . $t21recs;
+$t21blob = "\x05\x0F" . pack('n', strlen($t21val)) . $t21val . str_repeat("\x00", 64);
+
+$out21 = parseDriverCardVehicles($t21blob);
+
+ok('21a: all 10 vehicles found via Phase-1 extended scan',  count($out21) === 10);
+ok('21b: PY 90501 present',                   in_array('PY 90501', array_column($out21, 'reg')));
+ok('21c: SZ 77777 (Feb 2026) present',        in_array('SZ 77777', array_column($out21, 'reg')));
+ok('21d: no 1970-01-01 dates',                !in_array('1970-01-01', array_column($out21, 'first_use')));
+$sz21 = current(array_filter($out21, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('21e: SZ 77777 first_use = last_use',      $sz21 && $sz21['first_use'] === $sz21['last_use']);
+ok('21f: PY 90501 first_use = 2025-11-19',    current(array_filter($out21, fn($r) => $r['reg'] === 'PY 90501'))['first_use'] ?? '' === '2025-11-19');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 22: Phase-2b best-group – no TLV structure at all, all epoch firstUse.
+ *
+ * When there is no TLV structure (Phase 1 finds nothing) AND all records have
+ * epoch firstUse (Phase 2a finds nothing because allowEpochFirstUse=false),
+ * Phase 2b runs with allowEpochFirstUse=true and picks the group with the
+ * MOST consecutive valid records.
+ *
+ * In this test, the real records (10 vehicles) are preceded by 100 zero bytes.
+ * Misaligned reads of the zero prefix produce no valid garbage (zeros fail
+ * the registration validation), so Phase 2b cleanly finds the real group.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 22: Phase-2b best-group – no TLV, all epoch firstUse\n";
+
+$t22pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t22veh = [
+    ['PO 12345', 0,            mktime(23, 59, 59,  1, 15, 2024)],
+    ['WA 67890', 0,            mktime(23, 59, 59,  3, 21, 2024)],
+    ['GD 11111', 0,            mktime(23, 59, 59,  6,  5, 2024)],
+    ['KR 22222', 0,            mktime(23, 59, 59,  9, 10, 2024)],
+    ['WR 33333', 0,            mktime(23, 59, 59, 11, 25, 2024)],
+    ['LU 44444', 0,            mktime(23, 59, 59,  2, 14, 2025)],
+    ['RZ 55555', 0,            mktime(23, 59, 59,  5, 30, 2025)],
+    ['BY 66666', 0,            mktime(23, 59, 59,  8, 20, 2025)],
+    ['PY 90501', $t22pyFirst,  mktime(23, 59, 59, 11, 19, 2025)],
+    ['SZ 77777', 0,            mktime(23, 59, 59,  2, 26, 2026)],
+];
+$t22recs = '';
+foreach ($t22veh as [$treg, $tfu, $tlu]) {
+    $t22recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+// Precede with 100 zero bytes and NO TLV tag so Phase 1 finds nothing
+$t22blob = str_repeat("\x00", 100) . $t22recs . str_repeat("\x00", 100);
+
+$out22 = parseDriverCardVehicles($t22blob);
+
+ok('22a: all 10 vehicles found via Phase-2b',  count($out22) === 10);
+ok('22b: PY 90501 present',                    in_array('PY 90501', array_column($out22, 'reg')));
+ok('22c: SZ 77777 (Feb 2026) present',         in_array('SZ 77777', array_column($out22, 'reg')));
+ok('22d: no 1970-01-01 dates',                 !in_array('1970-01-01', array_column($out22, 'first_use')));
+$sz22 = current(array_filter($out22, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('22e: SZ 77777 first_use = last_use',       $sz22 && $sz22['first_use'] === $sz22['last_use']);
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
