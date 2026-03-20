@@ -300,22 +300,28 @@ function dddParseDriverInfo(string $data): ?array
  *  - "AB 123CD"  – mixed-order alphanumeric suffix
  */
 function dddParseVehicleReg(string $data): ?string {
-    $len = strlen($data);
+    $len  = strlen($data);
+    $best = null;
+    $bestLen = 0;
     for ($i = 0; $i < $len - 14; $i++) {
-        /* Read up to 14 bytes (codePage(1) + regNumber(13)); strip null/FF padding */
+        /* Read up to 14 bytes (codePage(1) + regNumber(13)); strip null/FF padding.
+         * A 14-byte sliding window means that at some positions the leading bytes are
+         * non-content (codePage / padding), causing the visible registration to be
+         * truncated.  We therefore collect ALL valid matches and return the longest
+         * one (by number of non-space characters), which corresponds to the fully
+         * aligned read that captures the complete registration field. */
         $raw = dddReadStr($data, $i, 14);
         $s   = strtoupper(trim(preg_replace('/\s+/', ' ',
                preg_replace('/[^A-Z0-9 ]/', '', str_replace(["\x00", "\xFF"], ' ', $raw)))));
         if ($s === '') continue;
         /* Accept plates that:
          *  – contain only letters, digits and single spaces
-         *  – total visible length (no spaces) between 3 and 10 chars
+         *  – total visible length (no spaces) between 4 and 10 chars
          *  – start with 1–4 letters
          *  – contain at least one digit (avoids pure-word false positives)
-         *  – suffix is at least 3 characters (avoids partial boundary reads)
          *
          * Pattern A: 1–4 leading letters + optional space + 3–9 alphanumerics
-         *            covers "AB12345", "AB 12345", "B AB1234" (single-space suffix)
+         *            covers "AB12345", "AB 12345", "B AB1234"
          * Pattern B: 1–4 leading letters + space + 1–6 alnum + space + 1–6 alnum
          *            covers 3-token plates like "B AB 1234"
          */
@@ -325,10 +331,17 @@ function dddParseVehicleReg(string $data): ?string {
         if (!preg_match('/[0-9]/', $s))                continue;  /* must contain a digit */
         if (preg_match('/^[A-Z]{1,4}\s?[A-Z0-9]{3,9}$/', $s) ||
             preg_match('/^[A-Z]{1,4}\s[A-Z0-9]{1,6}\s[A-Z0-9]{1,6}$/', $s)) {
-            return $s;
+            /* Keep the longest valid match (most non-space characters) so that
+             * partial reads at misaligned window positions don't win over the
+             * full registration discovered at the correct aligned offset. */
+            $sLen = strlen($noSpc);
+            if ($sLen > $bestLen) {
+                $bestLen = $sLen;
+                $best    = $s;
+            }
         }
     }
-    return null;
+    return $best;
 }
 
 /**
@@ -1209,6 +1222,10 @@ function parseDriverCardVehicles(string $data): array
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;
+            /* Registration must contain at least one digit – all EU tachograph vehicle
+             * plates include numeric characters.  This rejects purely alphabetic
+             * strings that are artefacts of misaligned binary reads. */
+            if (!preg_match('/[0-9]/', $reg))              continue;
             if ($odoBeginOff >= 0 && ($odoB > 9_999_999 || $odoE > 9_999_999)) continue;
             /* Reject strings whose middle space-separated token is a lone letter –
              * e.g. "AIA M 3": valid plates never have an isolated single letter

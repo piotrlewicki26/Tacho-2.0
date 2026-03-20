@@ -328,8 +328,9 @@ function buildGen2RecRaw(
     return chr($nationNum) . $nationAlpha . $codePage . $regRaw13 . $ts1 . $ts2 . $ob . $oe;
 }
 
-// "WA" + 3 null bytes + "12345" + 5 null bytes = 13 bytes total
-$regRaw13 = "WA\x00\x00\x0012345\x00\x00\x00\x00\x00";
+// "WA" + 1 null byte + "12345" + 5 null bytes = 13 bytes total
+// (The null byte in the middle becomes a space after normalisation → "WA 12345")
+$regRaw13 = "WA\x0012345\x00\x00\x00\x00\x00";
 $rec  = buildGen2RecRaw($regRaw13, 'PL', 40, $firstUse2023, $lastUse2023);
 $blob = buildTlvBlob($rec, 1);
 $out  = parseDriverCardVehicles($blob);

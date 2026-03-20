@@ -247,9 +247,6 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
         if ($rawData === false) continue;
         $recs = parseDriverCardVehicles($rawData);
         foreach ($recs as $r) {
-            // Filter by selected date range (vehicle used within range)
-            if ($r['last_use']  < $dateFrom) continue;
-            if ($r['first_use'] > $dateTo)   continue;
             $vehicleRecords[] = array_merge($r, ['source_file' => $fRow['original_name']]);
         }
     }
