@@ -1283,38 +1283,54 @@ function parseDriverCardVehicles(string $data): array
     };
 
     /* ── Phase 1: Structured TLV scan ───────────────────────────────────────── */
-    /* Scan for any TLV-like block whose first tag byte is 0x05.  This covers all
-     * known EF_CardVehiclesUsed tags (Gen 1: 0x0504, Gen 1 variant: 0x0528,
-     * compact 24-byte: 0x050b) AND manufacturer-specific variants (e.g. 0x050F,
-     * 0x0508, 0x050A …) that the old hard-coded tag list missed entirely.
+    /* Two-pass scan for TLV blocks whose first tag byte is 0x05.
      *
-     * EU tachograph application files use File IDs in the range 0x0500–0x05FF,
-     * so requiring 0x05 as the first byte is a tight structural guard without
-     * being unnecessarily restrictive. */
-    $phase1Results = [];
+     * Pass A (known vehicle tags): checks only the canonical EF_CardVehiclesUsed
+     *   tag second-bytes (0x04 = 0x0504, 0x28 = 0x0528, 0x0b = 0x050b, plus
+     *   common manufacturer variants 0x08, 0x0a, 0x0f).  Results from all
+     *   matching blocks are merged into $phase1KnownResults.  If any records
+     *   are found here, they are returned immediately without looking at unknown
+     *   tags – this prevents garbage from unrelated EF files (e.g.
+     *   EF_CalibrationData whose binary content accidentally passes record
+     *   validation) from contaminating the vehicle list.
+     *
+     * Pass B (unknown tags): runs only when Pass A found nothing.  Scans every
+     *   0x05xx block that was NOT a known vehicle tag and keeps the single block
+     *   that yields the most valid records (best-block selection, no merging
+     *   across blocks).  This preserves support for proprietary manufacturer
+     *   tags not in the known list (regression test 21). */
+    static $knownVehTagByte2s = [0x04, 0x28, 0x0b, 0x08, 0x0a, 0x0f];
 
-    for ($i = 0; $i < $len - 36; $i++) {
-        if (ord($data[$i]) !== 0x05) continue;
+    $phase1KnownResults = [];   /* merged results from known-tag blocks          */
+    $phase1BestCount    = -1;   /* record count of the best unknown-tag block     */
+    $phase1BestRecs     = [];   /* records from that best unknown-tag block       */
 
+    /* Helper closure: attempt to parse a TLV block at position $i and update
+     * the appropriate accumulator.  Returns true if at least one record was found. */
+    $tryTlvBlock = function (int $i) use (
+        $data, $len, $parseBlock,
+        $knownVehTagByte2s,
+        &$phase1KnownResults,
+        &$phase1BestCount, &$phase1BestRecs
+    ): bool {
         $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
         /* Minimum: 4-byte header + at least one compact-24 record = 28 */
-        if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) continue;
+        if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) return false;
 
-        $base    = $i + 4;
+        $base      = $i + 4;
+        $isKnown   = in_array(ord($data[$i + 1]), $knownVehTagByte2s);
+
         /* EF_CardVehiclesUsed header layout (4 bytes):
          *   +0 +1  vehiclePointerNewestRecord  (index of newest slot, 0-based)
          *   +2 +3  noOfVehicleUsed             (count of valid entries)
-         * Records start at $base + 4.
-         *
-         * IMPORTANT: We scan ALL slots in the buffer (totalRecs), not just
-         * noOfVehicleUsed slots from slot 0.  This correctly handles wrapped
-         * circular buffers where newer entries are at higher slot indices than
-         * the pointer value, which the old code missed entirely. */
+         * Records start at $base + 4. */
         $vPtr    = (ord($data[$base])     << 8) | ord($data[$base + 1]);
         $noOfVeh = (ord($data[$base + 2]) << 8) | ord($data[$base + 3]);
 
-        /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
+        $parsed    = [];
         $foundRecs = false;
+
+        /* Try Gen-2 (32-byte records) first, then Gen-1 (29-byte records) */
         foreach ([32, 29] as $recSize) {
             $totalRecs = (int)(($bl - 4) / $recSize);
             if ($totalRecs < 1) continue;
@@ -1322,55 +1338,81 @@ function parseDriverCardVehicles(string $data): array
             if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
 
             /* Parse ALL slots – timestamp validation discards empty/null entries.
-             * This finds the newest entries even when the circular buffer has wrapped.
-             * Pass allowEpochFirstUse=true: within a TLV block the structural context
-             * is reliable, so VU-unset firstUse=0 records are accepted. */
+             * Pass allowEpochFirstUse=true: within a TLV block the structural
+             * context makes false-positives unlikely. */
             $parsed = $parseBlock($base + 4, $totalRecs, $i + 4 + $bl, $recSize, true);
 
             if (!empty($parsed)) {
-                foreach ($parsed as $r) {
-                    $key = $r['reg'] . '|' . $r['first_use'];
-                    if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
-                        $phase1Results[$key] = $r;
-                    }
-                }
                 $foundRecs = true;
-                break; /* found valid records for this recSize; skip 29-byte for same tag */
+                break;
             }
         }
 
-        /* Fallback: some manufacturers omit or garble the standard header and store
-         * records directly at the start of the TLV value.  Try all sizes.
-         * Within the TLV block, pass allowEpochFirstUse=true. */
+        /* Fallback: some manufacturers omit or garble the standard header and
+         * store records directly at the start of the TLV value. */
         if (!$foundRecs) {
             foreach ([32, 31, 29, 24] as $recSize) {
                 $totalNoHdr = (int)($bl / $recSize);
                 if ($totalNoHdr < 2) continue;
                 $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true);
                 if (count($parsed) >= 2) {
-                    foreach ($parsed as $r) {
-                        $key = $r['reg'] . '|' . $r['first_use'];
-                        if (!isset($phase1Results[$key]) || $r['distance'] > ($phase1Results[$key]['distance'] ?? 0)) {
-                            $phase1Results[$key] = $r;
-                        }
-                    }
                     $foundRecs = true;
                     break;
                 }
             }
         }
 
+        if (!$foundRecs || empty($parsed)) return false;
+
+        if ($isKnown) {
+            /* Known vehicle tag: merge into the known-results map */
+            foreach ($parsed as $r) {
+                $key = $r['reg'] . '|' . $r['first_use'];
+                if (!isset($phase1KnownResults[$key]) || $r['distance'] > ($phase1KnownResults[$key]['distance'] ?? 0)) {
+                    $phase1KnownResults[$key] = $r;
+                }
+            }
+        } else {
+            /* Unknown tag: keep only the single block with the most records */
+            if (count($parsed) > $phase1BestCount) {
+                $phase1BestCount = count($parsed);
+                $phase1BestRecs  = $parsed;
+            }
+        }
+
+        return true;
+    };
+
+    for ($i = 0; $i < $len - 36; $i++) {
+        if (ord($data[$i]) !== 0x05) continue;
+
+        $found = $tryTlvBlock($i);
+
         /* Advance past this TLV block to avoid re-scanning its content.
-         * The loop's own $i++ will land us at $i + 4 + $bl (first byte after block). */
-        if ($foundRecs) {
+         * The loop's own $i++ will land us at $i + 4 + $bl (first byte after). */
+        if ($found) {
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
             $i += 3 + $bl;
         }
     }
 
-    if (!empty($phase1Results)) {
-        $out = array_values($phase1Results);
-        usort($out, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-        return $out;
+    /* Return known-tag results first (most reliable); fall back to best unknown block */
+    foreach ([$phase1KnownResults ? $phase1KnownResults : [], $phase1BestRecs] as $candidates) {
+        if (!empty($candidates)) {
+            /* $candidates is either an associative map (known) or a plain array (unknown) */
+            $out = array_values($candidates);
+            /* Dedup by reg+first_use if it came from the plain-array best-block path */
+            $dedup = [];
+            foreach ($out as $r) {
+                $key = $r['reg'] . '|' . $r['first_use'];
+                if (!isset($dedup[$key]) || $r['distance'] > ($dedup[$key]['distance'] ?? 0)) {
+                    $dedup[$key] = $r;
+                }
+            }
+            $out = array_values($dedup);
+            usort($out, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+            return $out;
+        }
     }
 
     /* ── Phase 2: Whole-file fallback scan (best-group) ─────────────────────── */
@@ -1378,15 +1420,9 @@ function parseDriverCardVehicles(string $data): array
      * Scan the entire file for contiguous groups of valid vehicle records and
      * return the group with the highest score.
      *
-     * Scoring: score = count² − epoch_count
-     *   where epoch_count = records with first_use == last_use (proxy for VU-unset
-     *   vehicleFirstUse = 0, which causes displayFirstUse to fall back to lastUse
-     *   and makes both date strings equal).
-     *
-     *   Primary factor (count²) selects the longest group: real vehicle buffers
+     * Scoring: score = count²
+     *   The longest contiguous group of valid records wins.  Real vehicle buffers
      *   always have more records than misaligned-read garbage groups.
-     *   Tie-breaker (−epoch_count) prefers groups with more distinct firstUse /
-     *   lastUse dates, which are a sign of real (non-epoch) usage periods.
      *
      * Why allowEpochFirstUse=true:
      *   Some vehicle units leave vehicleFirstUse at zero.  If all records on the
@@ -1411,21 +1447,18 @@ function parseDriverCardVehicles(string $data): array
             $cnt  = count($recs);
             if ($cnt < 2) continue;
 
-            /* Epoch proxy: records where first_use === last_use are likely from
-             * VU-unset firstUse (displayFirstUse falls back to lastUse). */
-            $epochCount = 0;
-            foreach ($recs as $r) {
-                if ($r['first_use'] === $r['last_use']) {
-                    $epochCount++;
-                }
-            }
-            $score = $cnt * $cnt - $epochCount;
+            /* Score by group length only.  Do NOT subtract epoch records
+             * (first_use === last_use) – real vehicle cards where the VU never
+             * wrote vehicleFirstUse have ALL records in this state, and the old
+             * epoch penalty caused such real groups to lose to smaller garbage
+             * groups that accidentally had distinct first/last timestamps. */
+            $score = $cnt * $cnt;
             if ($score > $bestScore) {
                 $bestScore = $score;
                 $bestRecs  = $recs;
             }
-            /* No skip-forward: scan all positions so the real (longer / more
-             * non-epoch) group can beat a shorter garbage group found earlier. */
+            /* No skip-forward: scan all positions so the real (larger) group
+             * can beat a shorter garbage group found earlier. */
         }
 
         if (!empty($bestRecs)) {

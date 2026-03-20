@@ -597,6 +597,103 @@ ok('22d: no 1970-01-01 dates',                 !in_array('1970-01-01', array_col
 $sz22 = current(array_filter($out22, fn($r) => $r['reg'] === 'SZ 77777'));
 ok('22e: SZ 77777 first_use = last_use',       $sz22 && $sz22['first_use'] === $sz22['last_use']);
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 23: Phase-1 pollution guard – known vehicle tag (0x0504) results must
+ *          NOT be contaminated by garbage records from other 0x05xx TLV blocks.
+ *
+ * Root-cause regression: the old Phase-1 code merged records from ALL 0x05xx
+ * TLV blocks in the file.  Other EF files (calibration data, driver info, …)
+ * share the same 0x05 tag-byte prefix.  Binary data in those blocks can
+ * accidentally pass all record-level validation checks and appear in the
+ * vehicle list alongside the real records.
+ *
+ * The fix: Phase-1 now keeps a separate bucket for known vehicle tags
+ * (0x0504 etc.) and a "best block" bucket for unknown tags.  Known-tag results
+ * are returned first, ignoring any unknown-tag blocks.
+ *
+ * This test crafts a blob with:
+ *   1. A 0x0506 (unknown/non-vehicle) TLV block that accidentally contains
+ *      5 valid-looking vehicle records (garbage).
+ *   2. A 0x0504 (EF_CardVehiclesUsed) TLV block with the 2 real records
+ *      (GD789EF + PO321GH, epoch firstUse).
+ *
+ * Expected: only GD789EF and PO321GH are returned (2 records, not 7).
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 23: Phase-1 pollution guard – known tag not contaminated by garbage 0x05xx block\n";
+
+$t23lastGD = mktime(0, 0, 0,  5, 24, 2025);  // 2025-05-24
+$t23lastPO = mktime(0, 0, 0,  9, 21, 2025);  // 2025-09-21
+
+// Real records: epoch firstUse (0), recent lastUse
+$t23recGD = buildGen2Rec('GD789EF', 'PL', 40, 0, $t23lastGD);
+$t23recPO = buildGen2Rec('PO321GH', 'PL', 40, 0, $t23lastPO);
+
+// 5 "garbage" records: valid-looking but from a different EF – use known-good
+// timestamps and realistic-looking plates that pass all validation checks
+$t23garbageTs = [
+    [mktime(0, 0, 0, 2, 10, 2024), mktime(0, 0, 0, 3, 15, 2024)],
+    [mktime(0, 0, 0, 4,  5, 2024), mktime(0, 0, 0, 5, 20, 2024)],
+    [mktime(0, 0, 0, 6, 12, 2024), mktime(0, 0, 0, 7, 30, 2024)],
+    [mktime(0, 0, 0, 8,  1, 2024), mktime(0, 0, 0, 9, 10, 2024)],
+    [mktime(0, 0, 0, 10, 5, 2024), mktime(0, 0, 0, 11, 20, 2024)],
+];
+$t23garbageRecs = '';
+foreach ($t23garbageTs as $idx => [$gfu, $glu]) {
+    $t23garbageRecs .= buildGen2Rec('WA' . (10000 + $idx * 1111) . 'X', 'PL', 40, $gfu, $glu);
+}
+
+// Build the garbage TLV block with tag 0x0506 (not a known vehicle tag)
+$t23garbageTlvContent = pack('n', 5) . pack('n', 5) . $t23garbageRecs;
+$t23garbageTlv = "\x05\x06" . pack('n', strlen($t23garbageTlvContent)) . $t23garbageTlvContent;
+
+// Build the real EF_CardVehiclesUsed TLV block with tag 0x0504
+$t23realTlv = buildTlvBlob($t23recGD . $t23recPO, 2, 0x04);
+
+// Combine: garbage block first, then the real block
+$t23blob = $t23garbageTlv . $t23realTlv;
+
+$out23 = parseDriverCardVehicles($t23blob);
+
+ok('23a: exactly 2 vehicles returned (not 7)',  count($out23) === 2);
+ok('23b: GD789EF present',                      in_array('GD789EF', array_column($out23, 'reg')));
+ok('23c: PO321GH present',                      in_array('PO321GH', array_column($out23, 'reg')));
+ok('23d: no garbage plates in result',          !array_filter($out23, fn($r) => str_starts_with($r['reg'], 'WA')));
+ok('23e: GD789EF first_use = last_use (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'GD789EF'))['first_use'] === gmdate('Y-m-d', $t23lastGD));
+ok('23f: PO321GH first_use = last_use (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'PO321GH'))['first_use'] === gmdate('Y-m-d', $t23lastPO));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 24: Phase-2 epoch-penalty regression – 2 vehicles with epoch firstUse,
+ *          no TLV; Phase-2 must return the real records, not a garbage group.
+ *
+ * Root-cause: the old Phase-2 scored groups as count² − epochCount.  With 2
+ * real epoch records the score was 4 − 2 = 2.  A garbage group with 2 records
+ * having distinct first/last timestamps scored 4 − 0 = 4 and won.
+ *
+ * Fix: remove epoch penalty; score = count² only.
+ *
+ * This test has ONLY the 2 real records (no competing group), so it simply
+ * verifies that 2 all-epoch records are found at all via Phase-2.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 24: Phase-2 epoch-penalty regression – 2 epoch vehicles found via Phase-2\n";
+
+$t24lastGD = mktime(0, 0, 0,  5, 24, 2025);  // 2025-05-24
+$t24lastPO = mktime(0, 0, 0,  9, 21, 2025);  // 2025-09-21
+
+$t24recGD = buildGen2Rec('GD789EF', 'PL', 40, 0, $t24lastGD);
+$t24recPO = buildGen2Rec('PO321GH', 'PL', 40, 0, $t24lastPO);
+
+// No TLV wrapper – Phase 1 finds nothing, Phase 2 must find these
+$t24blob = str_repeat("\x00", 100) . $t24recGD . $t24recPO . str_repeat("\x00", 100);
+
+$out24 = parseDriverCardVehicles($t24blob);
+
+ok('24a: 2 vehicles found via Phase-2',         count($out24) === 2);
+ok('24b: GD789EF present',                      in_array('GD789EF', array_column($out24, 'reg')));
+ok('24c: PO321GH present',                      in_array('PO321GH', array_column($out24, 'reg')));
+ok('24d: GD789EF first_use = 2025-05-24',       current(array_filter($out24, fn($r) => $r['reg'] === 'GD789EF'))['first_use'] === '2025-05-24');
+ok('24e: PO321GH first_use = 2025-09-21',       current(array_filter($out24, fn($r) => $r['reg'] === 'PO321GH'))['first_use'] === '2025-09-21');
+ok('24f: no 1970-01-01 dates',                  !in_array('1970-01-01', array_column($out24, 'first_use')));
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";
