@@ -80,10 +80,10 @@ function fmtNum(n,decimals=2){return Number(n).toLocaleString("pl-PL",{minimumFr
 function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 function diffDays(from,to){if(!from||!to)return 0;return Math.max(0,Math.round((new Date(to)-new Date(from))/86400000));}
 function toInputDate(d){if(!d)return"";const dd=new Date(d);return dd.getFullYear()+"-"+String(dd.getMonth()+1).padStart(2,"0")+"-"+String(dd.getDate()).padStart(2,"0");}
+function yearBackFrom(d){const r=new Date(d);r.setFullYear(d.getFullYear()-1);return r;}
 function defaultTripValues(){
   const today=new Date();
-  const yearBack=new Date(today);
-  yearBack.setFullYear(yearBack.getFullYear()-1);
+  const yearBack=yearBackFrom(today);
   return{
     nr_delegacji:`DEL/${today.getFullYear()}/001`,
     data_wyjazdu:toInputDate(yearBack),
@@ -142,11 +142,12 @@ function parseDDD(buffer){
   }
 
   // ── 2. Vehicle reg ──
+  const REG_MIN_LEN=6,REG_MAX_LEN=10,REG_SEARCH_RADIUS=96,REG_CHUNK_LEN=24;
   const normReg=s=>{
-    const raw=(s||"").toUpperCase().replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();
+    const raw=(s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim();
     if(!raw)return null;
     const compact=raw.replace(/\s+/g,"");
-    if(compact.length<6||compact.length>10||!/^[A-Z0-9]+$/.test(compact))return null;
+    if(compact.length<REG_MIN_LEN||compact.length>REG_MAX_LEN||!/^[A-Z0-9]+$/.test(compact))return null;
     const pm=compact.match(/^([A-Z]{2,3})([A-Z0-9]{3,7})$/);
     if(!pm)return null;
     const suffix=pm[2];
@@ -168,16 +169,16 @@ function parseDDD(buffer){
     return best;
   };
   const findRegNear=off=>{
-    const st=Math.max(0,off-96),en=Math.min(len-24,off+96);
+    const st=Math.max(0,off-REG_SEARCH_RADIUS),en=Math.min(len-REG_CHUNK_LEN,off+REG_SEARCH_RADIUS);
     for(let i=st;i<=en;i++){
-      const chunk=readStr(i,24).replace(/\0/g," ");
+      const chunk=readStr(i,REG_CHUNK_LEN).replace(/\0/g," ");
       const reg=pickRegFromChunk(chunk);
       if(reg)return reg;
     }
     return null;
   };
-  for(let i=0;i<len-24;i++){
-    const chunk=readStr(i,24).replace(/\0/g," ");
+  for(let i=0;i<len-REG_CHUNK_LEN;i++){
+    const chunk=readStr(i,REG_CHUNK_LEN).replace(/\0/g," ");
     const reg=pickRegFromChunk(chunk);
     if(reg){vehicle=reg;break;}
   }
@@ -263,7 +264,8 @@ function parseDDD(buffer){
   }
 
   if(!days.length)return null;
-  const topVehicle=Object.entries(vehicleHits).sort((a,b)=>b[1]-a[1])[0]?.[0]||vehicle||null;
+  const vehicleRank=Object.entries(vehicleHits).sort((a,b)=>b[1]-a[1]);
+  const topVehicle=(vehicleRank[0]&&vehicleRank[0][0])||vehicle||null;
   if(topVehicle)days.forEach(d=>{if(!d.vehicle)d.vehicle=topVehicle;});
   return{driver,days};
 }
@@ -305,8 +307,7 @@ function extractDelegationFromTacho(tachoData) {
   const imie = nameParts[0] || '';
   const nazwisko = nameParts.slice(1).join(' ') || '';
   const today = new Date();
-  const yearBack = new Date(today);
-  yearBack.setFullYear(yearBack.getFullYear() - 1);
+  const yearBack = yearBackFrom(today);
 
   const allCrossings = [];
   sortedDays.forEach(day => {
