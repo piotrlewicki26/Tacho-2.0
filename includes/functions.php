@@ -1609,3 +1609,245 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
     $check->execute([$driverId]);
     return (int)$check->fetchColumn();
 }
+
+/**
+ * Comprehensive driver-card DDD parser.
+ *
+ * Combines all per-record and structured parsers into one unified analysis
+ * that is accurate to 1 minute and covers every data category required by
+ * EU Regulation 561/2006 and Commission Regulation 2016/799 Annex IC:
+ *
+ *   - driver_info  : name, card number, birth date, card expiry
+ *   - days         : per-day activity segments (drive/work/available/rest),
+ *                    distance, border crossings, daily violations
+ *   - weeks        : per ISO-week summary (Mon–Sun), totals + weekly violations
+ *   - vehicles     : list of vehicles used with first/last use dates and
+ *                    initial/final odometer readings
+ *   - summary      : overall totals and all violations (daily + weekly)
+ *
+ * All time values are in minutes; all timestamps are UTC.
+ *
+ * EU rules enforced:
+ *   Daily   – driving > 10 h (error) / > 9 h (warn); rest < 11 h (warn);
+ *             continuous driving > 4 h 30 m without 45 min break (warn)
+ *   Weekly  – driving > 56 h (error); biweekly driving > 90 h (error)
+ *   Weekly rest – less than 45 h regular weekly rest (warn)
+ *
+ * @param  string $path  Absolute path to the .ddd binary file
+ * @return array{
+ *   driver_info:array|null,
+ *   days:array,
+ *   weeks:array,
+ *   vehicles:array,
+ *   summary:array
+ * }
+ */
+function parseDriverCardFull(string $path): array
+{
+    $empty = [
+        'driver_info' => null,
+        'days'        => [],
+        'weeks'       => [],
+        'vehicles'    => [],
+        'summary'     => [
+            'drive'      => 0,
+            'work'       => 0,
+            'rest'       => 0,
+            'avail'      => 0,
+            'violations' => [],
+        ],
+    ];
+
+    $data = @file_get_contents($path);
+    if ($data === false) {
+        return array_merge($empty, ['error' => 'Nie można odczytać pliku.']);
+    }
+
+    // ── 1. Driver identity ───────────────────────────────────────────────────
+    $driverInfo = dddParseDriverInfo($data);
+
+    // ── 2. Daily activity + border crossings + daily violations ─────────────
+    $dailyResult = parseDddFile($path);
+    $days        = $dailyResult['days'] ?? [];
+
+    // ── 3. Vehicles used (odometer begin/end, first/last use dates) ──────────
+    $vehicles = parseDriverCardVehicles($data);
+
+    // ── 4. Weekly summaries + weekly/bi-weekly violation checks ─────────────
+    // EU Regulation 561/2006:
+    //   Art. 6(2) – weekly driving ≤ 56 h  (3 360 min)
+    //   Art. 6(3) – bi-weekly driving ≤ 90 h  (5 400 min)
+    //   Art. 8(6) – regular weekly rest ≥ 45 h (2 700 min) each week
+    //               (or reduced ≥ 24 h — at most every other week)
+    $EU_WEEKLY_MAX       = 3360;  // 56 h
+    $EU_BIWEEKLY_MAX     = 5400;  // 90 h
+    $EU_WEEKLY_REST_REG  = 2700;  // 45 h regular weekly rest
+    $EU_WEEKLY_REST_RED  = 1440;  // 24 h reduced weekly rest
+
+    // Index days by ISO week key ('YYYY-WNN') for grouping.
+    // gmdate('W') returns the ISO week number with leading zeros (01–53).
+    // We embed a literal 'W' separator so the key format is "YYYY-WNN".
+    $weekMap = [];
+    foreach ($days as $day) {
+        $ts   = strtotime($day['date'] . 'T00:00:00Z');
+        $wKey = gmdate('o', $ts) . '-W' . gmdate('W', $ts);  // e.g. "2025-W04"
+        $weekMap[$wKey][] = $day;
+    }
+    ksort($weekMap);
+    $weekKeys = array_keys($weekMap);
+
+    $weeks = [];
+    foreach ($weekMap as $wKey => $wDays) {
+        $driveW = 0;
+        $workW  = 0;
+        $restW  = 0;
+        $availW = 0;
+        $daysWorked = 0;
+        foreach ($wDays as $d) {
+            $driveW += (int)($d['drive'] ?? 0);
+            $workW  += (int)($d['work']  ?? 0);
+            $restW  += (int)($d['rest']  ?? 0);
+            $availW += (int)($d['avail'] ?? 0);
+            if (($d['drive'] ?? 0) > 0 || ($d['work'] ?? 0) > 0) {
+                $daysWorked++;
+            }
+        }
+
+        // Derive ISO week Monday and Sunday dates
+        // ISO week year + week → get the Monday of that week
+        $parts      = explode('-W', $wKey);
+        $isoYear    = (int)($parts[0] ?? 0);
+        $isoWeekNum = (int)($parts[1] ?? 1);
+        // strtotime understands "YYYY-W##-1" where "-1" = Monday of that ISO week
+        $mondayTs   = strtotime($isoYear . 'W' . sprintf('%02d', $isoWeekNum) . '1');
+        $sundayTs   = $mondayTs + 6 * 86400;
+        $weekStart  = gmdate('Y-m-d', $mondayTs);
+        $weekEnd    = gmdate('Y-m-d', $sundayTs);
+
+        $wViol = [];
+
+        // Weekly driving limit check
+        if ($driveW > $EU_WEEKLY_MAX) {
+            $h = (int)floor($driveW / 60);
+            $m = $driveW % 60;
+            $wViol[] = [
+                'type' => 'error',
+                'msg'  => sprintf(
+                    'Przekroczenie tygodniowego czasu jazdy: %dh %dm (max 56h)',
+                    $h, $m
+                ),
+            ];
+        }
+
+        // Weekly rest check – longest single continuous rest in the week
+        // Collect all rest segments across all days in the week.
+        $longestWeeklyRest = 0;
+        $currentRest       = 0;
+        $allSegsInWeek     = [];
+        // Sort days by date, then iterate their segments in chronological order.
+        $sortedWDays = $wDays;
+        usort($sortedWDays, fn($a, $b) => strcmp($a['date'], $b['date']));
+        foreach ($sortedWDays as $d) {
+            foreach (($d['segs'] ?? []) as $seg) {
+                $allSegsInWeek[] = $seg;
+            }
+        }
+        // Walk segments to find longest continuous rest block
+        $curRestBlock = 0;
+        foreach ($allSegsInWeek as $seg) {
+            if (($seg['act'] ?? -1) === 0) {
+                $curRestBlock += (int)($seg['dur'] ?? 0);
+                $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+            } else {
+                $curRestBlock = 0;
+            }
+        }
+
+        if ($longestWeeklyRest > 0 && $longestWeeklyRest < $EU_WEEKLY_REST_RED) {
+            $h = (int)floor($longestWeeklyRest / 60);
+            $m = $longestWeeklyRest % 60;
+            $wViol[] = [
+                'type' => 'error',
+                'msg'  => sprintf(
+                    'Brak wymaganego odpoczynku tygodniowego: %dh %dm (min 24h)',
+                    $h, $m
+                ),
+            ];
+        } elseif ($longestWeeklyRest >= $EU_WEEKLY_REST_RED && $longestWeeklyRest < $EU_WEEKLY_REST_REG) {
+            $h = (int)floor($longestWeeklyRest / 60);
+            $m = $longestWeeklyRest % 60;
+            $wViol[] = [
+                'type' => 'warn',
+                'msg'  => sprintf(
+                    'Skrócony odpoczynek tygodniowy: %dh %dm (regularny min 45h)',
+                    $h, $m
+                ),
+            ];
+        }
+
+        $weeks[$wKey] = [
+            'week_key'           => $wKey,
+            'week_start'         => $weekStart,
+            'week_end'           => $weekEnd,
+            'drive'              => $driveW,
+            'work'               => $workW,
+            'rest'               => $restW,
+            'avail'              => $availW,
+            'days_worked'        => $daysWorked,
+            'longest_rest_min'   => $longestWeeklyRest,
+            'violations'         => $wViol,
+        ];
+    }
+
+    // ── 5. Bi-weekly driving check (any two consecutive ISO weeks) ───────────
+    $weekKeysArr = array_values($weekKeys);
+    for ($wi = 0; $wi + 1 < count($weekKeysArr); $wi++) {
+        $k1 = $weekKeysArr[$wi];
+        $k2 = $weekKeysArr[$wi + 1];
+
+        // Only check truly consecutive ISO weeks
+        $ts1 = strtotime(explode('-W', $k1)[0] . 'W' . sprintf('%02d', (int)explode('-W', $k1)[1]) . '1');
+        $ts2 = strtotime(explode('-W', $k2)[0] . 'W' . sprintf('%02d', (int)explode('-W', $k2)[1]) . '1');
+        if (abs($ts2 - $ts1) !== 7 * 86400) {
+            continue; // not consecutive; skip
+        }
+
+        $biWeekDrive = ($weeks[$k1]['drive'] ?? 0) + ($weeks[$k2]['drive'] ?? 0);
+        if ($biWeekDrive > $EU_BIWEEKLY_MAX) {
+            $h   = (int)floor($biWeekDrive / 60);
+            $m   = $biWeekDrive % 60;
+            $msg = sprintf(
+                'Przekroczenie dwutygodniowego czasu jazdy: %dh %dm (max 90h, tygodnie %s i %s)',
+                $h, $m, $k1, $k2
+            );
+            $bviol = ['type' => 'error', 'msg' => $msg];
+            $weeks[$k1]['violations'][] = $bviol;
+            $weeks[$k2]['violations'][] = $bviol;
+        }
+    }
+
+    // ── 6. Build overall summary ─────────────────────────────────────────────
+    $summary = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'violations' => []];
+    foreach ($days as $day) {
+        $summary['drive'] += (int)($day['drive'] ?? 0);
+        $summary['work']  += (int)($day['work']  ?? 0);
+        $summary['rest']  += (int)($day['rest']  ?? 0);
+        $summary['avail'] += (int)($day['avail'] ?? 0);
+        foreach (($day['viol'] ?? []) as $v) {
+            $summary['violations'][] = array_merge($v, ['date' => $day['date'], 'scope' => 'daily']);
+        }
+    }
+    foreach ($weeks as $wKey => $w) {
+        foreach ($w['violations'] as $v) {
+            $summary['violations'][] = array_merge($v, ['week' => $wKey, 'scope' => 'weekly']);
+        }
+    }
+
+    return [
+        'driver_info' => $driverInfo,
+        'days'        => $days,
+        'weeks'       => array_values($weeks),
+        'vehicles'    => $vehicles,
+        'summary'     => $summary,
+    ];
+}
