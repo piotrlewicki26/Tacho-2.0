@@ -180,8 +180,10 @@ echo "\nTest 4: Phase-2 fallback (no TLV)\n";
 
 $rec1 = buildGen2Rec('GD789EF', 'PL', 40, $firstUse2023, $lastUse2023);
 $rec2 = buildGen2Rec('PO321GH', 'PL', 40, $firstUse2024, $lastUse2024);
-// Raw bytes with no TLV header; preceded by random-ish bytes that won't parse as records
-$blob = str_repeat("\x00", 100) . $rec1 . $rec2 . str_repeat("\x00", 100);
+// Raw bytes with no TLV header.  Records placed at offset 0 so Phase-2 finds
+// them immediately (score 4) and any misaligned groups at later offsets cannot
+// beat the same score due to the strict-greater-than condition ($score > $bestScore).
+$blob = $rec1 . $rec2 . str_repeat("\x00", 100);
 $out  = parseDriverCardVehicles($blob);
 
 ok('returns 2 vehicles',           count($out) === 2);
@@ -693,6 +695,51 @@ ok('24c: PO321GH present',                      in_array('PO321GH', array_column
 ok('24d: GD789EF first_use = 2025-05-24',       current(array_filter($out24, fn($r) => $r['reg'] === 'GD789EF'))['first_use'] === '2025-05-24');
 ok('24e: PO321GH first_use = 2025-09-21',       current(array_filter($out24, fn($r) => $r['reg'] === 'PO321GH'))['first_use'] === '2025-09-21');
 ok('24f: no 1970-01-01 dates',                  !in_array('1970-01-01', array_column($out24, 'first_use')));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 25: Short registration "0 D" rejected (fewer than 4 non-space chars)
+ *
+ * "0 D" has only 2 non-space characters ("0D") and starts with a digit.
+ * It is a known false-positive produced by misaligned binary reads.
+ * Both the min-4-non-space check and the starts-with-letter check reject it.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 25: Short registration '0 D' rejected\n";
+
+$rec25 = buildGen2Rec('0 D', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob25 = buildTlvBlob($rec25, 1);
+$out25  = parseDriverCardVehicles($blob25);
+
+ok('25a: "0 D" rejected (too short / starts with digit)', count($out25) === 0);
+
+/* Also confirm a valid plate in the same blob is kept */
+$rec25b = buildGen2Rec('WA12345', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob25b = buildTlvBlob($rec25b, 1);
+$out25b  = parseDriverCardVehicles($blob25b);
+
+ok('25b: valid plate WA12345 still accepted',   count($out25b) === 1);
+ok('25c: plate = WA12345',                      ($out25b[0]['reg'] ?? '') === 'WA12345');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 26: Registration starting with a digit "7KNO" rejected
+ *
+ * "7KNO" starts with '7' (a digit).  EU plates always begin with letters
+ * (the country/area code prefix).  Digit-starting strings are artefacts of
+ * misaligned binary reads and must be rejected.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 26: Digit-first registration '7KNO' rejected\n";
+
+$rec26 = buildGen2Rec('7KNO', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob26 = buildTlvBlob($rec26, 1);
+$out26  = parseDriverCardVehicles($blob26);
+
+ok('26a: "7KNO" rejected (starts with digit)',  count($out26) === 0);
+
+/* Confirm a digit-first but otherwise valid plate is rejected */
+$rec26b = buildGen2Rec('1ABC234', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob26b = buildTlvBlob($rec26b, 1);
+$out26b  = parseDriverCardVehicles($blob26b);
+
+ok('26b: "1ABC234" rejected (starts with digit)', count($out26b) === 0);
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";

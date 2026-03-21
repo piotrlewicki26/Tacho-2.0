@@ -1236,9 +1236,14 @@ function parseDriverCardVehicles(string $data): array
             if ($firstUse > 0 && $firstUse < $tsMin)                        continue;  // ancient non-epoch first-use
             if ($firstUse > $tsMax)                                         continue;  // implausible future timestamp
             if ($firstUse > 0 && $lastUse < $firstUse)                      continue;  // invalid: last before first
-            if (strlen($reg) < 2)                          continue;
-            /* Registration must contain at least one letter (rules out pure-digit noise) */
-            if (!preg_match('/[A-Z]/', $reg))              continue;
+            /* Registration must have at least 4 non-space characters.
+             * Single or double-char strings like "0 D" ("0D") are artefacts
+             * of misaligned binary reads, not real plate numbers. */
+            if (strlen(str_replace(' ', '', $reg)) < 4)    continue;
+            /* Registration must start with a letter – EU plates always begin
+             * with the country/area code prefix (letters).  Strings like "7KNO"
+             * that start with a digit are false-positive binary artefacts. */
+            if (!preg_match('/^[A-Z]/', $reg))             continue;
             /* Registration must contain at least one digit – all EU tachograph vehicle
              * plates include numeric characters.  This rejects purely alphabetic
              * strings that are artefacts of misaligned binary reads. */
