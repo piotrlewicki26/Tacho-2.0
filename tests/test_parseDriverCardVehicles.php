@@ -1,6 +1,6 @@
 <?php
 /**
- * Standalone test for parseDriverCardVehicles().
+ * Standalone test for parseDriverCardVehicles() and mergeVehicleRecords().
  *
  * Run:  php tests/test_parseDriverCardVehicles.php
  *
@@ -24,6 +24,9 @@
  *  21. Phase-1 extended scan: unknown 0x05xx TLV tag found; all epoch-firstUse
  *      vehicles returned (regression for "only 1 vehicle" bug)
  *  22. Phase-2b best-group: no TLV at all + all epoch firstUse – all vehicles found
+ *  27. mergeVehicleRecords: newer last_use wins over higher distance
+ *  28. mergeVehicleRecords: odo_begin rescued from older record, distance recomputed
+ *  29. mergeVehicleRecords: same last_use tiebreak by distance; sorted by first_use
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -740,6 +743,107 @@ $blob26b = buildTlvBlob($rec26b, 1);
 $out26b  = parseDriverCardVehicles($blob26b);
 
 ok('26b: "1ABC234" rejected (starts with digit)', count($out26b) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests 27–29: mergeVehicleRecords() – multi-file deduplication
+ *
+ * Validates the cross-file merge helper used by drivers.php and
+ * driver_calendar/index.php when the same driver has multiple DDD files.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Build a minimal vehicle record array (the shape returned by
+ * parseDriverCardVehicles, possibly augmented with 'source_file').
+ */
+function vRec(
+    string $reg,
+    string $firstUse,
+    string $lastUse,
+    int    $odoBegin  = 0,
+    int    $odoEnd    = 0,
+    string $nation    = 'PL',
+    string $sourceFile = ''
+): array {
+    $distance = ($odoEnd > $odoBegin && $odoBegin > 0) ? $odoEnd - $odoBegin : 0;
+    $r = compact('reg', 'nation', 'firstUse', 'lastUse', 'odoBegin', 'odoEnd', 'distance');
+    // Use snake_case keys to match parseDriverCardVehicles output
+    $r = [
+        'reg'        => $reg,
+        'nation'     => $nation,
+        'first_use'  => $firstUse,
+        'last_use'   => $lastUse,
+        'odo_begin'  => $odoBegin,
+        'odo_end'    => $odoEnd,
+        'distance'   => ($odoEnd > $odoBegin && $odoBegin > 0) ? $odoEnd - $odoBegin : 0,
+    ];
+    if ($sourceFile !== '') {
+        $r['source_file'] = $sourceFile;
+    }
+    return $r;
+}
+
+/* ── Test 27: newer last_use wins over higher distance ────────────────── */
+echo "\nTest 27: mergeVehicleRecords – newer last_use wins\n";
+
+$t27Records = [
+    // File A: older download – has real odo values → higher distance
+    vRec('WA12345', '2023-01-01', '2023-01-10', 100000, 101500, 'PL', 'file_a.ddd'),
+    // File B: newer download – driver used vehicle more recently but odo=0
+    vRec('WA12345', '2023-01-01', '2023-03-20', 0, 0, 'PL', 'file_b.ddd'),
+    // Different vehicle – both should appear
+    vRec('GD999XY', '2023-02-01', '2023-02-28', 50000, 51000, 'PL', 'file_a.ddd'),
+];
+
+$t27 = mergeVehicleRecords($t27Records);
+
+ok('27a: 2 unique vehicles after merge', count($t27) === 2);
+ok('27b: WA12345 last_use is 2023-03-20 (newer wins)',
+    ($t27[0]['reg'] === 'WA12345' || $t27[1]['reg'] === 'WA12345') &&
+    array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'))[0]['last_use'] === '2023-03-20'
+);
+ok('27c: WA12345 source_file is file_b (newer download)',
+    array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'))[0]['source_file'] === 'file_b.ddd'
+);
+ok('27d: GD999XY still present', count(array_filter($t27, fn($r) => $r['reg'] === 'GD999XY')) === 1);
+
+/* ── Test 28: odo_begin rescued from older record ─────────────────────── */
+echo "\nTest 28: mergeVehicleRecords – odo_begin preserved from older record\n";
+
+$t28Records = [
+    // File B (newer): latest last_use, no odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 0, 200500, 'PL', 'file_b.ddd'),
+    // File A (older): older last_use, has odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-06-30', 200000, 200300, 'PL', 'file_a.ddd'),
+];
+
+$t28 = mergeVehicleRecords($t28Records);
+$t28v = $t28[0];  // only one vehicle
+
+ok('28a: one vehicle after merge',    count($t28) === 1);
+ok('28b: last_use = 2023-08-31',      $t28v['last_use']  === '2023-08-31');
+ok('28c: odo_begin rescued = 200000', $t28v['odo_begin'] === 200000);
+ok('28d: odo_end = 200500',           $t28v['odo_end']   === 200500);
+ok('28e: distance recomputed = 500',  $t28v['distance']  === 500);
+ok('28f: source_file = file_b',       $t28v['source_file'] === 'file_b.ddd');
+
+/* ── Test 29: same last_use → highest distance wins; sorted by first_use ─ */
+echo "\nTest 29: mergeVehicleRecords – same last_use, distance tiebreak; sort order\n";
+
+$t29Records = [
+    vRec('PO321GH', '2023-07-15', '2023-09-01', 300000, 300800, 'DE'),  // distance 800
+    vRec('WR456CD', '2022-11-01', '2023-09-01', 0, 0, 'PL'),            // distance 0, earlier
+    vRec('PO321GH', '2023-07-15', '2023-09-01', 300000, 300600, 'DE'),  // distance 600, same reg+date
+];
+
+$t29 = mergeVehicleRecords($t29Records);
+
+ok('29a: 2 unique vehicles', count($t29) === 2);
+ok('29b: PO321GH distance = 800 (higher wins)',
+    array_values(array_filter($t29, fn($r) => $r['reg'] === 'PO321GH'))[0]['distance'] === 800
+);
+ok('29c: sorted ascending by first_use – WR456CD first',
+    $t29[0]['reg'] === 'WR456CD'
+);
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";

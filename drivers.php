@@ -288,16 +288,8 @@ if ($action === 'profile' && $editDriver) {
             }
         }
 
-        // Deduplicate by (reg, first_use) – keep entry with highest distance
-        $vUniq = [];
-        foreach ($rawVehicles as $r) {
-            $key = $r['reg'] . '|' . $r['first_use'];
-            if (!isset($vUniq[$key]) || $r['distance'] > $vUniq[$key]['distance']) {
-                $vUniq[$key] = $r;
-            }
-        }
-        usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-        $profileVehicles = array_values($vUniq);
+        // Merge records from multiple DDD files: prefer most recent last_use
+        $profileVehicles = mergeVehicleRecords($rawVehicles);
     } catch (Throwable $vErr) {
         error_log('drivers.php vehicles tab: ' . $vErr->getMessage());
     }

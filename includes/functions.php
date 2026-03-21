@@ -1488,6 +1488,75 @@ function parseDriverCardVehicles(string $data): array
 }
 
 /**
+ * Merge vehicle records gathered from multiple DDD files for the same driver.
+ *
+ * When the same vehicle entry (identified by registration + first-use date)
+ * appears in several DDD files, the record with the **most recent last-use
+ * date** is considered the most up-to-date (a newer file download captures a
+ * later snapshot of the on-card circular buffer).  If last-use is identical
+ * across sources, the record with the highest computed distance wins.
+ *
+ * Additionally, the best (lowest non-zero) odo_begin value is preserved from
+ * any source: a newer download might have odo_begin=0 for a record because
+ * the Vehicle Unit did not store odometer-at-first-use, while an older
+ * download of the same card did contain that value.
+ *
+ * Any extra fields added to a record by the caller (e.g. 'source_file') are
+ * carried through from the winning record.
+ *
+ * @param  array[] $records  Flat list of vehicle records (from one or more
+ *                           parseDriverCardVehicles() calls), each with keys:
+ *                           reg, nation, first_use, last_use, odo_begin,
+ *                           odo_end, distance – plus any caller-added fields.
+ * @return array[]           Deduplicated, merged records sorted by first_use.
+ */
+function mergeVehicleRecords(array $records): array
+{
+    $vUniq = [];
+
+    foreach ($records as $r) {
+        $key = $r['reg'] . '|' . $r['first_use'];
+
+        if (!isset($vUniq[$key])) {
+            $vUniq[$key] = $r;
+            continue;
+        }
+
+        $cur = $vUniq[$key];
+
+        // Choose the "winning" base record: most recent last_use, then
+        // highest distance as tiebreaker.
+        $incomingWins = $r['last_use'] > $cur['last_use']
+            || ($r['last_use'] === $cur['last_use'] && $r['distance'] > $cur['distance']);
+
+        if ($incomingWins) {
+            $merged = $r;
+            // Preserve best non-zero odo_begin from the current entry if the
+            // incoming record lacks it.
+            if ($merged['odo_begin'] === 0 && $cur['odo_begin'] > 0) {
+                $merged['odo_begin'] = $cur['odo_begin'];
+                if ($merged['odo_end'] > $merged['odo_begin']) {
+                    $merged['distance'] = $merged['odo_end'] - $merged['odo_begin'];
+                }
+            }
+            $vUniq[$key] = $merged;
+        } else {
+            // Current record is the winner; rescue odo_begin from incoming if
+            // the current entry has none.
+            if ($cur['odo_begin'] === 0 && $r['odo_begin'] > 0) {
+                $vUniq[$key]['odo_begin'] = $r['odo_begin'];
+                if ($cur['odo_end'] > $r['odo_begin']) {
+                    $vUniq[$key]['distance'] = $cur['odo_end'] - $r['odo_begin'];
+                }
+            }
+        }
+    }
+
+    usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+    return array_values($vUniq);
+}
+
+/**
  * Backfill driver_activity_calendar for a specific driver by copying data
  * from ddd_activity_days (joined with ddd_files).  Runs on every page load
  * so newly uploaded DDD files are automatically reflected in the calendar.

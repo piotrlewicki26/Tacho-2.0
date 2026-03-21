@@ -250,16 +250,9 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
             $vehicleRecords[] = array_merge($r, ['source_file' => $fRow['original_name']]);
         }
     }
-    // Deduplicate by (reg, first_use), keep record with highest distance
-    $vUniq = [];
-    foreach ($vehicleRecords as $r) {
-        $key = $r['reg'] . '|' . $r['first_use'];
-        if (!isset($vUniq[$key]) || $r['distance'] > $vUniq[$key]['distance']) {
-            $vUniq[$key] = $r;
-        }
-    }
-    usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-    $vehicleRecords = array_values($vUniq);
+    // Merge records from multiple DDD files: prefer most recent last_use;
+    // 'source_file' is carried through from the winning (most recent) record.
+    $vehicleRecords = mergeVehicleRecords($vehicleRecords);
 }
 
 // ── The timeline always shows all available data (independent of calendar date filter) ──
