@@ -400,7 +400,7 @@ function violPenalty(string $type, string $msg): array {
  * (commit ea1fcf7b808040c2256107ee0b6ba4cd4b3c3589):
  *  - Scans every 2 bytes; does NOT require midnight-UTC timestamps so that real
  *    driver cards with sub-second offset timestamps are not silently dropped.
- *  - presenceCounter range 500–8000 (JSX: pres<500||pres>8000).
+ *  - presenceCounter range 1–8000 (lower bound was 500 but that excluded new cards).
  *  - Distance ≤ 1100 km per day (JSX: dist>1100).
  *  - Uses IQR-based outlier removal to handle multi-tachograph cards correctly.
  *
@@ -435,8 +435,10 @@ function parseDddFile(string $path): array {
 
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        // JSX bounds: pres 500–8000, dist ≤ 1100 km
-        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
+        // Lower bound lowered from 500→1: cards with no garbage (new cards whose
+        // circular buffer has not yet wrapped) can have presenceCounter < 500.
+        // The IQR filter in Step 4 removes stale records from old use-periods.
+        if ($pres < 1 || $pres > 8000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
@@ -1016,8 +1018,9 @@ function parseVehicleDdd(string $path): array {
 
         $pres = unpack('n', substr($data, $i+4, 2))[1];
         $dist = unpack('n', substr($data, $i+6, 2))[1];
-        // JSX bounds: pres 500–8000, dist ≤ 1100 km
-        if ($pres < 500 || $pres > 8000 || $dist > 1100) continue;
+        // Lower bound lowered from 500→1: cards with no garbage (new cards whose
+        // circular buffer has not yet wrapped) can have presenceCounter < 500.
+        if ($pres < 1 || $pres > 8000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
