@@ -1645,16 +1645,18 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
 function parseDriverCardFull(string $path): array
 {
     $empty = [
-        'driver_info' => null,
-        'days'        => [],
-        'weeks'       => [],
-        'vehicles'    => [],
-        'summary'     => [
-            'drive'      => 0,
-            'work'       => 0,
-            'rest'       => 0,
-            'avail'      => 0,
-            'violations' => [],
+        'driver_info'      => null,
+        'days'             => [],
+        'weeks'            => [],
+        'vehicles'         => [],
+        'border_crossings' => [],
+        'summary'          => [
+            'drive'                  => 0,
+            'work'                   => 0,
+            'rest'                   => 0,
+            'avail'                  => 0,
+            'violations'             => [],
+            'border_crossings_count' => 0,
         ],
     ];
 
@@ -1827,7 +1829,7 @@ function parseDriverCardFull(string $path): array
     }
 
     // ── 6. Build overall summary ─────────────────────────────────────────────
-    $summary = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'violations' => []];
+    $summary = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'violations' => [], 'border_crossings_count' => 0];
     foreach ($days as $day) {
         $summary['drive'] += (int)($day['drive'] ?? 0);
         $summary['work']  += (int)($day['work']  ?? 0);
@@ -1843,11 +1845,25 @@ function parseDriverCardFull(string $path): array
         }
     }
 
+    // ── 7. Aggregate border crossings as a top-level sorted list ─────────────
+    // Collect every crossing from every day, attach the date, and sort
+    // chronologically by the crossing timestamp so callers get a unified
+    // timeline that is accurate to 1 minute (tmin field).
+    $allBorderCrossings = [];
+    foreach ($days as $day) {
+        foreach (($day['crossings'] ?? []) as $c) {
+            $allBorderCrossings[] = array_merge($c, ['date' => $day['date']]);
+        }
+    }
+    usort($allBorderCrossings, fn($a, $b) => $a['ts'] <=> $b['ts']);
+    $summary['border_crossings_count'] = count($allBorderCrossings);
+
     return [
-        'driver_info' => $driverInfo,
-        'days'        => $days,
-        'weeks'       => array_values($weeks),
-        'vehicles'    => $vehicles,
-        'summary'     => $summary,
+        'driver_info'      => $driverInfo,
+        'days'             => $days,
+        'weeks'            => array_values($weeks),
+        'vehicles'         => $vehicles,
+        'border_crossings' => $allBorderCrossings,
+        'summary'          => $summary,
     ];
 }

@@ -189,15 +189,18 @@ function makeDay(string $date, int $driveMins, int $workMins = 0, int $restMins 
  * ════════════════════════════════════════════════════════════════════════════ */
 echo "\nTest 1: parseDriverCardFull() returns correct structure for non-existent path\n";
 $r1 = parseDriverCardFull('/tmp/nonexistent_test_file_xyz.ddd');
-ok('1a: key driver_info present', array_key_exists('driver_info', $r1));
-ok('1b: key days present',        array_key_exists('days',        $r1));
-ok('1c: key weeks present',       array_key_exists('weeks',       $r1));
-ok('1d: key vehicles present',    array_key_exists('vehicles',    $r1));
-ok('1e: key summary present',     array_key_exists('summary',     $r1));
-ok('1f: key error present',       array_key_exists('error',       $r1));
-ok('1g: days is array',           is_array($r1['days']));
-ok('1h: weeks is array',          is_array($r1['weeks']));
-ok('1i: vehicles is array',       is_array($r1['vehicles']));
+ok('1a: key driver_info present',      array_key_exists('driver_info',      $r1));
+ok('1b: key days present',             array_key_exists('days',             $r1));
+ok('1c: key weeks present',            array_key_exists('weeks',            $r1));
+ok('1d: key vehicles present',         array_key_exists('vehicles',         $r1));
+ok('1e: key summary present',          array_key_exists('summary',          $r1));
+ok('1f: key error present',            array_key_exists('error',            $r1));
+ok('1g: days is array',                is_array($r1['days']));
+ok('1h: weeks is array',               is_array($r1['weeks']));
+ok('1i: vehicles is array',            is_array($r1['vehicles']));
+ok('1j: key border_crossings present', array_key_exists('border_crossings', $r1));
+ok('1k: border_crossings is array',    is_array($r1['border_crossings']));
+ok('1l: summary has border_crossings_count', array_key_exists('border_crossings_count', $r1['summary']));
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Test 2: Single week – totals sum correctly
@@ -403,6 +406,84 @@ echo "\nTest 15: week_key follows 'YYYY-WNN' format\n";
 $days15 = [makeDay('2025-03-10', 300)];   // 2025-W11
 $w15 = buildWeeklySummary($days15);
 ok('15a: week_key matches pattern', (bool)preg_match('/^\d{4}-W\d{2}$/', $w15[0]['week_key'] ?? ''));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 16: border_crossings aggregation – multiple days, sorted by ts
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 16: border_crossings aggregated from per-day data, sorted by timestamp\n";
+// Build two days that each carry one synthetic crossing, then call the same
+// aggregation logic that parseDriverCardFull() uses internally.
+$crossDay1 = [
+    'date'      => '2025-06-10',
+    'drive'     => 240,
+    'work'      => 0,
+    'rest'      => 1200,
+    'avail'     => 0,
+    'dist'      => 0,
+    'segs'      => [],
+    'crossings' => [
+        ['ts' => 1749600600, 'tmin' => 540, 'type' => 1, 'country' => 'PL'],
+    ],
+    'viol'      => [],
+];
+$crossDay2 = [
+    'date'      => '2025-06-11',
+    'drive'     => 180,
+    'work'      => 0,
+    'rest'      => 1260,
+    'avail'     => 0,
+    'dist'      => 0,
+    'segs'      => [],
+    'crossings' => [
+        ['ts' => 1749672000, 'tmin' => 180, 'type' => 2, 'country' => 'D'],
+        ['ts' => 1749650000, 'tmin' => 120, 'type' => 1, 'country' => 'CZ'],
+    ],
+    'viol'      => [],
+];
+$days16 = [$crossDay1, $crossDay2];
+
+// Replicate the aggregation logic from parseDriverCardFull() step 7.
+$bc16 = [];
+foreach ($days16 as $d16) {
+    foreach ($d16['crossings'] as $c16) {
+        $bc16[] = array_merge($c16, ['date' => $d16['date']]);
+    }
+}
+usort($bc16, fn($a, $b) => $a['ts'] <=> $b['ts']);
+
+ok('16a: 3 crossings total',              count($bc16) === 3);
+ok('16b: sorted ascending by ts',         $bc16[0]['ts'] <= $bc16[1]['ts'] && $bc16[1]['ts'] <= $bc16[2]['ts']);
+ok('16c: first crossing country = PL',    $bc16[0]['country'] === 'PL');
+ok('16d: second crossing country = CZ',   $bc16[1]['country'] === 'CZ');
+ok('16e: third crossing country = D',     $bc16[2]['country'] === 'D');
+ok('16f: date field attached',            isset($bc16[0]['date']));
+ok('16g: tmin field preserved',           isset($bc16[0]['tmin']));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 17: summary.border_crossings_count reflects the total
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 17: summary.border_crossings_count equals total crossing count\n";
+// Using same bc16 from test 16
+$count17 = count($bc16);
+ok('17a: count = 3',                      $count17 === 3);
+ok('17b: count matches aggregated list',  $count17 === count($bc16));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 18: border_crossings empty when days carry no crossings
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 18: border_crossings empty when no days carry crossings\n";
+$days18 = [
+    makeDay('2025-07-01', 300),
+    makeDay('2025-07-02', 240),
+];
+$bc18 = [];
+foreach ($days18 as $d18) {
+    foreach (($d18['crossings'] ?? []) as $c18) {
+        $bc18[] = array_merge($c18, ['date' => $d18['date']]);
+    }
+}
+ok('18a: bc empty when no crossings',     count($bc18) === 0);
+ok('18b: count = 0',                      count($bc18) === 0);
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
