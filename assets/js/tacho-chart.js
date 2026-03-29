@@ -319,7 +319,7 @@
    * Draws tracks, activity bars, violations, axis into an existing  *
    * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) *
    * onDateClick(di) – called when a day-label is clicked (full view) */
-  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick, prevPendingDur, nextWeekDays) {
+  function fillChartSVG(svgEl, weekStart, weekDays, cw, rangeMin, rangeMax, onSegClick, dayViols, onDateClick, prevPendingDur, nextWeekDays, pendingComps) {
     var rangeSpan = rangeMax - rangeMin;
     var isZoomed  = rangeSpan < TOTAL_MIN * 0.9999;
     var px = function(m) { return (m - rangeMin) / rangeSpan * cw; };
@@ -356,6 +356,21 @@
     var _WEEKLY_REST_PRE = 45 * 60;
     var _REDUCED_WK_PRE  = 24 * 60;
     var _restSpansPre = buildRestSpans(weekDays, prevPendingDur || 0, nextWeekDays || null).spans;
+
+    /* Compensation detection: find first qualifying rest span (≥24h) that covers
+     * pending shortfalls from previous shortened weekly rests. */
+    var _COMP_COLOR   = '#E65100';   /* deep orange for compensation overlay */
+    var _totalPending = 0;
+    if (pendingComps && pendingComps.length) {
+      pendingComps.forEach(function(c) { _totalPending += c.shortfall_min; });
+    }
+    var _compSpan = null, _compConsumed = 0;
+    if (_totalPending > 0) {
+      _restSpansPre.forEach(function(rs) {
+        if (_compSpan) return;
+        if (rs.dur >= 1440) { _compSpan = rs; _compConsumed = Math.min(_totalPending, rs.dur); }
+      });
+    }
 
     /* Rest period overlays on activity track (T1) – semi-transparent tinted band
      * behind the activity bars so rest periods are visible on the main timeline */
@@ -504,6 +519,51 @@
       })(rs);
       svgEl.appendChild(g);
     });
+
+    /* Compensation overlay – drawn on top of the regular rest bar.
+     * The first _compConsumed minutes of the qualifying weekly rest span
+     * are painted orange to indicate that this period fulfils the shortfall
+     * from a prior shortened weekly rest (EU Art. 8(6)). */
+    if (_compSpan && _compConsumed > 0) {
+      var _cx1 = clampX(Math.max(_compSpan.absStart, rangeMin));
+      var _cx2 = clampX(Math.min(_compSpan.absStart + _compConsumed, rangeMax));
+      var _cbw = _cx2 - _cx1;
+      if (_cbw >= 0.4) {
+        var _cg = mkSVG('g');
+        _cg.appendChild(mkSVG('rect', {x:_cx1, y:T2Y+1, width:_cbw, height:T2H-2, fill:_COMP_COLOR, rx:2}));
+        if (_cbw > 22) {
+          var _cico = mkSVG('text', {x:_cx1+_cbw/2, y:T2Y+13, 'text-anchor':'middle', fill:'#fff', 'font-size':10, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+          _cico.textContent = 'K'; _cg.appendChild(_cico);
+        }
+        if (_cbw > 40) {
+          var _ct = mkSVG('text', {x:_cx1+_cbw/2, y:T2Y+T2H/2+5, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+          _ct.textContent = hhmm(_compConsumed); _cg.appendChild(_ct);
+        }
+        (function(compMin, fromComps) {
+          var _chit = mkSVG('rect', {x:_cx1, y:T2Y, width:_cbw, height:T2H, fill:'transparent', cursor:'pointer'});
+          _chit.addEventListener('click', function(ev) {
+            ev.stopPropagation(); ev._tachoSeg = true;
+            var tip = getTip();
+            var fromDesc = fromComps.map(function(c) {
+              return 'W' + String(isoWeek(c.weekStart)).padStart(2,'0') + ': ' + hhmm(c.shortfall_min);
+            }).join(', ');
+            tip.innerHTML =
+              '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">' +
+                '<div style="width:11px;height:11px;border-radius:3px;background:' + _COMP_COLOR + ';flex-shrink:0;"></div>' +
+                '<strong style="font-size:15px;color:#ECEFF1;">Rekompensata</strong>' +
+              '</div>' +
+              '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Rekompensata skr\u00f3conego odpoczynku tyg.</div>' +
+              '<div style="color:#B0BEC5;font-size:12px;margin-bottom:3px;">Deficyty: ' + fromDesc + '</div>' +
+              '<div style="font-size:17px;font-weight:700;color:' + _COMP_COLOR + ';margin-top:3px;">' + hhmm(compMin) + '</div>';
+            tip.style.display = 'block';
+            tip.style.left = Math.min(ev.clientX + 15, window.innerWidth - 260) + 'px';
+            tip.style.top  = Math.min(ev.clientY + 15, window.innerHeight - 120) + 'px';
+          });
+          _cg.appendChild(_chit);
+        })(_compConsumed, pendingComps);
+        svgEl.appendChild(_cg);
+      }
+    }
 
     /* Border crossing markers (EF_CardPlacesOfDailyWorkPeriod 0x0522)
      * Drawn LAST so they appear on top of both activity and rest bands.
@@ -851,7 +911,7 @@
   }
 
   /* == Build one week row ========================================= */
-  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur, nextWeekDays, vehicleData) {
+  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur, nextWeekDays, vehicleData, pendingComps) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(d) {
       if (!d) return;
@@ -880,6 +940,21 @@
     /* Display value: qualifying rest if available, else total rest */
     var restDispVal = topQualRest > 0 ? topQualRest : weekRest;
     var restTypeSfx = topQualRest >= WKREST_REG ? ' (tyg.)' : topQualRest >= WKREST_RED ? ' (skr.)' : '';
+    /* Compensation: shortfall from this week's shortened rest, and amount of
+     * pending compensation that can be fulfilled by this week's qualifying rest. */
+    var weekShortfall = (topQualRest >= WKREST_RED && topQualRest < WKREST_REG)
+                        ? (WKREST_REG - topQualRest) : 0;
+    var _compTotalPending = 0;
+    if (pendingComps && pendingComps.length) {
+      pendingComps.forEach(function(c) { _compTotalPending += c.shortfall_min; });
+    }
+    var _compConsumedSb = 0;
+    if (_compTotalPending > 0) {
+      weekRestSpans.forEach(function(rs) {
+        if (_compConsumedSb > 0) return;
+        if (rs.dur >= WKREST_RED) { _compConsumedSb = Math.min(_compTotalPending, rs.dur); }
+      });
+    }
     var weekViols  = computeWeekViolations(weekDays);
     var dayViols   = weekDays.map(function(d){ return d ? computeDayViolations(d.segs||[]) : []; });
     var hasWkErr   = weekViols.some(function(v){ return v.sev==='error'; });
@@ -955,6 +1030,8 @@
       '<div style="font-size:12px;color:#9AA0AA;">'+fmtDate(addD(weekStart,6))+'</div>' +
       '<div data-tperiod="drive" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
       '<div data-tperiod="rest" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(restDispVal)+restTypeSfx+'</div>' +
+      (weekShortfall > 0 ? '<div style="font-size:11px;padding:1px 4px;border-radius:2px;background:#FFF3E0;color:#E65100;font-weight:700;margin-top:2px;">\u26a1 Deficyt: '+hhmm(weekShortfall)+'</div>' : '') +
+      (_compConsumedSb > 0 ? '<div style="font-size:11px;padding:1px 4px;border-radius:2px;background:#FFF3E0;color:#E65100;font-weight:700;margin-top:2px;">\u2714 Rekompensata: '+hhmm(_compConsumedSb)+'</div>' : '') +
       wkBadge;
 
     /* Click handlers for sidebar drive time and rest time values */
@@ -1019,7 +1096,7 @@
     fillChartSVG(svgEl, weekStart, weekDays, cw, 0, TOTAL_MIN, null, dayViols, function(di) {
       /* Date label click → zoom the whole day */
       if (onSelComplete) onSelComplete({weekStart:weekStart, weekDays:weekDays, startMin:di*1440, endMin:(di+1)*1440, isDateClick:true});
-    }, prevPendingDur || 0, nextWeekDays || null);
+    }, prevPendingDur || 0, nextWeekDays || null, pendingComps || []);
 
     /* Selection overlay rects */
     var selRect = mkSVG('rect', {x:0, y:T1Y-8, width:0, height:T2Y+T2H-T1Y+16,
@@ -1364,7 +1441,7 @@
     ftR.appendChild(expandBtn);
     wrapper.appendChild(dtWrap);
     chartArea.appendChild(wrapper);
-    return weekRestResult.endPendingDur;
+    return {endPendingDur: weekRestResult.endPendingDur, shortfall_min: weekShortfall, compFulfilled_min: _compConsumedSb};
   }
 
   /* == Zoomed view panel ========================================== *
@@ -1926,7 +2003,7 @@
     legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
     [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek'},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda'},
      {fill:'#FF9800',bd:'#F57C00',lbl:'Praca'},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107'},
-     {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'}].forEach(function(it) {
+     {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'},{fill:'#E65100',bd:'#BF360C',lbl:'Rekompensata'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
       d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
@@ -1981,6 +2058,46 @@
         pendingDur = buildRestSpans(_lwkEntry.days, pendingDur).endPendingDur;
       }
 
+      /* Seed compensation state by replaying all weeks before the visible window
+       * in chronological order so that already-fulfilled compensations are not
+       * shown again and expired deadlines are correctly discarded. */
+      var pendingComps = []; /* [{shortfall_min, weekStart}] */
+      var _visFirstKey  = startWk.toISOString().slice(0, 10);
+      var _histPendDur  = 0;
+      Object.keys(weekMap).sort().forEach(function(wk) {
+        if (wk >= _visFirstKey) return;
+        var _he = weekMap[wk];
+        if (!_he || !_he.days.some(function(d) { return d && d.segs && d.segs.length > 0; })) {
+          _histPendDur = 0; return;
+        }
+        var _hws = new Date(wk);
+        /* Remove entries whose 3-week deadline has passed */
+        pendingComps = pendingComps.filter(function(c) { return addD(c.weekStart, 21) >= _hws; });
+        var _hRes  = buildRestSpans(_he.days, _histPendDur, null);
+        _histPendDur = _hRes.endPendingDur;
+        var _hSpans = _hRes.spans;
+        var _hTopR = 0, _hCompS = null;
+        _hSpans.forEach(function(rs) {
+          if (rs.dur >= 1440) { if (rs.dur > _hTopR) _hTopR = rs.dur; if (!_hCompS) _hCompS = rs; }
+        });
+        /* Fulfill previous compensations from this week's first qualifying rest */
+        if (_hCompS && pendingComps.length > 0) {
+          var _hTotalPend = pendingComps.reduce(function(a, c) { return a + c.shortfall_min; }, 0);
+          var _hFulfilled = Math.min(_hTotalPend, _hCompS.dur);
+          var _hRem = _hFulfilled;
+          for (var _hi = 0; _hi < pendingComps.length && _hRem > 0; _hi++) {
+            var _hr = Math.min(pendingComps[_hi].shortfall_min, _hRem);
+            pendingComps[_hi] = {shortfall_min: pendingComps[_hi].shortfall_min - _hr, weekStart: pendingComps[_hi].weekStart};
+            _hRem -= _hr;
+          }
+          pendingComps = pendingComps.filter(function(c) { return c.shortfall_min > 0; });
+        }
+        /* Add new shortfall from this week if rest was shortened */
+        if (_hTopR >= 1440 && _hTopR < 2700) {
+          pendingComps.push({shortfall_min: 2700 - _hTopR, weekStart: _hws});
+        }
+      });
+
       for (var _wi = 0; _wi < visible.length; _wi++) {
         var w = visible[_wi];
         /* Only propagate carry-over if the current week has actual data.
@@ -2000,14 +2117,31 @@
         }
         var _nextWeekDays = (_nextW && _nextW.days.some(function(d) { return d && d.segs && d.segs.length > 0; }))
           ? _nextW.days : null;
-        pendingDur = buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
+        /* Remove expired compensation entries before rendering this week */
+        pendingComps = pendingComps.filter(function(c) { return addD(c.weekStart, 21) >= w.start; });
+        var _wkResult = buildWeekRow(w.start, w.days, cw, chartArea, selCtrl, function(info) {
           if (info.isDateClick) {
             /* Build date string using local calendar fields to avoid UTC offset bug */
             var d = addD(info.weekStart, Math.floor(info.startMin / 1440));
             var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
             showDayModal(dateStr, daysData, vehicleData);
           }
-        }, pendingDur, _nextWeekDays, vehicleData);
+        }, pendingDur, _nextWeekDays, vehicleData, pendingComps);
+        pendingDur = _wkResult.endPendingDur;
+        /* Reduce pending compensations by the amount fulfilled in this week */
+        if (_wkResult.compFulfilled_min > 0) {
+          var _remComp = _wkResult.compFulfilled_min;
+          for (var _ci = 0; _ci < pendingComps.length && _remComp > 0; _ci++) {
+            var _red = Math.min(pendingComps[_ci].shortfall_min, _remComp);
+            pendingComps[_ci] = {shortfall_min: pendingComps[_ci].shortfall_min - _red, weekStart: pendingComps[_ci].weekStart};
+            _remComp -= _red;
+          }
+          pendingComps = pendingComps.filter(function(c) { return c.shortfall_min > 0; });
+        }
+        /* Register new shortfall from this week (shown in subsequent weeks) */
+        if (_wkResult.shortfall_min > 0) {
+          pendingComps.push({shortfall_min: _wkResult.shortfall_min, weekStart: w.start});
+        }
         /* Reset carry-over for weeks without real tachograph data so the
          * implicit "7 days of rest" endPendingDur is not propagated forward. */
         if (!wkHasData) { pendingDur = 0; }
