@@ -1373,9 +1373,14 @@ function parseDriverCardVehicles(string $data): array
         if (!$foundRecs || empty($parsed)) return false;
 
         if ($isKnown) {
-            /* Known vehicle tag: merge into the known-results map */
+            /* Known vehicle tag: merge into the known-results map.
+             * Key includes last_use so that different usage sessions for the
+             * same vehicle (different date ranges) are kept as separate rows.
+             * Only records with identical reg + first_use + last_use (i.e. the
+             * same session appearing in two TLV blocks of the same file) are
+             * collapsed – keeping the one with the higher computed distance. */
             foreach ($parsed as $r) {
-                $key = $r['reg'] . '|' . $r['first_use'];
+                $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
                 if (!isset($phase1KnownResults[$key]) || $r['distance'] > ($phase1KnownResults[$key]['distance'] ?? 0)) {
                     $phase1KnownResults[$key] = $r;
                 }
@@ -1409,10 +1414,12 @@ function parseDriverCardVehicles(string $data): array
         if (!empty($candidates)) {
             /* $candidates is either an associative map (known) or a plain array (unknown) */
             $out = array_values($candidates);
-            /* Dedup by reg+first_use if it came from the plain-array best-block path */
+            /* Dedup by reg+first_use+last_use so that the same session appearing
+             * in multiple TLV blocks of the same file is collapsed into one row,
+             * while different sessions for the same vehicle are kept separate. */
             $dedup = [];
             foreach ($out as $r) {
-                $key = $r['reg'] . '|' . $r['first_use'];
+                $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
                 if (!isset($dedup[$key]) || $r['distance'] > ($dedup[$key]['distance'] ?? 0)) {
                     $dedup[$key] = $r;
                 }
@@ -1473,7 +1480,10 @@ function parseDriverCardVehicles(string $data): array
             $seen   = [];
             $result = [];
             foreach ($bestRecs as $r) {
-                $key = $r['reg'] . '_' . $r['first_use'];
+                /* Dedup by reg+first_use+last_use: collapses the same session
+                 * appearing at multiple byte positions (circular buffer artefacts)
+                 * while keeping genuinely different sessions separate. */
+                $key = $r['reg'] . '_' . $r['first_use'] . '_' . $r['last_use'];
                 if (!isset($seen[$key])) {
                     $seen[$key] = true;
                     $result[]   = $r;
@@ -1490,16 +1500,13 @@ function parseDriverCardVehicles(string $data): array
 /**
  * Merge vehicle records gathered from multiple DDD files for the same driver.
  *
- * When the same vehicle entry (identified by registration + first-use date)
- * appears in several DDD files, the record with the **most recent last-use
- * date** is considered the most up-to-date (a newer file download captures a
- * later snapshot of the on-card circular buffer).  If last-use is identical
- * across sources, the record with the highest computed distance wins.
+ * Each distinct usage session is identified by registration + first-use date +
+ * last-use date.  When the same session (same dates) appears in several DDD
+ * files, the record with the highest computed distance wins; if distance is
+ * equal, the non-zero odo_begin value is rescued from either source.
  *
- * Additionally, the best (lowest non-zero) odo_begin value is preserved from
- * any source: a newer download might have odo_begin=0 for a record because
- * the Vehicle Unit did not store odometer-at-first-use, while an older
- * download of the same card did contain that value.
+ * Different sessions for the same vehicle (different date ranges) are kept as
+ * separate rows so that the full vehicle-usage history is visible.
  *
  * Any extra fields added to a record by the caller (e.g. 'source_file') are
  * carried through from the winning record.
@@ -1515,7 +1522,11 @@ function mergeVehicleRecords(array $records): array
     $vUniq = [];
 
     foreach ($records as $r) {
-        $key = $r['reg'] . '|' . $r['first_use'];
+        /* Key = reg + first_use + last_use: records with identical dates
+         * (the same session from different DDD file downloads) are merged;
+         * records for the same vehicle but with different date ranges
+         * (different sessions) remain as separate rows. */
+        $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
 
         if (!isset($vUniq[$key])) {
             $vUniq[$key] = $r;
@@ -1524,10 +1535,9 @@ function mergeVehicleRecords(array $records): array
 
         $cur = $vUniq[$key];
 
-        // Choose the "winning" base record: most recent last_use, then
-        // highest distance as tiebreaker.
-        $incomingWins = $r['last_use'] > $cur['last_use']
-            || ($r['last_use'] === $cur['last_use'] && $r['distance'] > $cur['distance']);
+        // For the same session seen in two files, keep the record with the
+        // highest computed distance as tiebreaker.
+        $incomingWins = $r['distance'] > $cur['distance'];
 
         if ($incomingWins) {
             $merged = $r;

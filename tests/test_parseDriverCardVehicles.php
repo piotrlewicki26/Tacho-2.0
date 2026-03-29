@@ -24,9 +24,10 @@
  *  21. Phase-1 extended scan: unknown 0x05xx TLV tag found; all epoch-firstUse
  *      vehicles returned (regression for "only 1 vehicle" bug)
  *  22. Phase-2b best-group: no TLV at all + all epoch firstUse – all vehicles found
- *  27. mergeVehicleRecords: newer last_use wins over higher distance
- *  28. mergeVehicleRecords: odo_begin rescued from older record, distance recomputed
- *  29. mergeVehicleRecords: same last_use tiebreak by distance; sorted by first_use
+ *  27. mergeVehicleRecords: different last_use = different sessions, both kept
+ *  28. mergeVehicleRecords: different last_use kept as separate sessions
+ *  28b. mergeVehicleRecords: odo_begin rescued when identical session in two files
+ *  29. mergeVehicleRecords: same first+last_use tiebreak by distance; sorted by first_use
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -782,49 +783,74 @@ function vRec(
     return $r;
 }
 
-/* ── Test 27: newer last_use wins over higher distance ────────────────── */
-echo "\nTest 27: mergeVehicleRecords – newer last_use wins\n";
+/* ── Test 27: different last_use → different sessions, both kept ──────── */
+echo "\nTest 27: mergeVehicleRecords – different last_use = different sessions\n";
 
 $t27Records = [
-    // File A: older download – has real odo values → higher distance
+    // File A: one download – has real odo values, session ended 2023-01-10
     vRec('WA12345', '2023-01-01', '2023-01-10', 100000, 101500, 'PL', 'file_a.ddd'),
-    // File B: newer download – driver used vehicle more recently but odo=0
+    // File B: another download – same start date but different end date → different session
     vRec('WA12345', '2023-01-01', '2023-03-20', 0, 0, 'PL', 'file_b.ddd'),
-    // Different vehicle – both should appear
+    // Different vehicle – should appear as its own row
     vRec('GD999XY', '2023-02-01', '2023-02-28', 50000, 51000, 'PL', 'file_a.ddd'),
 ];
 
 $t27 = mergeVehicleRecords($t27Records);
 
-ok('27a: 2 unique vehicles after merge', count($t27) === 2);
-ok('27b: WA12345 last_use is 2023-03-20 (newer wins)',
-    ($t27[0]['reg'] === 'WA12345' || $t27[1]['reg'] === 'WA12345') &&
-    array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'))[0]['last_use'] === '2023-03-20'
-);
-ok('27c: WA12345 source_file is file_b (newer download)',
-    array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'))[0]['source_file'] === 'file_b.ddd'
+ok('27a: 3 records (WA12345 twice + GD999XY once)', count($t27) === 3);
+$t27wa = array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'));
+ok('27b: both WA12345 sessions present (2 rows)', count($t27wa) === 2);
+$t27lastUses = array_column($t27wa, 'last_use');
+sort($t27lastUses);
+ok('27c: WA12345 sessions have last_use 2023-01-10 and 2023-03-20',
+    $t27lastUses === ['2023-01-10', '2023-03-20']
 );
 ok('27d: GD999XY still present', count(array_filter($t27, fn($r) => $r['reg'] === 'GD999XY')) === 1);
 
-/* ── Test 28: odo_begin rescued from older record ─────────────────────── */
-echo "\nTest 28: mergeVehicleRecords – odo_begin preserved from older record\n";
+/* ── Test 28: different last_use → separate sessions kept independently ── */
+echo "\nTest 28: mergeVehicleRecords – different last_use kept as separate sessions\n";
 
 $t28Records = [
-    // File B (newer): latest last_use, no odo_begin
+    // Session A: long period, no odo_begin
     vRec('KR123AB', '2023-05-01', '2023-08-31', 0, 200500, 'PL', 'file_b.ddd'),
-    // File A (older): older last_use, has odo_begin
+    // Session B: shorter period, has odo_begin
     vRec('KR123AB', '2023-05-01', '2023-06-30', 200000, 200300, 'PL', 'file_a.ddd'),
 ];
 
 $t28 = mergeVehicleRecords($t28Records);
-$t28v = $t28[0];  // only one vehicle
 
-ok('28a: one vehicle after merge',    count($t28) === 1);
-ok('28b: last_use = 2023-08-31',      $t28v['last_use']  === '2023-08-31');
-ok('28c: odo_begin rescued = 200000', $t28v['odo_begin'] === 200000);
-ok('28d: odo_end = 200500',           $t28v['odo_end']   === 200500);
-ok('28e: distance recomputed = 500',  $t28v['distance']  === 500);
-ok('28f: source_file = file_b',       $t28v['source_file'] === 'file_b.ddd');
+ok('28a: 2 records (different sessions for same vehicle)', count($t28) === 2);
+$t28lastUses = array_column($t28, 'last_use');
+sort($t28lastUses);
+ok('28b: sessions have last_use 2023-06-30 and 2023-08-31',
+    $t28lastUses === ['2023-06-30', '2023-08-31']
+);
+$t28sessionA = array_values(array_filter($t28, fn($r) => $r['last_use'] === '2023-08-31'))[0];
+ok('28c: session A has odo_end = 200500',           $t28sessionA['odo_end'] === 200500);
+ok('28d: session A has odo_begin = 0',              $t28sessionA['odo_begin'] === 0);
+ok('28e: session A source_file = file_b',           $t28sessionA['source_file'] === 'file_b.ddd');
+$t28sessionB = array_values(array_filter($t28, fn($r) => $r['last_use'] === '2023-06-30'))[0];
+ok('28f: session B has odo_begin = 200000',         $t28sessionB['odo_begin'] === 200000);
+ok('28g: session B has distance = 300',             $t28sessionB['distance'] === 300);
+
+/* ── Test 28b: odo_begin rescued when same dates appear in two files ───── */
+echo "\nTest 28b: mergeVehicleRecords – odo_begin rescued for identical session\n";
+
+$t28bRecords = [
+    // File B: latest download – no odo_begin stored by VU
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 0, 200500, 'PL', 'file_b.ddd'),
+    // File A: older download of same card – identical session but has odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 200000, 200500, 'PL', 'file_a.ddd'),
+];
+
+$t28b = mergeVehicleRecords($t28bRecords);
+$t28bv = $t28b[0];
+
+ok('28b-a: one record (same dates = same session)',   count($t28b) === 1);
+ok('28b-b: last_use = 2023-08-31',                   $t28bv['last_use']  === '2023-08-31');
+ok('28b-c: odo_begin rescued = 200000',              $t28bv['odo_begin'] === 200000);
+ok('28b-d: odo_end = 200500',                        $t28bv['odo_end']   === 200500);
+ok('28b-e: distance recomputed = 500',               $t28bv['distance']  === 500);
 
 /* ── Test 29: same last_use → highest distance wins; sorted by first_use ─ */
 echo "\nTest 29: mergeVehicleRecords – same last_use, distance tiebreak; sort order\n";
