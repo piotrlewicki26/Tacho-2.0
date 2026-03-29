@@ -1087,8 +1087,8 @@ function parseVehicleDdd(string $path): array {
  * accepting a block.  Falls back to a whole-file scan when no TLV block
  * passes validation.
  *
- * @return array[] List of vehicle usage records sorted by first_use date:
- *   ['reg','nation','first_use','last_use','odo_begin','odo_end','distance']
+ * @return array[] List of vehicle usage records sorted by date_from date:
+ *   ['reg','nation','date_from','date_to','odo_begin','odo_end','distance']
  */
 function parseDriverCardVehicles(string $data): array
 {
@@ -1280,8 +1280,8 @@ function parseDriverCardVehicles(string $data): array
             $parsed[] = [
                 'reg'        => $reg,
                 'nation'     => $nation,
-                'first_use'  => gmdate('Y-m-d', $displayFirstUse),
-                'last_use'   => gmdate('Y-m-d', $lastUse),
+                'date_from'  => gmdate('Y-m-d', $displayFirstUse),
+                'date_to'   => gmdate('Y-m-d', $lastUse),
                 'odo_begin'  => $odoB,
                 'odo_end'    => $odoE,
                 'distance'   => ($odoE >= $odoB) ? ($odoE - $odoB) : 0,
@@ -1374,13 +1374,13 @@ function parseDriverCardVehicles(string $data): array
 
         if ($isKnown) {
             /* Known vehicle tag: merge into the known-results map.
-             * Key includes last_use so that different usage sessions for the
+             * Key includes date_to so that different usage sessions for the
              * same vehicle (different date ranges) are kept as separate rows.
-             * Only records with identical reg + first_use + last_use (i.e. the
+             * Only records with identical reg + date_from + date_to (i.e. the
              * same session appearing in two TLV blocks of the same file) are
              * collapsed – keeping the one with the higher computed distance. */
             foreach ($parsed as $r) {
-                $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
+                $key = $r['reg'] . '|' . $r['date_from'] . '|' . $r['date_to'];
                 if (!isset($phase1KnownResults[$key]) || $r['distance'] > ($phase1KnownResults[$key]['distance'] ?? 0)) {
                     $phase1KnownResults[$key] = $r;
                 }
@@ -1414,18 +1414,18 @@ function parseDriverCardVehicles(string $data): array
         if (!empty($candidates)) {
             /* $candidates is either an associative map (known) or a plain array (unknown) */
             $out = array_values($candidates);
-            /* Dedup by reg+first_use+last_use so that the same session appearing
+            /* Dedup by reg+date_from+date_to so that the same session appearing
              * in multiple TLV blocks of the same file is collapsed into one row,
              * while different sessions for the same vehicle are kept separate. */
             $dedup = [];
             foreach ($out as $r) {
-                $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
+                $key = $r['reg'] . '|' . $r['date_from'] . '|' . $r['date_to'];
                 if (!isset($dedup[$key]) || $r['distance'] > ($dedup[$key]['distance'] ?? 0)) {
                     $dedup[$key] = $r;
                 }
             }
             $out = array_values($dedup);
-            usort($out, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+            usort($out, fn($a, $b) => strcmp($a['date_from'], $b['date_from']));
             return $out;
         }
     }
@@ -1463,7 +1463,7 @@ function parseDriverCardVehicles(string $data): array
             if ($cnt < 2) continue;
 
             /* Score by group length only.  Do NOT subtract epoch records
-             * (first_use === last_use) – real vehicle cards where the VU never
+             * (date_from === date_to) – real vehicle cards where the VU never
              * wrote vehicleFirstUse have ALL records in this state, and the old
              * epoch penalty caused such real groups to lose to smaller garbage
              * groups that accidentally had distinct first/last timestamps. */
@@ -1480,16 +1480,16 @@ function parseDriverCardVehicles(string $data): array
             $seen   = [];
             $result = [];
             foreach ($bestRecs as $r) {
-                /* Dedup by reg+first_use+last_use: collapses the same session
+                /* Dedup by reg+date_from+date_to: collapses the same session
                  * appearing at multiple byte positions (circular buffer artefacts)
                  * while keeping genuinely different sessions separate. */
-                $key = $r['reg'] . '_' . $r['first_use'] . '_' . $r['last_use'];
+                $key = $r['reg'] . '_' . $r['date_from'] . '_' . $r['date_to'];
                 if (!isset($seen[$key])) {
                     $seen[$key] = true;
                     $result[]   = $r;
                 }
             }
-            usort($result, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+            usort($result, fn($a, $b) => strcmp($a['date_from'], $b['date_from']));
             return $result;
         }
     }
@@ -1513,20 +1513,20 @@ function parseDriverCardVehicles(string $data): array
  *
  * @param  array[] $records  Flat list of vehicle records (from one or more
  *                           parseDriverCardVehicles() calls), each with keys:
- *                           reg, nation, first_use, last_use, odo_begin,
+ *                           reg, nation, date_from, date_to, odo_begin,
  *                           odo_end, distance – plus any caller-added fields.
- * @return array[]           Deduplicated, merged records sorted by first_use.
+ * @return array[]           Deduplicated, merged records sorted by date_from.
  */
 function mergeVehicleRecords(array $records): array
 {
     $vUniq = [];
 
     foreach ($records as $r) {
-        /* Key = reg + first_use + last_use: records with identical dates
+        /* Key = reg + date_from + date_to: records with identical dates
          * (the same session from different DDD file downloads) are merged;
          * records for the same vehicle but with different date ranges
          * (different sessions) remain as separate rows. */
-        $key = $r['reg'] . '|' . $r['first_use'] . '|' . $r['last_use'];
+        $key = $r['reg'] . '|' . $r['date_from'] . '|' . $r['date_to'];
 
         if (!isset($vUniq[$key])) {
             $vUniq[$key] = $r;
@@ -1562,7 +1562,7 @@ function mergeVehicleRecords(array $records): array
         }
     }
 
-    usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+    usort($vUniq, fn($a, $b) => strcmp($a['date_from'], $b['date_from']));
     return array_values($vUniq);
 }
 

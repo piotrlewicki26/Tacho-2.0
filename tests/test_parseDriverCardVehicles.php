@@ -24,10 +24,10 @@
  *  21. Phase-1 extended scan: unknown 0x05xx TLV tag found; all epoch-firstUse
  *      vehicles returned (regression for "only 1 vehicle" bug)
  *  22. Phase-2b best-group: no TLV at all + all epoch firstUse – all vehicles found
- *  27. mergeVehicleRecords: different last_use = different sessions, both kept
- *  28. mergeVehicleRecords: different last_use kept as separate sessions
+ *  27. mergeVehicleRecords: different date_to = different sessions, both kept
+ *  28. mergeVehicleRecords: different date_to kept as separate sessions
  *  28b. mergeVehicleRecords: odo_begin rescued when identical session in two files
- *  29. mergeVehicleRecords: same first+last_use tiebreak by distance; sorted by first_use
+ *  29. mergeVehicleRecords: same first+date_to tiebreak by distance; sorted by date_from
  */
 
 require_once __DIR__ . '/../includes/functions.php';
@@ -145,8 +145,8 @@ $out  = parseDriverCardVehicles($blob);
 ok('returns exactly 1 vehicle', count($out) === 1);
 ok('registration = WX12345',    ($out[0]['reg'] ?? '') === 'WX12345');
 ok('nation = PL (alpha)',        ($out[0]['nation'] ?? '') === 'PL');
-ok('first_use matches',         ($out[0]['first_use'] ?? '') === $firstUse2023Fmt);
-ok('last_use matches',          ($out[0]['last_use']  ?? '') === $lastUse2023Fmt);
+ok('date_from matches',         ($out[0]['date_from'] ?? '') === $firstUse2023Fmt);
+ok('date_to matches',          ($out[0]['date_to']  ?? '') === $lastUse2023Fmt);
 ok('distance  = 50000',         ($out[0]['distance']  ?? -1) === 50000);
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -164,7 +164,7 @@ ok('nation from numeric = PL',  ($out[0]['nation'] ?? '') === 'PL');
 ok('distance = 25000',          ($out[0]['distance'] ?? -1) === 25000);
 
 /* ══════════════════════════════════════════════════════════════════════════
- * Test 3: TLV Phase-1, multiple records sorted by first_use
+ * Test 3: TLV Phase-1, multiple records sorted by date_from
  * ══════════════════════════════════════════════════════════════════════════ */
 echo "\nTest 3: TLV Gen-2 multiple records (sorted)\n";
 
@@ -174,8 +174,8 @@ $blob = buildTlvBlob($rec1 . $rec2, 2);
 $out  = parseDriverCardVehicles($blob);
 
 ok('returns 2 vehicles',                 count($out) === 2);
-ok('first record is older first_use',    ($out[0]['reg'] ?? '') === 'KR456CD');
-ok('second record is newer first_use',   ($out[1]['reg'] ?? '') === 'DW123AB');
+ok('first record is older date_from',    ($out[0]['reg'] ?? '') === 'KR456CD');
+ok('second record is newer date_from',   ($out[1]['reg'] ?? '') === 'DW123AB');
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 4: Phase-2 fallback – no TLV, raw consecutive Gen-2 records
@@ -421,7 +421,7 @@ $result17 = parseDriverCardVehicles($blob);
 ok('17a: finds records in 31-byte format', count($result17) >= 2);
 ok('17b: registration = PY 90501', ($result17[0]['reg'] ?? '') === 'PY 90501');
 ok('17c: nation = PL',              ($result17[0]['nation'] ?? '') === 'PL');
-ok('17d: first_use = 2025-08-22',   ($result17[0]['first_use'] ?? '') === '2025-08-22');
+ok('17d: date_from = 2025-08-22',   ($result17[0]['date_from'] ?? '') === '2025-08-22');
 ok('17e: odo_begin correct',        ($result17[0]['odo_begin'] ?? -1) === 264270);
 ok('17f: odo_end stored correctly', ($result17[1]['odo_end'] ?? -1) === 264620);
 ok('17g: distance for rec2',        ($result17[1]['distance'] ?? -1) === 262);
@@ -441,15 +441,15 @@ $out  = parseDriverCardVehicles($blob);
 
 ok('18a: old-firstUse/recent-lastUse accepted', count($out) === 1);
 ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR9988AB');
-ok('18c: last_use is recent',                   ($out[0]['last_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
+ok('18c: date_to is recent',                   ($out[0]['date_to'] ?? '') === gmdate('Y-m-d', $recentLastUse));
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 19: firstUse = 0 (epoch / not recorded by VU) → ACCEPTED with
- *          first_use falling back to lastUse (no spurious 1970-01-01).
+ *          date_from falling back to lastUse (no spurious 1970-01-01).
  *
  * Some vehicle units leave vehicleFirstUse at zero.  The record is still
  * valid – the driver DID use the vehicle – so we accept it and display the
- * last-use date as both first_use and last_use rather than discarding it.
+ * last-use date as both date_from and date_to rather than discarding it.
  *
  * 19b: A non-zero firstUse that is older than 20 years → still REJECTED
  *      (distinguishes genuine corruption from the unset-epoch case).
@@ -462,8 +462,8 @@ $rec19  = buildGen2Rec('AB12345', 'PL', 40, $epochFirstUse, $recentLastUse);
 $blob19 = buildTlvBlob($rec19, 1);
 $out19  = parseDriverCardVehicles($blob19);
 ok('19a: epoch firstUse accepted (VU unset field)',  count($out19) === 1);
-ok('19a: first_use falls back to last_use',          ($out19[0]['first_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
-ok('19a: no spurious 1970-01-01 date',               ($out19[0]['first_use'] ?? '') !== '1970-01-01');
+ok('19a: date_from falls back to date_to',          ($out19[0]['date_from'] ?? '') === gmdate('Y-m-d', $recentLastUse));
+ok('19a: no spurious 1970-01-01 date',               ($out19[0]['date_from'] ?? '') !== '1970-01-01');
 ok('19a: plate is AB12345',                          ($out19[0]['reg'] ?? '') === 'AB12345');
 
 // 19b: A non-zero firstUse older than 20 years → rejected (genuine corruption)
@@ -506,10 +506,10 @@ $out20   = parseDriverCardVehicles($t20blob);
 ok('20a: all 10 vehicles found',         count($out20) === 10);
 ok('20b: PY 90501 present',              in_array('PY 90501', array_column($out20, 'reg')));
 ok('20c: SZ 77777 present (Feb 2026)',   in_array('SZ 77777', array_column($out20, 'reg')));
-ok('20d: no 1970-01-01 first_use dates', !in_array('1970-01-01', array_column($out20, 'first_use')));
-// Records with epoch firstUse should have first_use == last_use
+ok('20d: no 1970-01-01 date_from dates', !in_array('1970-01-01', array_column($out20, 'date_from')));
+// Records with epoch firstUse should have date_from == date_to
 $szRec = current(array_filter($out20, fn($r) => $r['reg'] === 'SZ 77777'));
-ok('20e: SZ 77777 first_use = last_use (epoch fallback)', $szRec && $szRec['first_use'] === $szRec['last_use']);
+ok('20e: SZ 77777 date_from = date_to (epoch fallback)', $szRec && $szRec['date_from'] === $szRec['date_to']);
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 21: Phase-1 extended scan – unknown TLV tag with epoch firstUse.
@@ -555,10 +555,10 @@ $out21 = parseDriverCardVehicles($t21blob);
 ok('21a: all 10 vehicles found via Phase-1 extended scan',  count($out21) === 10);
 ok('21b: PY 90501 present',                   in_array('PY 90501', array_column($out21, 'reg')));
 ok('21c: SZ 77777 (Feb 2026) present',        in_array('SZ 77777', array_column($out21, 'reg')));
-ok('21d: no 1970-01-01 dates',                !in_array('1970-01-01', array_column($out21, 'first_use')));
+ok('21d: no 1970-01-01 dates',                !in_array('1970-01-01', array_column($out21, 'date_from')));
 $sz21 = current(array_filter($out21, fn($r) => $r['reg'] === 'SZ 77777'));
-ok('21e: SZ 77777 first_use = last_use',      $sz21 && $sz21['first_use'] === $sz21['last_use']);
-ok('21f: PY 90501 first_use = 2025-11-19',    current(array_filter($out21, fn($r) => $r['reg'] === 'PY 90501'))['first_use'] ?? '' === '2025-11-19');
+ok('21e: SZ 77777 date_from = date_to',      $sz21 && $sz21['date_from'] === $sz21['date_to']);
+ok('21f: PY 90501 date_from = 2025-11-19',    current(array_filter($out21, fn($r) => $r['reg'] === 'PY 90501'))['date_from'] ?? '' === '2025-11-19');
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 22: Phase-2b best-group – no TLV structure at all, all epoch firstUse.
@@ -599,9 +599,9 @@ $out22 = parseDriverCardVehicles($t22blob);
 ok('22a: all 10 vehicles found via Phase-2b',  count($out22) === 10);
 ok('22b: PY 90501 present',                    in_array('PY 90501', array_column($out22, 'reg')));
 ok('22c: SZ 77777 (Feb 2026) present',         in_array('SZ 77777', array_column($out22, 'reg')));
-ok('22d: no 1970-01-01 dates',                 !in_array('1970-01-01', array_column($out22, 'first_use')));
+ok('22d: no 1970-01-01 dates',                 !in_array('1970-01-01', array_column($out22, 'date_from')));
 $sz22 = current(array_filter($out22, fn($r) => $r['reg'] === 'SZ 77777'));
-ok('22e: SZ 77777 first_use = last_use',       $sz22 && $sz22['first_use'] === $sz22['last_use']);
+ok('22e: SZ 77777 date_from = date_to',       $sz22 && $sz22['date_from'] === $sz22['date_to']);
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 23: Phase-1 pollution guard – known vehicle tag (0x0504) results must
@@ -664,8 +664,8 @@ ok('23a: exactly 2 vehicles returned (not 7)',  count($out23) === 2);
 ok('23b: GD789EF present',                      in_array('GD789EF', array_column($out23, 'reg')));
 ok('23c: PO321GH present',                      in_array('PO321GH', array_column($out23, 'reg')));
 ok('23d: no garbage plates in result',          !array_filter($out23, fn($r) => str_starts_with($r['reg'], 'WA')));
-ok('23e: GD789EF first_use = last_use (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'GD789EF'))['first_use'] === gmdate('Y-m-d', $t23lastGD));
-ok('23f: PO321GH first_use = last_use (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'PO321GH'))['first_use'] === gmdate('Y-m-d', $t23lastPO));
+ok('23e: GD789EF date_from = date_to (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'GD789EF'))['date_from'] === gmdate('Y-m-d', $t23lastGD));
+ok('23f: PO321GH date_from = date_to (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'PO321GH'))['date_from'] === gmdate('Y-m-d', $t23lastPO));
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 24: Phase-2 epoch-penalty regression – 2 vehicles with epoch firstUse,
@@ -696,9 +696,9 @@ $out24 = parseDriverCardVehicles($t24blob);
 ok('24a: 2 vehicles found via Phase-2',         count($out24) === 2);
 ok('24b: GD789EF present',                      in_array('GD789EF', array_column($out24, 'reg')));
 ok('24c: PO321GH present',                      in_array('PO321GH', array_column($out24, 'reg')));
-ok('24d: GD789EF first_use = 2025-05-24',       current(array_filter($out24, fn($r) => $r['reg'] === 'GD789EF'))['first_use'] === '2025-05-24');
-ok('24e: PO321GH first_use = 2025-09-21',       current(array_filter($out24, fn($r) => $r['reg'] === 'PO321GH'))['first_use'] === '2025-09-21');
-ok('24f: no 1970-01-01 dates',                  !in_array('1970-01-01', array_column($out24, 'first_use')));
+ok('24d: GD789EF date_from = 2025-05-24',       current(array_filter($out24, fn($r) => $r['reg'] === 'GD789EF'))['date_from'] === '2025-05-24');
+ok('24e: PO321GH date_from = 2025-09-21',       current(array_filter($out24, fn($r) => $r['reg'] === 'PO321GH'))['date_from'] === '2025-09-21');
+ok('24f: no 1970-01-01 dates',                  !in_array('1970-01-01', array_column($out24, 'date_from')));
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Test 25: Short registration "0 D" rejected (fewer than 4 non-space chars)
@@ -771,8 +771,8 @@ function vRec(
     $r = [
         'reg'        => $reg,
         'nation'     => $nation,
-        'first_use'  => $firstUse,
-        'last_use'   => $lastUse,
+        'date_from'  => $firstUse,
+        'date_to'   => $lastUse,
         'odo_begin'  => $odoBegin,
         'odo_end'    => $odoEnd,
         'distance'   => ($odoEnd > $odoBegin && $odoBegin > 0) ? $odoEnd - $odoBegin : 0,
@@ -783,8 +783,8 @@ function vRec(
     return $r;
 }
 
-/* ── Test 27: different last_use → different sessions, both kept ──────── */
-echo "\nTest 27: mergeVehicleRecords – different last_use = different sessions\n";
+/* ── Test 27: different date_to → different sessions, both kept ──────── */
+echo "\nTest 27: mergeVehicleRecords – different date_to = different sessions\n";
 
 $t27Records = [
     // File A: one download – has real odo values, session ended 2023-01-10
@@ -800,15 +800,15 @@ $t27 = mergeVehicleRecords($t27Records);
 ok('27a: 3 records (WA12345 twice + GD999XY once)', count($t27) === 3);
 $t27wa = array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'));
 ok('27b: both WA12345 sessions present (2 rows)', count($t27wa) === 2);
-$t27lastUses = array_column($t27wa, 'last_use');
+$t27lastUses = array_column($t27wa, 'date_to');
 sort($t27lastUses);
-ok('27c: WA12345 sessions have last_use 2023-01-10 and 2023-03-20',
+ok('27c: WA12345 sessions have date_to 2023-01-10 and 2023-03-20',
     $t27lastUses === ['2023-01-10', '2023-03-20']
 );
 ok('27d: GD999XY still present', count(array_filter($t27, fn($r) => $r['reg'] === 'GD999XY')) === 1);
 
-/* ── Test 28: different last_use → separate sessions kept independently ── */
-echo "\nTest 28: mergeVehicleRecords – different last_use kept as separate sessions\n";
+/* ── Test 28: different date_to → separate sessions kept independently ── */
+echo "\nTest 28: mergeVehicleRecords – different date_to kept as separate sessions\n";
 
 $t28Records = [
     // Session A: long period, no odo_begin
@@ -820,16 +820,16 @@ $t28Records = [
 $t28 = mergeVehicleRecords($t28Records);
 
 ok('28a: 2 records (different sessions for same vehicle)', count($t28) === 2);
-$t28lastUses = array_column($t28, 'last_use');
+$t28lastUses = array_column($t28, 'date_to');
 sort($t28lastUses);
-ok('28b: sessions have last_use 2023-06-30 and 2023-08-31',
+ok('28b: sessions have date_to 2023-06-30 and 2023-08-31',
     $t28lastUses === ['2023-06-30', '2023-08-31']
 );
-$t28sessionA = array_values(array_filter($t28, fn($r) => $r['last_use'] === '2023-08-31'))[0];
+$t28sessionA = array_values(array_filter($t28, fn($r) => $r['date_to'] === '2023-08-31'))[0];
 ok('28c: session A has odo_end = 200500',           $t28sessionA['odo_end'] === 200500);
 ok('28d: session A has odo_begin = 0',              $t28sessionA['odo_begin'] === 0);
 ok('28e: session A source_file = file_b',           $t28sessionA['source_file'] === 'file_b.ddd');
-$t28sessionB = array_values(array_filter($t28, fn($r) => $r['last_use'] === '2023-06-30'))[0];
+$t28sessionB = array_values(array_filter($t28, fn($r) => $r['date_to'] === '2023-06-30'))[0];
 ok('28f: session B has odo_begin = 200000',         $t28sessionB['odo_begin'] === 200000);
 ok('28g: session B has distance = 300',             $t28sessionB['distance'] === 300);
 
@@ -847,13 +847,13 @@ $t28b = mergeVehicleRecords($t28bRecords);
 $t28bv = $t28b[0];
 
 ok('28b-a: one record (same dates = same session)',   count($t28b) === 1);
-ok('28b-b: last_use = 2023-08-31',                   $t28bv['last_use']  === '2023-08-31');
+ok('28b-b: date_to = 2023-08-31',                   $t28bv['date_to']  === '2023-08-31');
 ok('28b-c: odo_begin rescued = 200000',              $t28bv['odo_begin'] === 200000);
 ok('28b-d: odo_end = 200500',                        $t28bv['odo_end']   === 200500);
 ok('28b-e: distance recomputed = 500',               $t28bv['distance']  === 500);
 
-/* ── Test 29: same last_use → highest distance wins; sorted by first_use ─ */
-echo "\nTest 29: mergeVehicleRecords – same last_use, distance tiebreak; sort order\n";
+/* ── Test 29: same date_to → highest distance wins; sorted by date_from ─ */
+echo "\nTest 29: mergeVehicleRecords – same date_to, distance tiebreak; sort order\n";
 
 $t29Records = [
     vRec('PO321GH', '2023-07-15', '2023-09-01', 300000, 300800, 'DE'),  // distance 800
@@ -867,7 +867,7 @@ ok('29a: 2 unique vehicles', count($t29) === 2);
 ok('29b: PO321GH distance = 800 (higher wins)',
     array_values(array_filter($t29, fn($r) => $r['reg'] === 'PO321GH'))[0]['distance'] === 800
 );
-ok('29c: sorted ascending by first_use – WR456CD first',
+ok('29c: sorted ascending by date_from – WR456CD first',
     $t29[0]['reg'] === 'WR456CD'
 );
 

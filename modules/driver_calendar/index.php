@@ -250,7 +250,7 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
             $vehicleRecords[] = array_merge($r, ['source_file' => $fRow['original_name']]);
         }
     }
-    // Merge records from multiple DDD files: prefer most recent last_use;
+    // Merge records from multiple DDD files: prefer most recent date_to;
     // 'source_file' is carried through from the winning (most recent) record.
     $vehicleRecords = mergeVehicleRecords($vehicleRecords);
 }
@@ -894,8 +894,8 @@ include __DIR__ . '/../../templates/header.php';
               <tr>
                 <th>Rejestracja</th>
                 <th>Kraj</th>
-                <th>Pierwsze użycie</th>
-                <th>Ostatnie użycie</th>
+                <th>Od</th>
+                <th>Do</th>
                 <th class="text-end">Przebieg (pocz.)</th>
                 <th class="text-end">Przebieg (końc.)</th>
                 <th class="text-end">Dystans</th>
@@ -910,8 +910,8 @@ include __DIR__ . '/../../templates/header.php';
                   <strong><?= e($vr['reg']) ?></strong>
                 </td>
                 <td><?= e($vr['nation'] ?: '—') ?></td>
-                <td class="text-nowrap"><?= fmtDate($vr['first_use']) ?></td>
-                <td class="text-nowrap"><?= fmtDate($vr['last_use']) ?></td>
+                <td class="text-nowrap"><?= fmtDate($vr['date_from']) ?></td>
+                <td class="text-nowrap"><?= fmtDate($vr['date_to']) ?></td>
                 <td class="text-end text-nowrap"><?= $vr['odo_begin'] > 0 ? number_format($vr['odo_begin']) . ' km' : '—' ?></td>
                 <td class="text-end text-nowrap"><?= $vr['odo_end'] > 0 ? number_format($vr['odo_end']) . ' km' : '—' ?></td>
                 <td class="text-end text-nowrap">
