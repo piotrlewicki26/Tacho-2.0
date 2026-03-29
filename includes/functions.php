@@ -490,12 +490,27 @@ function parseDddFile(string $path): array {
         $iqr  = $p75 - $p25;
         $pMin = $p25 - 3 * $iqr;
     }
-    // Filter date groups: drop any date whose median presenceCounter is below lower fence
+    // Filter date groups: drop dates where ALL candidates are below the lower fence.
+    // A date is kept if at least one candidate is in/above the main cluster (pres >= pMin).
+    // This handles days where coincidental low-pres binary patterns lower the median
+    // below pMin even though the real day record has a pres well inside the cluster
+    // (e.g. Feb 17 or Feb 19 on a card with many border-crossing records that inject
+    // extra low-pres candidates for those dates).
+    // Candidates are re-sorted so in-cluster ones (pres >= pMin, closest to cluster
+    // centre) are tried first, ahead of the low-pres outliers.
+    $clusterCenter = ($n >= 4) ? (($p25 + $p75) / 2) : PHP_INT_MAX;
     $filteredGroups = [];
     foreach ($dateGroups as $date => $candidates) {
-        if ($candidates[0]['pres'] >= $pMin) {
-            $filteredGroups[$date] = $candidates;
-        }
+        $maxPres = max(array_column($candidates, 'pres'));
+        if ($maxPres < $pMin) continue;
+        // Re-sort: in-cluster candidates first, then by proximity to cluster centre
+        usort($candidates, function($a, $b) use ($pMin, $clusterCenter) {
+            $aOk = ($a['pres'] >= $pMin) ? 1 : 0;
+            $bOk = ($b['pres'] >= $pMin) ? 1 : 0;
+            if ($aOk !== $bOk) return $bOk - $aOk;
+            return abs($a['pres'] - $clusterCenter) - abs($b['pres'] - $clusterCenter);
+        });
+        $filteredGroups[$date] = $candidates;
     }
     if (!$filteredGroups) return $empty;
 
@@ -505,8 +520,8 @@ function parseDddFile(string $path): array {
     $offMap  = array_flip($offsets);
 
     // ── Step 6: Parse activity entries per record ──────────────────────────────
-    // For each date, try candidates in order (median first); use the first one
-    // whose activity entries produce a valid 1350–1460 minute total.
+    // For each date, try candidates in order (in-cluster first, then fallbacks);
+    // use the first one whose activity entries produce a valid 1350–1460 minute total.
     $days = [];
     foreach ($filteredGroups as $dateKey => $candidates) {
         foreach ($candidates as $cidx => $r) {
@@ -548,6 +563,16 @@ function parseDddFile(string $path): array {
                 if ($dur > 0) {
                     $slots[] = ['act' => $mono[$k]['act'], 'start' => $mono[$k]['tmin'], 'end' => $end, 'dur' => $dur];
                 }
+            }
+
+            // If the first activity entry starts after midnight (no activity change at
+            // midnight – driver continued previous day's activity without interruption),
+            // prepend an implicit carry-over segment from 00:00 to the first entry.
+            // This is common when a long rest spans the day boundary.
+            // Only applied for gaps ≤ 4 hours (240 min) to avoid accepting bad records.
+            $firstTmin = $mono ? $mono[0]['tmin'] : 0;
+            if ($firstTmin > 0 && $firstTmin <= 240) {
+                array_unshift($slots, ['act' => 0, 'start' => 0, 'end' => $firstTmin, 'dur' => $firstTmin]);
             }
 
             // Validate total minutes (accept 1350–1460 to handle minor truncation)
