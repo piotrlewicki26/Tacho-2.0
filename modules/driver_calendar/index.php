@@ -315,9 +315,10 @@ $activePage = 'driver_calendar';
 include __DIR__ . '/../../templates/header.php';
 ?>
 
-<div class="row g-3 mb-4">
-  <!-- ── Left panel: filters ────────────────────────────────── -->
-  <div class="col-lg-3">
+<!-- ── Summary row: driver filter + stats ─────────────────────── -->
+<?php if (!$driverId): ?>
+<div class="row g-3 mb-3">
+  <div class="col-xl-3 col-lg-4">
     <div class="tp-card">
       <div class="tp-card-header">
         <i class="bi bi-person-badge text-primary"></i>
@@ -336,8 +337,47 @@ include __DIR__ . '/../../templates/header.php';
               <?php endforeach; ?>
             </select>
           </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
 
-          <?php if ($driverId && $driverInfo): ?>
+<div class="tp-card d-flex align-items-center justify-content-center" style="min-height:320px">
+  <div class="tp-empty-state">
+    <i class="bi bi-person-lines-fill" style="font-size:3rem;color:#94a3b8"></i>
+    <p class="mt-3 mb-1 fw-600">Wybierz kierowcę</p>
+    <p class="text-muted small">Wybierz kierowcę z listy powyżej, aby wyświetlić jego kalendarz i analizę aktywności.</p>
+  </div>
+</div>
+
+<?php elseif (!$driverInfo): ?>
+<div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>Kierowca nie istnieje lub brak dostępu.</div>
+
+<?php else: ?>
+<!-- Summary: driver filter panel + stats in one row -->
+<div class="row g-3 mb-3">
+  <!-- ── Left panel (now inside summary) ─── -->
+  <div class="col-xl-3 col-lg-4">
+    <div class="tp-card mb-3">
+      <div class="tp-card-header">
+        <i class="bi bi-person-badge text-primary"></i>
+        <span class="tp-card-title">Kierowca</span>
+      </div>
+      <div class="tp-card-body">
+        <form method="GET" novalidate id="filterForm">
+          <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
+          <div class="mb-3">
+            <select name="driver_id" class="form-select" onchange="var f=this.form;var ef=f.elements['from'],et=f.elements['to'];if(ef)ef.value='';if(et)et.value='';f.submit();" title="Wybierz kierowcę">
+              <option value="">— Wybierz kierowcę —</option>
+              <?php foreach ($allDrivers as $d): ?>
+              <option value="<?= $d['id'] ?>"<?= $d['id']==$driverId?' selected':'' ?>>
+                <?= e($d['last_name'] . ' ' . $d['first_name']) ?>
+              </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
           <!-- Driver info card -->
           <div class="dc-driver-card mb-3">
             <div class="dc-driver-avatar">
@@ -397,14 +437,13 @@ include __DIR__ . '/../../templates/header.php';
           <button type="submit" class="btn btn-primary btn-sm w-100">
             <i class="bi bi-search me-1"></i>Filtruj
           </button>
-          <?php endif; ?>
         </form>
       </div>
     </div>
 
     <!-- Files quick list -->
     <?php if ($driverFiles): ?>
-    <div class="tp-card mt-3">
+    <div class="tp-card">
       <div class="tp-card-header">
         <i class="bi bi-file-earmark-text text-secondary"></i>
         <span class="tp-card-title">Pliki DDD</span>
@@ -439,25 +478,10 @@ include __DIR__ . '/../../templates/header.php';
     <?php endif; ?>
   </div>
 
-  <!-- ── Main area ─────────────────────────────────────────────── -->
-  <div class="col-lg-9">
-    <?php if (!$driverId): ?>
-    <!-- Empty state -->
-    <div class="tp-card h-100 d-flex align-items-center justify-content-center" style="min-height:320px">
-      <div class="tp-empty-state">
-        <i class="bi bi-person-lines-fill" style="font-size:3rem;color:#94a3b8"></i>
-        <p class="mt-3 mb-1 fw-600">Wybierz kierowcę</p>
-        <p class="text-muted small">Wybierz kierowcę z listy po lewej, aby wyświetlić jego kalendarz i analizę aktywności.</p>
-      </div>
-    </div>
-
-    <?php elseif (!$driverInfo): ?>
-    <div class="alert alert-danger"><i class="bi bi-exclamation-circle me-2"></i>Kierowca nie istnieje lub brak dostępu.</div>
-
-    <?php else: ?>
-    <!-- ── Summary stats ───────────────────────────────────── -->
-    <div class="row g-3 mb-3">
-      <div class="col-12 col-sm-6 col-xl-3">
+  <!-- ── Stats ───────────────────────────────────────────────── -->
+  <div class="col-xl-9 col-lg-8">
+    <div class="row g-3">
+      <div class="col-12 col-sm-6">
         <div class="tp-stat">
           <div class="tp-stat-icon primary"><i class="bi bi-speedometer2"></i></div>
           <div>
@@ -466,7 +490,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-12 col-sm-6 col-xl-3">
+      <div class="col-12 col-sm-6">
         <div class="tp-stat">
           <div class="tp-stat-icon warning"><i class="bi bi-briefcase"></i></div>
           <div>
@@ -475,7 +499,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-12 col-sm-6 col-xl-3">
+      <div class="col-12 col-sm-6">
         <div class="tp-stat">
           <div class="tp-stat-icon success"><i class="bi bi-signpost-split"></i></div>
           <div>
@@ -484,7 +508,7 @@ include __DIR__ . '/../../templates/header.php';
           </div>
         </div>
       </div>
-      <div class="col-12 col-sm-6 col-xl-3">
+      <div class="col-12 col-sm-6">
         <div class="tp-stat">
           <div class="tp-stat-icon <?= $summary['violations'] > 0 ? 'danger' : 'success' ?>">
             <i class="bi bi-<?= $summary['violations'] > 0 ? 'exclamation-triangle' : 'shield-check' ?>"></i>
@@ -496,9 +520,11 @@ include __DIR__ . '/../../templates/header.php';
         </div>
       </div>
     </div>
+  </div>
+</div><!-- /.row summary -->
 
-    <!-- ── Tabs ────────────────────────────────────────────── -->
-    <div class="tp-card">
+<!-- ── Tabs (full-width) ───────────────────────────────────────── -->
+<div class="tp-card mb-3">
       <div class="tp-card-header p-0 border-bottom-0">
         <ul class="nav nav-tabs dc-tabs w-100 px-3 pt-2" role="tablist">
           <li class="nav-item" role="presentation">
@@ -942,9 +968,7 @@ include __DIR__ . '/../../templates/header.php';
 
       </div><!-- /.tp-card-body -->
     </div><!-- /.tp-card -->
-    <?php endif; // $driverInfo ?>
-  </div><!-- /.col-lg-9 -->
-</div>
+<?php endif; // !$driverId / !$driverInfo / else ?>
 
 <style>
 /* ── Driver Calendar styles ─────────────────────────────────── */
