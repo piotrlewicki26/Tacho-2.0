@@ -440,7 +440,7 @@ function parseDddFile(string $path): array {
         // The IQR filter in Step 4 removes stale records from old use-periods.
         if ($pres < 1 || $pres > 8000 || $dist > 1100) continue;
 
-        $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
+        $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist, 'tmin' => (int)(($ts % 86400) / 60)];
     }
     if (!$cands) return $empty;
 
@@ -503,21 +503,38 @@ function parseDddFile(string $path): array {
     foreach ($dateGroups as $date => $candidates) {
         $maxPres = max(array_column($candidates, 'pres'));
         if ($maxPres < $pMin) continue;
-        // Re-sort: in-cluster candidates first, then by proximity to cluster centre
+        // Re-sort: in-cluster candidates first; within the same cluster tier prefer
+        // candidates whose timestamp is close to midnight (real EF_DailyWorkPeriod
+        // records typically start at the day boundary, whereas false positives from
+        // circular-buffer regions such as border-crossing tables or download logs
+        // often carry mid-day or end-of-evening timestamps). Use proximity to the
+        // cluster centre as a final tiebreaker.
         usort($candidates, function($a, $b) use ($pMin, $clusterCenter) {
             $aOk = ($a['pres'] >= $pMin) ? 1 : 0;
             $bOk = ($b['pres'] >= $pMin) ? 1 : 0;
             if ($aOk !== $bOk) return $bOk - $aOk;
+            // Midnight proximity: distance of tmin from 00:00 (or equivalently 24:00)
+            $aMid = min($a['tmin'], 1440 - $a['tmin']);
+            $bMid = min($b['tmin'], 1440 - $b['tmin']);
+            if ($aMid !== $bMid) return $aMid - $bMid;
             return abs($a['pres'] - $clusterCenter) - abs($b['pres'] - $clusterCenter);
         });
         $filteredGroups[$date] = $candidates;
     }
     if (!$filteredGroups) return $empty;
 
-    // ── Step 5: Build next-record-offset lookup (using primary/median candidates) ─
+    // ── Step 5: Build next-record-offset lookups ───────────────────────────────
+    // Primary lookup: one offset per date (used to bound the primary candidate's scan).
     $offsets = array_map(fn($cands) => $cands[0]['off'], $filteredGroups);
     sort($offsets);
     $offMap  = array_flip($offsets);
+    // All-candidates lookup: every valid 8-byte header pattern in the file.
+    // Used to prevent the activity scanner from reading across a known record
+    // boundary (e.g. the presenceCounter bytes of the next day's header being
+    // misread as an activity-change entry).
+    $allCandOffsets = array_unique(array_column($cands, 'off'));
+    sort($allCandOffsets);
+    $allOffMap = array_flip($allCandOffsets);
 
     // ── Step 6: Parse activity entries per record ──────────────────────────────
     // For each date, try candidates in order (in-cluster first, then fallbacks);
@@ -525,16 +542,24 @@ function parseDddFile(string $path): array {
     $days = [];
     foreach ($filteredGroups as $dateKey => $candidates) {
         foreach ($candidates as $cidx => $r) {
+            // Compute scan bound: the smaller of (a) the next known-primary offset
+            // and (b) the next ANY-candidate offset – whichever comes first. This
+            // prevents the activity scanner from sliding into the header bytes of
+            // an adjacent record and misreading them as activity-change entries.
+            $myAllIdx = $allOffMap[$r['off']] ?? -1;
+            $nextAny  = ($myAllIdx >= 0 && $myAllIdx < count($allCandOffsets) - 1)
+                        ? $allCandOffsets[$myAllIdx + 1]
+                        : PHP_INT_MAX;
             if ($cidx === 0) {
-                // Primary candidate: use the next-record boundary for a tighter scan
+                // Primary candidate: also respect the next-primary boundary
                 $myIdx   = $offMap[$r['off']] ?? -1;
                 $nextRec = ($myIdx >= 0 && $myIdx < count($offsets) - 1)
                            ? $offsets[$myIdx + 1]
                            : $r['off'] + 400;
-                $bound   = min($nextRec, $r['off'] + 600, $len - 1);
+                $bound   = min($nextRec, $nextAny, $r['off'] + 600, $len - 1);
             } else {
-                // Fallback candidates: use a fixed 600-byte scan window
-                $bound   = min($r['off'] + 600, $len - 1);
+                // Fallback candidates: use any-candidate boundary + fixed 600-byte cap
+                $bound   = min($nextAny, $r['off'] + 600, $len - 1);
             }
 
             $pts = [];
