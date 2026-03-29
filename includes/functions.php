@@ -1123,6 +1123,7 @@ function parseDriverCardVehicles(string $data): array
      * $recSize: 32 for Gen-2 cards (Reg. 165/2014, NationAlpha present),
      *           29 for Gen-1 cards (Reg. 3821/85 / 1360/2002, no NationAlpha field),
      *           31 for proprietary format (odoBegin first, no NationAlpha, 2-byte counter),
+     *           31 + $altLayout=true for Alt-31B (counter+odoBegin+odoEnd+ts+ts+nation+cp+reg),
      *           24 for compact variant (no odometer, 1-byte padding before timestamps).
      *
      * Gen-2 record layout (32 bytes):
@@ -1154,6 +1155,16 @@ function parseDriverCardVehicles(string $data): array
      *   +26 circularBufferCounter (2 bytes, ignored)
      *   +28 vehicleOdometerEnd   (3 bytes)
      *
+     * Alt-31B record layout (31 bytes, EF_CardVehiclesUsed variant with daily-usage counters):
+     *   +0  circularBufferCounter (2 bytes, ignored)
+     *   +2  vehicleOdometerBegin (3 bytes)
+     *   +5  vehicleOdometerEnd   (3 bytes)
+     *   +8  vehicleFirstUse  (TimeReal 4 bytes)
+     *   +12 vehicleLastUse   (TimeReal 4 bytes)
+     *   +16 nationNumeric (1 byte)
+     *   +17 codePage      (1 byte)
+     *   +18 regNumber     (13 bytes, IA5, 0x00/0xFF-padded)
+     *
      * Compact 24-byte record layout (no odometer, found in tag 0x050b):
      *   +0  nationNumeric (1 byte)
      *   +1  codePage      (1 byte)
@@ -1163,16 +1174,21 @@ function parseDriverCardVehicles(string $data): array
      *   +20 vehicleLastUse   (TimeReal 4 bytes)
      *
      * Returns validated records array (empty = block is not vehicle data). */
-    $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32, bool $allowEpochFirstUse = false) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
-        $parsed = [];
-        $isGen1  = ($recSize === 29);
-        $isAlt31 = ($recSize === 31);
-        $isGen24 = ($recSize === 24);
+    $parseBlock = function (int $pos, int $maxRecs, int $limit, int $recSize = 32, bool $allowEpochFirstUse = false, bool $altLayout = false) use ($data, $len, $tsMin, $tsMax, $nationCodes): array {
+        $parsed   = [];
+        $isGen1   = ($recSize === 29);
+        $isAlt31  = ($recSize === 31 && !$altLayout);
+        $isAlt31B = ($recSize === 31 && $altLayout);   /* Alt-31B: counter+odoBegin+odoEnd+firstUse+lastUse+nation+cp+reg */
+        $isGen24  = ($recSize === 24);
         /* Field offsets derived from record layout */
         if ($isGen24) {
             /* Compact 24-byte: nation(1)+cp(1)+reg(13)+pad(1)+firstUse(4)+lastUse(4), no odo */
             $nationNumOff = 0;   $regOff = 2;   $tsOff = 16;
             $odoBeginOff  = -1;  $odoEndOff = -1;
+        } elseif ($isAlt31B) {
+            /* Alt-31B: counter(2)+odoBegin(3)+odoEnd(3)+firstUse(4)+lastUse(4)+nation(1)+cp(1)+reg(13) */
+            $nationNumOff = 16;  $regOff = 18;  $tsOff = 8;
+            $odoBeginOff  = 2;   $odoEndOff = 5;
         } elseif ($isAlt31) {
             /* Proprietary 31-byte: odoBegin(3)+firstUse(4)+lastUse(4)+nation(1)+cp(1)+reg(13)+ctr(2)+odoEnd(3) */
             $nationNumOff = 11;  $regOff = 13;  $tsOff = 3;
@@ -1190,29 +1206,13 @@ function parseDriverCardVehicles(string $data): array
         for ($v = 0; $v < $maxRecs && $v < 200; $v++) {
             if ($pos + $recSize > $limit) break;
 
-            $nationNum   = ord($data[$pos + $nationNumOff]);
-            $nationAlpha = '';
-            if (!$isGen1 && !$isAlt31 && !$isGen24) {
-                $nationRaw   = substr($data, $pos + 1, 3);
-                $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
-            }
-
-            $regRaw = substr($data, $pos + $regOff, 13);
-            $reg    = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
-            $reg    = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
-            $reg    = preg_replace('/\s+/', ' ', $reg);  /* collapse padding-induced extra spaces */
-            $reg    = trim($reg);
-
+            /* ── Fast path: timestamp check first ──────────────────────────
+             * The vast majority of records in non-vehicle EF blocks fail the
+             * timestamp window.  Checking timestamps before the expensive
+             * string/regex operations makes the scan ~10× faster on typical
+             * DDD files where only a few dozen records out of thousands pass. */
             $firstUse = unpack('N', substr($data, $pos + $tsOff,     4))[1];
             $lastUse  = unpack('N', substr($data, $pos + $tsOff + 4, 4))[1];
-
-            if ($odoBeginOff >= 0) {
-                $odoB = (ord($data[$pos + $odoBeginOff])     << 16) | (ord($data[$pos + $odoBeginOff + 1]) << 8) | ord($data[$pos + $odoBeginOff + 2]);
-                $odoE = (ord($data[$pos + $odoEndOff])       << 16) | (ord($data[$pos + $odoEndOff   + 1]) << 8) | ord($data[$pos + $odoEndOff   + 2]);
-            } else {
-                $odoB = 0;
-                $odoE = 0;
-            }
 
             $pos += $recSize;
 
@@ -1236,6 +1236,30 @@ function parseDriverCardVehicles(string $data): array
             if ($firstUse > 0 && $firstUse < $tsMin)                        continue;  // ancient non-epoch first-use
             if ($firstUse > $tsMax)                                         continue;  // implausible future timestamp
             if ($firstUse > 0 && $lastUse < $firstUse)                      continue;  // invalid: last before first
+
+            /* ── Slow path: string extraction and validation ─────────────── */
+            $rpos        = $pos - $recSize;  /* record start (pos was already advanced) */
+            $nationNum   = ord($data[$rpos + $nationNumOff]);
+            $nationAlpha = '';
+            if (!$isGen1 && !$isAlt31 && !$isAlt31B && !$isGen24) {
+                $nationRaw   = substr($data, $rpos + 1, 3);
+                $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
+            }
+
+            $regRaw = substr($data, $rpos + $regOff, 13);
+            $reg    = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
+            $reg    = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
+            $reg    = preg_replace('/\s+/', ' ', $reg);  /* collapse padding-induced extra spaces */
+            $reg    = trim($reg);
+
+            if ($odoBeginOff >= 0) {
+                $odoB = (ord($data[$rpos + $odoBeginOff])     << 16) | (ord($data[$rpos + $odoBeginOff + 1]) << 8) | ord($data[$rpos + $odoBeginOff + 2]);
+                $odoE = (ord($data[$rpos + $odoEndOff])       << 16) | (ord($data[$rpos + $odoEndOff   + 1]) << 8) | ord($data[$rpos + $odoEndOff   + 2]);
+            } else {
+                $odoB = 0;
+                $odoE = 0;
+            }
+
             /* Registration must have at least 4 non-space characters.
              * Single or double-char strings like "0 D" ("0D") are artefacts
              * of misaligned binary reads, not real plate numbers. */
@@ -1249,6 +1273,9 @@ function parseDriverCardVehicles(string $data): array
              * strings that are artefacts of misaligned binary reads. */
             if (!preg_match('/[0-9]/', $reg))              continue;
             if ($odoBeginOff >= 0 && ($odoB > 9_999_999 || $odoE > 9_999_999)) continue;
+            /* Reject records where the odometer went backward (odo_end < odo_begin):
+             * this can only happen due to binary garbage, not real vehicle usage. */
+            if ($odoBeginOff >= 0 && $odoB > 0 && $odoE > 0 && $odoE < $odoB) continue;
             /* Reject strings whose middle space-separated token is a lone letter –
              * e.g. "AIA M 3": valid plates never have an isolated single letter
              * sandwiched between other tokens.  This pattern indicates text/noise data
@@ -1265,13 +1292,27 @@ function parseDriverCardVehicles(string $data): array
                 if (!$midOk) continue;
             }
 
-            /* Determine nation string */
+            /* Determine nation string.
+             * NationAlpha is validated against the known EU/AETR country codes;
+             * arbitrary 1-3-letter strings from binary artefacts (e.g. "PI", "XZ")
+             * are rejected so that the fallback to NationNumeric can fire and, if
+             * that is also out of range, the record itself is discarded. */
+            static $validNationAlpha = [
+                'A','AL','AND','ARM','AZ','B','BG','BIH','BY','CH',
+                'CY','CZ','D','DK','E','EST','F','FIN','FL','FO',
+                'GB','GE','GR','H','HR','I','IRL','IS','KZ','L',
+                'LT','LV','M','MC','MD','MK','N','NL','P','PL',
+                'RO','RSM','RUS','S','SK','SLO','TM','TR','UA','V',
+            ];
             $nation = '';
-            if ($nationAlpha !== '' && preg_match('/^[A-Z]{1,3}$/', $nationAlpha)) {
+            if ($nationAlpha !== '' && in_array($nationAlpha, $validNationAlpha, true)) {
                 $nation = $nationAlpha;
             } elseif ($nationNum >= 1 && $nationNum <= 50) {
                 $nation = $nationCodes[$nationNum] ?? '';
             }
+            /* A record with no recognisable nation code is almost certainly
+             * a false-positive from a misaligned binary read. */
+            if ($nation === '') continue;
 
             /* When the VU left firstUse at zero (epoch), use lastUse as the
              * display date so the output never shows '1970-01-01'. */
@@ -1307,7 +1348,7 @@ function parseDriverCardVehicles(string $data): array
      *   that yields the most valid records (best-block selection, no merging
      *   across blocks).  This preserves support for proprietary manufacturer
      *   tags not in the known list (regression test 21). */
-    static $knownVehTagByte2s = [0x04, 0x28, 0x0b, 0x08, 0x0a, 0x0f];
+    static $knownVehTagByte2s = [0x04, 0x28, 0x0b, 0x08, 0x0a, 0x0f, 0x00];
 
     $phase1KnownResults = [];   /* merged results from known-tag blocks          */
     $phase1BestCount    = -1;   /* record count of the best unknown-tag block     */
@@ -1322,8 +1363,13 @@ function parseDriverCardVehicles(string $data): array
         &$phase1BestCount, &$phase1BestRecs
     ): bool {
         $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-        /* Minimum: 4-byte header + at least one compact-24 record = 28 */
-        if ($bl < 28 || $bl > 65000 || $i + 4 + $bl > $len) return false;
+        /* Minimum: 4-byte header + at least one compact-24 record = 28.
+         * Maximum: EF_CardVehiclesUsed can hold at most ~200 records.  With the
+         * largest known record size (32 bytes) plus header that is ≤ 6404 bytes.
+         * Alt-31B at 200 × 31 = 6200 bytes.  We allow up to 10 000 bytes to
+         * give proprietary implementations some room; blocks larger than that
+         * are almost certainly activity or statistics EFs, not vehicle-usage. */
+        if ($bl < 28 || $bl > 10000 || $i + 4 + $bl > $len) return false;
 
         $base      = $i + 4;
         $isKnown   = in_array(ord($data[$i + 1]), $knownVehTagByte2s);
@@ -1342,8 +1388,12 @@ function parseDriverCardVehicles(string $data): array
         foreach ([32, 29] as $recSize) {
             $totalRecs = (int)(($bl - 4) / $recSize);
             if ($totalRecs < 1) continue;
-            /* Sanity: pointer and count should be within buffer bounds */
-            if ($vPtr >= $totalRecs && $noOfVeh > $totalRecs) continue;
+            /* Sanity: pointer and count should be within buffer bounds.
+             * noOfVeh > 250 is physically impossible for any EU tachograph card
+             * (max 84 slots per Gen-1/Gen-2 spec); rejecting it avoids treating
+             * the first bytes of an Alt-31B or other proprietary block as a
+             * valid EF header. */
+            if ($noOfVeh < 1 || $noOfVeh > 250 || ($vPtr >= $totalRecs && $noOfVeh > $totalRecs)) continue;
 
             /* Parse ALL slots – timestamp validation discards empty/null entries.
              * Pass allowEpochFirstUse=true: within a TLV block the structural
@@ -1357,16 +1407,28 @@ function parseDriverCardVehicles(string $data): array
         }
 
         /* Fallback: some manufacturers omit or garble the standard header and
-         * store records directly at the start of the TLV value. */
+         * store records directly at the start of the TLV value.  Try all known
+         * record layouts (including Alt-31B) and keep the one that produces the
+         * most valid records so that the correct format always wins over any
+         * accidental partial match from a mismatched layout.
+         * A 2-record pre-check gates the full scan so that mismatched formats are
+         * rejected cheaply (timestamps fail quickly) before scanning all 200 slots. */
         if (!$foundRecs) {
-            foreach ([32, 31, 29, 24] as $recSize) {
+            $bestParsed = [];
+            $candidates = [[32, false], [31, false], [29, false], [24, false], [31, true]];
+            foreach ($candidates as [$recSize, $altLayout]) {
                 $totalNoHdr = (int)($bl / $recSize);
                 if ($totalNoHdr < 2) continue;
-                $parsed = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true);
-                if (count($parsed) >= 2) {
-                    $foundRecs = true;
-                    break;
+                /* Quick pre-check: first 2 records must pass before full scan */
+                if (count($parseBlock($base, 2, $i + 4 + $bl, $recSize, true, $altLayout)) < 2) continue;
+                $p = $parseBlock($base, $totalNoHdr, $i + 4 + $bl, $recSize, true, $altLayout);
+                if (count($p) >= 2 && count($p) > count($bestParsed)) {
+                    $bestParsed = $p;
                 }
+            }
+            if (!empty($bestParsed)) {
+                $parsed    = $bestParsed;
+                $foundRecs = true;
             }
         }
 
@@ -1398,15 +1460,7 @@ function parseDriverCardVehicles(string $data): array
 
     for ($i = 0; $i < $len - 36; $i++) {
         if (ord($data[$i]) !== 0x05) continue;
-
-        $found = $tryTlvBlock($i);
-
-        /* Advance past this TLV block to avoid re-scanning its content.
-         * The loop's own $i++ will land us at $i + 4 + $bl (first byte after). */
-        if ($found) {
-            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            $i += 3 + $bl;
-        }
+        $tryTlvBlock($i);
     }
 
     /* Return known-tag results first (most reliable); fall back to best unknown block */
@@ -1445,20 +1499,20 @@ function parseDriverCardVehicles(string $data): array
      *   The lastUse validity check and the letter+digit registration guard already
      *   reject null-padded and random binary data.
      *
-     * We try Gen-2 (32-byte), Gen-1 (29-byte), proprietary 31-byte, and compact
-     * 24-byte record sizes. */
-    foreach ([32, 29, 31, 24] as $recSize) {
+     * We try Gen-2 (32-byte), Gen-1 (29-byte), proprietary 31-byte, Alt-31B, and
+     * compact 24-byte record sizes.  Alt-31B uses $altLayout=true with recSize=31. */
+    foreach ([[32, false], [29, false], [31, false], [24, false], [31, true]] as [$recSize, $altLayout]) {
         $bestScore = PHP_INT_MIN;
         $bestRecs  = [];
 
         for ($i = 0; $i <= $len - 2 * $recSize; $i++) {
             /* Quick pre-check: require ≥ 2 consecutive valid records before
              * paying the cost of a full 200-record scan. */
-            $peek = $parseBlock($i, 2, $len, $recSize, true);
+            $peek = $parseBlock($i, 2, $len, $recSize, true, $altLayout);
             if (count($peek) < 2) continue;
 
             /* Extend to the full group. */
-            $recs = $parseBlock($i, 200, $len, $recSize, true);
+            $recs = $parseBlock($i, 200, $len, $recSize, true, $altLayout);
             $cnt  = count($recs);
             if ($cnt < 2) continue;
 

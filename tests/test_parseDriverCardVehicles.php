@@ -871,6 +871,165 @@ ok('29c: sorted ascending by date_from – WR456CD first',
     $t29[0]['reg'] === 'WR456CD'
 );
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 30: Alt-31B record format
+ *   counter(2)+odoBegin(3)+odoEnd(3)+firstUse(4)+lastUse(4)+nation(1)+cp(1)+reg(13)
+ *   Used by some VUs that store one record per calendar day.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 30: Alt-31B record format (TLV no-header, best-count)\n";
+
+function buildAlt31BRec(
+    string $reg,
+    int $nationNum,
+    int $firstUse,
+    int $lastUse,
+    int $odoB = 100000,
+    int $odoE = 110000,
+    int $counter = 1
+): string {
+    $cnt  = pack('n', $counter);
+    $ob   = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe   = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+    $ts1  = pack('N', $firstUse);
+    $ts2  = pack('N', $lastUse);
+    $nat  = chr($nationNum);
+    $cp   = "\x02";
+    $regP = str_pad(substr($reg, 0, 13), 13, "\x20");  // space-padded like real VU
+
+    return $cnt . $ob . $oe . $ts1 . $ts2 . $nat . $cp . $regP; // 31 bytes
+}
+
+// Build a block with 4 Alt-31B records using the 0x0500 tag (second byte 0x00)
+$now30    = time();
+$t30fu1   = $now30 - 60 * 86400;
+$t30lu1   = $now30 - 59 * 86400;
+$t30fu2   = $now30 - 58 * 86400;
+$t30lu2   = $now30 - 57 * 86400;
+$t30fu3   = $now30 - 56 * 86400;
+$t30lu3   = $now30 - 55 * 86400;
+$t30fu4   = $now30 - 54 * 86400;
+$t30lu4   = $now30 - 53 * 86400;
+
+$t30r1    = buildAlt31BRec('PY 90501', 40, $t30fu1, $t30lu1, 235010, 235619, 1);
+$t30r2    = buildAlt31BRec('PY 90501', 40, $t30fu2, $t30lu2, 235619, 236152, 2);
+$t30r3    = buildAlt31BRec('PY 90501', 40, $t30fu3, $t30lu3, 236152, 236249, 3);
+$t30r4    = buildAlt31BRec('WGM7101N', 40, $t30fu4, $t30lu4, 100000, 101000, 4);
+
+// Build a raw TLV block: tag 0x0500, no EF header, records directly in value
+$t30Recs  = $t30r1 . $t30r2 . $t30r3 . $t30r4;
+$t30bl    = strlen($t30Recs);
+$t30Block = "\x05\x00" . pack('n', $t30bl) . $t30Recs . str_repeat("\x00", 64);
+
+$t30out   = parseDriverCardVehicles($t30Block);
+
+ok('30a: 4 Alt-31B records found', count($t30out) === 4);
+ok('30b: first record reg = PY 90501',
+    isset($t30out[0]) && $t30out[0]['reg'] === 'PY 90501');
+ok('30c: first record nation = PL',
+    isset($t30out[0]) && $t30out[0]['nation'] === 'PL');
+ok('30d: first record odo_begin = 235010',
+    isset($t30out[0]) && $t30out[0]['odo_begin'] === 235010);
+ok('30e: first record odo_end = 235619',
+    isset($t30out[0]) && $t30out[0]['odo_end'] === 235619);
+ok('30f: fourth record reg = WGM7101N',
+    isset($t30out[3]) && $t30out[3]['reg'] === 'WGM7101N');
+ok('30g: sorted ascending by date_from',
+    isset($t30out[0], $t30out[3]) && $t30out[0]['date_from'] <= $t30out[3]['date_from']);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 31: Odometer backward (odo_end < odo_begin) rejected
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 31: Odometer backward rejection\n";
+
+$now31  = time();
+$t31fu  = $now31 - 30 * 86400;
+$t31lu  = $now31 - 20 * 86400;
+// Gen-2 record with odo_end < odo_begin (backward odometer – should be rejected)
+$t31bad = buildGen2Rec('KR456AB', 'PL', 40, $t31fu, $t31lu, 500000, 100000); // end < begin
+// Gen-2 record with valid odometer (odo_end >= odo_begin)
+$t31ok  = buildGen2Rec('WA123CD', 'PL', 40, $t31fu, $t31lu, 100000, 150000);
+$t31blob = buildTlvBlob($t31bad . $t31ok, 2);
+$t31out  = parseDriverCardVehicles($t31blob);
+
+ok('31a: backward-odo record rejected, valid one kept',  count($t31out) === 1);
+ok('31b: the valid record (WA123CD) is returned',
+    isset($t31out[0]) && $t31out[0]['reg'] === 'WA123CD');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 32: Invalid nationAlpha rejected; falls back to nationNum
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 32: Invalid nationAlpha rejected\n";
+
+$now32    = time();
+$t32fu    = $now32 - 30 * 86400;
+$t32lu    = $now32 - 20 * 86400;
+// Gen-2 record with garbage nationAlpha "PI" but valid nationNum 40 (PL)
+// Gen-2 layout: nation(1)+nationAlpha(3)+cp(1)+reg(13)+firstUse(4)+lastUse(4)+odoBegin(3)+odoEnd(3) = 32 bytes
+$t32rec   = chr(40)                                 // nationNum = 40 (PL)
+          . "PI\x00"                                // nationAlpha = "PI" (invalid, should be ignored)
+          . "\x00"                                  // codePage
+          . str_pad('KR456AB', 13, "\x00")          // reg
+          . pack('N', $t32fu)                       // firstUse
+          . pack('N', $t32lu)                       // lastUse
+          . "\x01\x86\xa0"                          // odoBegin = 100000 (3 bytes)
+          . "\x02\x49\xf0";                         // odoEnd   = 150000 (3 bytes)
+$t32blob  = buildTlvBlob($t32rec, 1);
+$t32out   = parseDriverCardVehicles($t32blob);
+
+ok('32a: record still returned (nationNum=40 valid)', count($t32out) === 1);
+ok('32b: nation resolved from nationNum (PL)',
+    isset($t32out[0]) && $t32out[0]['nation'] === 'PL');
+
+// Gen-2 record with garbage nationAlpha "XZ" AND invalid nationNum 99 → rejected
+$t32bad   = chr(99)                                 // nationNum = 99 (invalid, > 50)
+          . "XZ\x00"                                // nationAlpha = "XZ" (invalid)
+          . "\x00"                                  // codePage
+          . str_pad('KR456AB', 13, "\x00")          // reg
+          . pack('N', $t32fu)                       // firstUse
+          . pack('N', $t32lu)                       // lastUse
+          . "\x01\x86\xa0"                          // odoBegin (3 bytes)
+          . "\x02\x49\xf0";                         // odoEnd   (3 bytes)
+$t32blob2 = buildTlvBlob($t32bad, 1);
+$t32out2  = parseDriverCardVehicles($t32blob2);
+
+ok('32c: record with invalid nationAlpha and nationNum > 50 rejected', count($t32out2) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 33: Regression – known-tag block before real vehicle EF must not
+ *   prevent the real EF from being scanned (no skip-forward past it).
+ *   A smaller known-tag block before the main vehicle block should not
+ *   cause the main block to be missed; dedup keeps the better (higher
+ *   distance) records from the main block.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 33: No-skip regression – real vehicle EF found even when preceded by known-tag block\n";
+
+$now33   = time();
+$t33fu   = $now33 - 30 * 86400;
+$t33lu   = $now33 - 20 * 86400;
+
+// Earlier known-tag block (0x0508): single record with odo_begin=odo_end (no distance)
+$t33earlyRec  = buildAlt31BRec('PY 90501', 40, $t33fu, $t33lu, 100000, 100000, 1); // odo_end=odo_begin
+$t33earlyRecs = $t33earlyRec . $t33earlyRec; // need at least 2 to be accepted
+$t33earlyBl   = strlen($t33earlyRecs);
+$t33earlyBlock = "\x05\x08" . pack('n', $t33earlyBl) . $t33earlyRecs;
+
+// Main vehicle block (0x0500): same record but with real odometer data (distance > 0)
+$t33mainRec   = buildAlt31BRec('PY 90501', 40, $t33fu, $t33lu, 235010, 235619, 1);
+$t33mainRecs  = $t33mainRec . $t33mainRec; // at least 2 records for block to be valid
+$t33mainBl    = strlen($t33mainRecs);
+$t33mainBlock = "\x05\x00" . pack('n', $t33mainBl) . $t33mainRecs;
+
+// Place early block first, then main block (both with known tags)
+$t33blob = $t33earlyBlock . $t33mainBlock . str_repeat("\x00", 64);
+$t33out  = parseDriverCardVehicles($t33blob);
+
+ok('33a: record from main block (odo_end=235619) present',
+    count(array_filter($t33out, fn($r) => $r['odo_end'] === 235619)) >= 1);
+ok('33b: distance > 0 for main block record',
+    count(array_filter($t33out, fn($r) => $r['distance'] > 0)) >= 1);
+
+
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";
