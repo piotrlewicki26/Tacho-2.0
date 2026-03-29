@@ -184,6 +184,122 @@
     t.style.top  = vy + 'px';
   }
 
+  /* == Vehicle tooltip ============================================ */
+  function showVehicleTip(e, veh) {
+    var t = getTip();
+    var col = '#5E35B1';
+    var fromStr = veh.date_from ? veh.date_from.slice(0,10) : '?';
+    var toStr   = veh.date_to   ? veh.date_to.slice(0,10)   : '?';
+    t.innerHTML =
+      '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;">' +
+        '<div style="width:11px;height:11px;border-radius:3px;background:'+col+';flex-shrink:0;"></div>' +
+        '<strong style="font-size:15px;color:#ECEFF1;">\uD83D\uDE9A\u00a0' + (veh.reg || '?') + '</strong>' +
+      '</div>' +
+      (veh.nation ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">Kraj: <strong style="color:#B0BEC5;">' + veh.nation + '</strong></div>' : '') +
+      '<div style="color:#B0BEC5;font-size:13px;">Od: ' + fromStr + '</div>' +
+      '<div style="color:#B0BEC5;font-size:13px;">Do: ' + toStr + '</div>';
+    t.style.display = 'block';
+    var vx = Math.min(e.clientX+15, window.innerWidth - 260);
+    var vy = Math.min(e.clientY+15, window.innerHeight - 120);
+    t.style.left = vx + 'px';
+    t.style.top  = vy + 'px';
+  }
+
+  /* == Vehicle usage row builder ================================= *
+   * Renders a thin SVG row showing vehicle usage bands for the     *
+   * given week / range.  vehicleData is [{reg,nation,date_from,    *
+   * date_to,...}].  rangeMinMin/rangeMaxMin are in absolute minutes *
+   * (0 = Monday 00:00 of the given weekStart).                     */
+  var VH = 20; /* vehicle row height in px */
+  var _VEH_COLORS = ['#7E57C2','#26A69A','#EF6C00','#1976D2','#D81B60','#558B2F','#00838F','#AD1457'];
+  /* Build a map of reg -> stable colour index from the global vehicle list */
+  var _vehColorMap = {};
+  var _vehColorIdx = 0;
+  function vehColor(reg) {
+    if (!_vehColorMap[reg]) {
+      _vehColorMap[reg] = _VEH_COLORS[_vehColorIdx % _VEH_COLORS.length];
+      _vehColorIdx++;
+    }
+    return _vehColorMap[reg];
+  }
+
+  function buildVehicleRow(weekStart, cw, vehicleData, rangeMinMin, rangeMaxMin) {
+    if (!vehicleData || !vehicleData.length) return null;
+    var TOTAL_R = rangeMaxMin - rangeMinMin;
+    if (TOTAL_R <= 0) return null;
+    var px = function(m) { return Math.max(0, Math.min(cw, (m - rangeMinMin) / TOTAL_R * cw)); };
+
+    /* Compute absolute minute offsets for start/end of week range */
+    var wkEpoch = weekStart.getTime();
+
+    /* Filter vehicles that overlap with the displayed range */
+    var wkStartMs = wkEpoch + rangeMinMin * 60000;
+    var wkEndMs   = wkEpoch + rangeMaxMin * 60000;
+    var relevant = vehicleData.filter(function(v) {
+      if (!v.date_from || !v.date_to) return false;
+      var vFrom = new Date(v.date_from.slice(0,10)+'T00:00:00').getTime();
+      var vTo   = new Date(v.date_to.slice(0,10)+'T23:59:59').getTime();
+      return vTo >= wkStartMs && vFrom <= wkEndMs;
+    });
+    if (!relevant.length) return null;
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:stretch;border-top:1px solid #E8ECFF;background:#F8F6FF;';
+
+    var sb = document.createElement('div');
+    sb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#EEE8FF;border-right:1px solid #D4C8FF;padding:3px 8px;display:flex;align-items:center;';
+    sb.innerHTML = '<span style="font-size:10px;font-weight:700;color:#5E35B1;letter-spacing:0.5px;text-transform:uppercase;">Pojazdy</span>';
+    row.appendChild(sb);
+
+    var svgEl = mkSVG('svg', {width:cw, height:VH, style:'display:block;flex-shrink:0;overflow:visible;cursor:pointer;'});
+
+    relevant.forEach(function(v) {
+      var vFrom = new Date(v.date_from.slice(0,10)+'T00:00:00').getTime();
+      var vTo   = new Date(v.date_to.slice(0,10)+'T23:59:59').getTime();
+      /* Convert to absolute minutes relative to weekStart */
+      var absFrom = (vFrom - wkEpoch) / 60000;
+      var absTo   = (vTo   - wkEpoch) / 60000;
+      /* Clamp to range */
+      var x1 = px(Math.max(absFrom, rangeMinMin));
+      var x2 = px(Math.min(absTo,   rangeMaxMin));
+      if (x2 <= x1 + 1) return;
+      var col = vehColor(v.reg);
+      var rect = mkSVG('rect', {x:x1, y:3, width:x2-x1, height:VH-6, fill:col, rx:2, opacity:0.82});
+      svgEl.appendChild(rect);
+      /* Label if wide enough */
+      if (x2 - x1 > 28) {
+        var lbl = mkSVG('text', {
+          x: x1 + (x2-x1)/2, y: VH/2+4,
+          'text-anchor':'middle', fill:'#fff',
+          'font-size': 10, 'font-weight': 700,
+          'font-family':'Inter,sans-serif',
+          'pointer-events':'none'
+        });
+        lbl.textContent = v.reg;
+        /* Clip text to band width */
+        var clipId = 'vc-'+Math.round(x1)+'-'+Math.round(x2);
+        var clip = mkSVG('clipPath', {id: clipId});
+        clip.appendChild(mkSVG('rect', {x:x1, y:0, width:x2-x1, height:VH}));
+        svgEl.appendChild(clip);
+        lbl.setAttribute('clip-path', 'url(#'+clipId+')');
+        svgEl.appendChild(lbl);
+      }
+      /* Hit area for tooltip */
+      var hit = mkSVG('rect', {x:x1, y:0, width:x2-x1, height:VH, fill:'transparent', cursor:'pointer'});
+      (function(vv) {
+        hit.addEventListener('click', function(ev) {
+          ev._tachoSeg = true;
+          showVehicleTip(ev, vv);
+          ev.stopPropagation();
+        });
+      })(v);
+      svgEl.appendChild(hit);
+    });
+
+    row.appendChild(svgEl);
+    return row;
+  }
+
   /* == Core SVG content builder =================================== *
    * Draws tracks, activity bars, violations, axis into an existing  *
    * svgEl.  rangeMin/rangeMax control zoom (0/TOTAL_MIN = full view) *
@@ -720,7 +836,7 @@
   }
 
   /* == Build one week row ========================================= */
-  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur, nextWeekDays) {
+  function buildWeekRow(weekStart, weekDays, cw, chartArea, selCtrl, onSelComplete, prevPendingDur, nextWeekDays, vehicleData) {
     var weekDrive = 0, dist = 0, totals = {0:0,1:0,2:0,3:0};
     weekDays.forEach(function(d) {
       if (!d) return;
@@ -965,6 +1081,10 @@
       zRow.appendChild(zSb); zRow.appendChild(zSvg);
       inlineZoom.appendChild(zRow);
 
+      /* Vehicle row in inline zoom */
+      var izVehRow = buildVehicleRow(weekStart, cw, vehicleData, startMin, endMin);
+      if (izVehRow) inlineZoom.appendChild(izVehRow);
+
       /* Activity breakdown */
       var breakdown = document.createElement('div');
       breakdown.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px;background:#fff;border-top:1px solid #BBDEFB;';
@@ -1022,6 +1142,11 @@
     });
 
     mainRow.appendChild(sb); mainRow.appendChild(svgEl); wrapper.appendChild(mainRow);
+
+    /* Vehicle usage row for full week */
+    var vehRow = buildVehicleRow(weekStart, cw, vehicleData, 0, TOTAL_MIN);
+    if (vehRow) wrapper.appendChild(vehRow);
+
     wrapper.appendChild(inlineZoom);
 
     /* ── Weekly summary panel ──────────────────────────────────────────
@@ -1419,7 +1544,7 @@
   /* == Day modal pop-up ============================================ *
    * Opens a fixed overlay showing one day's zoomed chart with        *
    * ◄ / ► navigation between all available days in daysData.        */
-  function showDayModal(initDate, daysData) {
+  function showDayModal(initDate, daysData, vehicleData) {
     /* Sort all days by date */
     var sorted = daysData.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
     /* If the requested date has no data, inject a synthetic empty entry so the
@@ -1547,6 +1672,10 @@
       overviewRow.appendChild(overviewSvg);
       chartDiv.appendChild(overviewRow);
 
+      /* Vehicle row for this day */
+      var dmVehRow = buildVehicleRow(ws, cw, vehicleData, dayStartMin, dayStartMin + 1440);
+      if (dmVehRow) chartDiv.appendChild(dmVehRow);
+
       /* == Info bar (shown when a range is selected) == */
       var infoBar = document.createElement('div');
       infoBar.style.cssText = 'display:none;align-items:center;gap:8px;padding:5px 12px;background:#E3F2FD;border-bottom:1px solid #BBDEFB;flex-wrap:wrap;font-family:Inter,sans-serif;';
@@ -1589,6 +1718,10 @@
         fillChartSVG(zSvg, ws, weekDays, cw, selAbsFrom, selAbsTo, null, dayViols);
         zoomRow.appendChild(zSb);
         zoomRow.appendChild(zSvg);
+
+        /* Vehicle row in day-modal zoom */
+        var dmzVehRow = buildVehicleRow(ws, cw, vehicleData, selAbsFrom, selAbsTo);
+        if (dmzVehRow) { dmzVehRow.style.borderTop = '1px solid #BBDEFB'; zoomRow.appendChild(dmzVehRow); }
 
         /* Update breakdown to selection stats */
         updateBreakdown(rangeTotals(selAbsFrom, selAbsTo), durMin);
@@ -1689,7 +1822,7 @@
     }
     document.addEventListener('keydown', onKey);
   }
-  NS.render = function(containerId, daysData) {
+  NS.render = function(containerId, daysData, vehicleData) {
     var container = document.getElementById(containerId);
     if (!container) return;
     container.innerHTML = '';
@@ -1768,9 +1901,15 @@
       d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
     });
+    /* Vehicle legend item */
+    if (vehicleData && vehicleData.length) {
+      var vLg = document.createElement('div'); vLg.style.cssText='display:flex;align-items:center;gap:4px;';
+      vLg.innerHTML='<div style="width:18px;height:11px;background:#7E57C2;border:1px solid #5E35B180;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">Pojazd</span>';
+      legend.appendChild(vLg);
+    }
     var stLg = document.createElement('div');
     stLg.style.cssText = 'margin-left:auto;font-size:12px;color:#9AA0AA;white-space:nowrap;';
-    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie (inline) | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107 \u2192 opis</span>';
+    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie (inline) | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107/pojazd \u2192 opis</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
@@ -1836,9 +1975,9 @@
             /* Build date string using local calendar fields to avoid UTC offset bug */
             var d = addD(info.weekStart, Math.floor(info.startMin / 1440));
             var dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-            showDayModal(dateStr, daysData);
+            showDayModal(dateStr, daysData, vehicleData);
           }
-        }, pendingDur, _nextWeekDays);
+        }, pendingDur, _nextWeekDays, vehicleData);
         /* Reset carry-over for weeks without real tachograph data so the
          * implicit "7 days of rest" endPendingDur is not propagated forward. */
         if (!wkHasData) { pendingDur = 0; }
@@ -1857,8 +1996,8 @@
   };
 
   /* Public: open day-view modal for a given date and dataset */
-  NS.showDayView = function(date, daysData) {
-    showDayModal(date, daysData);
+  NS.showDayView = function(date, daysData, vehicleData) {
+    showDayModal(date, daysData, vehicleData);
   };
 
 })(window.TachoChart = window.TachoChart || {});

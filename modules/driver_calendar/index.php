@@ -722,8 +722,9 @@ include __DIR__ . '/../../templates/header.php';
         <script>
         document.addEventListener('DOMContentLoaded', function () {
           var days = <?= json_encode(array_values($timelineChartDays), JSON_UNESCAPED_UNICODE) ?>;
+          var vehicles = <?= json_encode(array_values($vehicleRecords), JSON_UNESCAPED_UNICODE) ?>;
           if (days.length && window.TachoChart) {
-            TachoChart.render('tachoTimelineMain', days);
+            TachoChart.render('tachoTimelineMain', days, vehicles);
           }
         });
         </script>
