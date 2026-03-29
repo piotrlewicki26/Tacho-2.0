@@ -223,6 +223,21 @@
     return _vehColorMap[reg];
   }
 
+  /* Return vehicles from vehicleData that overlap absFromMin..absToMin
+   * (both in absolute minutes relative to weekStart Monday 00:00).    */
+  function vehiclesForRange(vehicleData, weekStart, absFromMin, absToMin) {
+    if (!vehicleData || !vehicleData.length) return [];
+    var wkEpoch = weekStart.getTime();
+    var fromMs  = wkEpoch + absFromMin * 60000;
+    var toMs    = wkEpoch + absToMin   * 60000;
+    return vehicleData.filter(function(v) {
+      if (!v.date_from || !v.date_to) return false;
+      var vFrom = new Date(v.date_from.slice(0,10)+'T00:00:00').getTime();
+      var vTo   = new Date(v.date_to.slice(0,10)+'T23:59:59').getTime();
+      return vTo >= fromMs && vFrom <= toMs;
+    });
+  }
+
   function buildVehicleRow(weekStart, cw, vehicleData, rangeMinMin, rangeMaxMin) {
     if (!vehicleData || !vehicleData.length) return null;
     var TOTAL_R = rangeMaxMin - rangeMinMin;
@@ -1066,7 +1081,15 @@
       closeBtn2.style.cssText = 'margin-left:auto;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:3px 10px;font-size:13px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;font-weight:600;white-space:nowrap;';
       closeBtn2.addEventListener('click', clearInlineZoom);
       infoBar.appendChild(titlePart); infoBar.appendChild(rangePart);
-      infoBar.appendChild(durBadge); infoBar.appendChild(closeBtn2);
+      infoBar.appendChild(durBadge);
+      /* Vehicle badge(s) for the selected range */
+      vehiclesForRange(vehicleData, weekStart, startMin, endMin).forEach(function(v) {
+        var vb = document.createElement('span');
+        vb.style.cssText = 'display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.22);border:1px solid rgba(255,255,255,0.35);border-radius:4px;padding:2px 9px;font-size:13px;color:#fff;white-space:nowrap;';
+        vb.innerHTML = '\uD83D\uDE9A\u00a0<strong>'+(v.reg||'?')+'</strong>';
+        infoBar.appendChild(vb);
+      });
+      infoBar.appendChild(closeBtn2);
       inlineZoom.appendChild(infoBar);
 
       /* Zoomed SVG row */
@@ -1702,6 +1725,13 @@
         resetBtn2.type = 'button'; resetBtn2.textContent = '\u00D7 Resetuj';
         resetBtn2.style.cssText = 'background:#1E88E5;border:none;border-radius:3px;padding:2px 8px;font-size:13px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;margin-left:auto;';
         resetBtn2.addEventListener('click', clearSelection);
+        /* Vehicle badge(s) for the selected range */
+        vehiclesForRange(vehicleData, ws, selAbsFrom, selAbsTo).forEach(function(v) {
+          var vb = document.createElement('span');
+          vb.style.cssText = 'display:flex;align-items:center;gap:5px;background:#0D47A1;border-radius:3px;padding:2px 9px;font-size:13px;color:#fff;white-space:nowrap;';
+          vb.innerHTML = '\uD83D\uDE9A\u00a0<strong>'+(v.reg||'?')+'</strong>';
+          infoBar.appendChild(vb);
+        });
         infoBar.appendChild(resetBtn2);
 
         /* Zoomed SVG */
