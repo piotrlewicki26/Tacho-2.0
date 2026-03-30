@@ -348,52 +348,6 @@
       });
     }
 
-    /* Daily activity summary bar – green, positioned above the activity track
-     * (full-week view only).  Shows drive / work / rest as proportional green
-     * segments scaled to 24 h; the unfilled portion (remaining time) stays as
-     * a light-green background.  The total active time is labelled on the bar.
-     * The bar is only rendered when there is at least one minute of activity.  */
-    if (!isZoomed) {
-      var SUMBAR_Y = 26, SUMBAR_H = 14;
-      /* Activity segment colours – darker shades of green for drive/work/rest */
-      var SUMBAR_SEG = [
-        {act:3, fill:'#15803d'}, /* drive  – dark green  */
-        {act:2, fill:'#22c55e'}, /* work   – medium green */
-        {act:0, fill:'#86efac'}  /* rest   – light green  */
-      ];
-      weekDays.forEach(function(day, di) {
-        if (!day || !day.segs) return;
-        var totD = {0:0, 1:0, 2:0, 3:0};
-        day.segs.forEach(function(s) { totD[s.act] = (totD[s.act] || 0) + s.dur; });
-        var active = totD[3] + totD[2] + totD[0]; /* drive + work + rest */
-        if (active <= 0) return;                   /* no activity → no bar */
-        var x1d = px(di * 1440), x2d = px((di + 1) * 1440), dw = x2d - x1d;
-        if (dw < 4) return;
-        /* Very-light-green background spanning the full day column (remaining time) */
-        svgEl.appendChild(mkSVG('rect', {x:x1d, y:SUMBAR_Y, width:dw, height:SUMBAR_H,
-          fill:'#dcfce7', rx:2, 'pointer-events':'none'}));
-        /* Proportional segments for each activity type */
-        var xOff = x1d;
-        SUMBAR_SEG.forEach(function(sd) {
-          var dur = totD[sd.act] || 0;
-          if (dur <= 0) return;
-          var sw = Math.round(dur / 1440 * dw);
-          if (sw <= 0) return;
-          svgEl.appendChild(mkSVG('rect', {x:xOff, y:SUMBAR_Y, width:sw, height:SUMBAR_H,
-            fill:sd.fill, rx:2, 'pointer-events':'none'}));
-          xOff += sw;
-        });
-        /* Total active time label centred on the day column */
-        if (dw > 40) {
-          var lbl = mkSVG('text', {x:x1d + dw / 2, y:SUMBAR_Y + SUMBAR_H - 2,
-            'text-anchor':'middle', fill:'#14532d', 'font-size':9,
-            'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
-          lbl.textContent = hhmm(active);
-          svgEl.appendChild(lbl);
-        }
-      });
-    }
-
     /* Activity track background – no border lines, pure white */
     svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF'}));
 
