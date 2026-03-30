@@ -348,6 +348,39 @@
       });
     }
 
+    /* Daily activity summary bar – green, positioned above the activity track
+     * (full-week view only).  Shows total drive+work+rest as a proportion of
+     * 24 h; the unfilled portion represents unused/remaining time.           */
+    if (!isZoomed) {
+      var SUMBAR_Y = 26, SUMBAR_H = 14;
+      weekDays.forEach(function(day, di) {
+        if (!day || !day.segs) return;
+        var totD = {0:0, 1:0, 2:0, 3:0};
+        day.segs.forEach(function(s) { totD[s.act] = (totD[s.act] || 0) + s.dur; });
+        var active = totD[3] + totD[2] + totD[0]; /* drive + work + rest */
+        if (active <= 0) return;
+        var x1d = px(di * 1440), x2d = px((di + 1) * 1440), dw = x2d - x1d;
+        if (dw < 4) return;
+        /* Light-green background spanning the full day column (= remaining time) */
+        svgEl.appendChild(mkSVG('rect', {x:x1d, y:SUMBAR_Y, width:dw, height:SUMBAR_H,
+          fill:'#dcfce7', rx:2, 'pointer-events':'none'}));
+        /* Solid-green fill proportional to total active time */
+        var fillW = Math.min(dw, Math.round(active / 1440 * dw));
+        if (fillW > 0) {
+          svgEl.appendChild(mkSVG('rect', {x:x1d, y:SUMBAR_Y, width:fillW, height:SUMBAR_H,
+            fill:'#22c55e', rx:2, 'pointer-events':'none'}));
+        }
+        /* Time label centred on the day column */
+        if (dw > 40) {
+          var lbl = mkSVG('text', {x:x1d + dw / 2, y:SUMBAR_Y + SUMBAR_H - 2,
+            'text-anchor':'middle', fill:'#14532d', 'font-size':9,
+            'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+          lbl.textContent = hhmm(active);
+          svgEl.appendChild(lbl);
+        }
+      });
+    }
+
     /* Activity track background – no border lines, pure white */
     svgEl.appendChild(mkSVG('rect', {x:0, y:T1Y, width:cw, height:T1H, fill:'#FFFFFF'}));
 
