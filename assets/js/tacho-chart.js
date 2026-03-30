@@ -522,11 +522,15 @@
 
     /* Compensation overlay – drawn on top of the regular rest bar.
      * The first _compConsumed minutes of the qualifying weekly rest span
-     * are painted orange to indicate that this period fulfils the shortfall
-     * from a prior shortened weekly rest (EU Art. 8(6)). */
+     * are painted dark purple to indicate that this period fulfils the shortfall
+     * from a prior shortened weekly rest (EU Art. 8(6)).
+     *
+     * _cx2 is capped at absEnd so the overlay never exceeds the visible rest bar
+     * width, even when _compConsumed > (absEnd - absStart) due to carry-over
+     * extra minutes from the previous week included in the span's dur field. */
     if (_compSpan && _compConsumed > 0) {
       var _cx1 = clampX(Math.max(_compSpan.absStart, rangeMin));
-      var _cx2 = clampX(Math.min(_compSpan.absStart + _compConsumed, rangeMax));
+      var _cx2 = clampX(Math.min(_compSpan.absEnd, _compSpan.absStart + _compConsumed, rangeMax));
       var _cbw = _cx2 - _cx1;
       if (_cbw >= 0.4) {
         var _cg = mkSVG('g');
@@ -941,9 +945,16 @@
     var restDispVal = topQualRest > 0 ? topQualRest : weekRest;
     var restTypeSfx = topQualRest >= WKREST_REG ? ' (tyg.)' : topQualRest >= WKREST_RED ? ' (skr.)' : '';
     /* Compensation: shortfall from this week's shortened rest, and amount of
-     * pending compensation that can be fulfilled by this week's qualifying rest. */
-    var weekShortfall = (topQualRest >= WKREST_RED && topQualRest < WKREST_REG)
-                        ? (WKREST_REG - topQualRest) : 0;
+     * pending compensation that can be fulfilled by this week's qualifying rest.
+     *
+     * Regulatory shortfall is computed WITHOUT the next-week continuation
+     * (nextExtra) so that null days at the start of the following week do not
+     * inflate topQualRest above the 45 h threshold and mask a genuine reduced
+     * weekly rest.  This keeps the computation consistent with the history-replay
+     * loop (which calls buildRestSpans without nextWeekDays). */
+    var _topQualRestReg = topQualRest - (topQualSpan ? (topQualSpan.nextExtra || 0) : 0);
+    var weekShortfall = (_topQualRestReg >= WKREST_RED && _topQualRestReg < WKREST_REG)
+                        ? (WKREST_REG - _topQualRestReg) : 0;
     var _compTotalPending = 0;
     if (pendingComps && pendingComps.length) {
       pendingComps.forEach(function(c) { _compTotalPending += c.shortfall_min; });

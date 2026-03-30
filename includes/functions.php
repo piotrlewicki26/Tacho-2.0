@@ -1929,27 +1929,52 @@ function parseDriverCardFull(string $path): array
             ];
         }
 
-        // Weekly rest check – longest single continuous rest in the week
-        // Collect all rest segments across all days in the week.
+        // Weekly rest check – longest single continuous rest in the week.
+        // Days with no tachograph data (card removed = driver resting) are counted
+        // as full 1 440-minute rest days so that cross-midnight rest spanning an
+        // off-card day is not under-counted.
         $longestWeeklyRest = 0;
         $currentRest       = 0;
-        $allSegsInWeek     = [];
         // Sort days by date, then iterate their segments in chronological order.
         $sortedWDays = $wDays;
         usort($sortedWDays, fn($a, $b) => strcmp($a['date'], $b['date']));
-        foreach ($sortedWDays as $d) {
-            foreach (($d['segs'] ?? []) as $seg) {
-                $allSegsInWeek[] = $seg;
-            }
-        }
-        // Walk segments to find longest continuous rest block
         $curRestBlock = 0;
-        foreach ($allSegsInWeek as $seg) {
-            if (($seg['act'] ?? -1) === 0) {
-                $curRestBlock += (int)($seg['dur'] ?? 0);
+        $prevDayDate  = null;
+        foreach ($sortedWDays as $d) {
+            // Count any missing calendar days between consecutive data days as rest.
+            if ($prevDayDate !== null) {
+                $prevTs  = strtotime($prevDayDate . 'T00:00:00Z');
+                $currTs  = strtotime($d['date']   . 'T00:00:00Z');
+                $dayGap  = (int)round(($currTs - $prevTs) / 86400) - 1;
+                if ($dayGap > 0) {
+                    $curRestBlock += $dayGap * 1440;
+                    $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+                }
+            }
+            foreach (($d['segs'] ?? []) as $seg) {
+                if (($seg['act'] ?? -1) === 0) {
+                    $curRestBlock += (int)($seg['dur'] ?? 0);
+                    $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+                } else {
+                    $curRestBlock = 0;
+                }
+            }
+            $prevDayDate = $d['date'];
+        }
+        // Count any missing trailing days at the end of the week (between the last
+        // data day and Sunday midnight).  This handles the common pattern where the
+        // driver starts a weekly rest on Friday/Saturday and has no card data for
+        // the remaining days.  The guard on lastDayIndex (≥3 = Thursday) and on
+        // curRestBlock (>0 = rest was still ongoing) prevents false inflation when
+        // only early-week days have data (which typically means upload is incomplete,
+        // not that the driver rested all week).
+        if ($prevDayDate !== null && $curRestBlock > 0) {
+            $lastTs       = strtotime($prevDayDate . 'T00:00:00Z');
+            $lastDayIndex = (int)round(($lastTs - $mondayTs) / 86400); // 0=Mon…6=Sun
+            $trailingGap  = (int)round(($sundayTs - $lastTs) / 86400);
+            if ($trailingGap > 0 && $lastDayIndex >= 3) {
+                $curRestBlock += $trailingGap * 1440;
                 $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
-            } else {
-                $curRestBlock = 0;
             }
         }
 

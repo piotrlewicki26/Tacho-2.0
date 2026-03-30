@@ -95,12 +95,26 @@ function buildWeeklySummary(array $days): array
             ];
         }
 
-        // Longest continuous rest across the week's segments
+        // Longest continuous rest across the week's segments.
+        // Days with no tachograph data (card removed = driver resting) are counted
+        // as full 1 440-minute rest days so that cross-midnight rest spanning an
+        // off-card day is not under-counted.
         $longestWeeklyRest = 0;
         $sortedWDays = $wDays;
         usort($sortedWDays, fn($a, $b) => strcmp($a['date'], $b['date']));
         $curRestBlock = 0;
+        $prevDayDate  = null;
         foreach ($sortedWDays as $d) {
+            // Count any missing calendar days between consecutive data days as rest.
+            if ($prevDayDate !== null) {
+                $prevTs  = strtotime($prevDayDate . 'T00:00:00Z');
+                $currTs  = strtotime($d['date']   . 'T00:00:00Z');
+                $dayGap  = (int)round(($currTs - $prevTs) / 86400) - 1;
+                if ($dayGap > 0) {
+                    $curRestBlock += $dayGap * 1440;
+                    $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+                }
+            }
             foreach (($d['segs'] ?? []) as $seg) {
                 if (($seg['act'] ?? -1) === 0) {
                     $curRestBlock += (int)($seg['dur'] ?? 0);
@@ -108,6 +122,20 @@ function buildWeeklySummary(array $days): array
                 } else {
                     $curRestBlock = 0;
                 }
+            }
+            $prevDayDate = $d['date'];
+        }
+        // Count any missing trailing days at the end of the week (between the last
+        // data day and Sunday midnight).  Only applied when lastDayIndex >= 3
+        // (Thursday or later) and curRestBlock > 0 to avoid inflating counts when
+        // early-week days are the only data (incomplete upload scenario).
+        if ($prevDayDate !== null && $curRestBlock > 0) {
+            $lastTs       = strtotime($prevDayDate . 'T00:00:00Z');
+            $lastDayIndex = (int)round(($lastTs - $mondayTs) / 86400);
+            $trailingGap  = (int)round(($sundayTs - $lastTs) / 86400);
+            if ($trailingGap > 0 && $lastDayIndex >= 3) {
+                $curRestBlock += $trailingGap * 1440;
+                $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
             }
         }
 
@@ -485,7 +513,61 @@ foreach ($days18 as $d18) {
 ok('18a: bc empty when no crossings',     count($bc18) === 0);
 ok('18b: count = 0',                      count($bc18) === 0);
 
-/* ── Summary ──────────────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 19: longestWeeklyRest counts null (missing-data) days as rest days
+ *
+ * Scenario: Saturday has a rest ending at midnight, Sunday has NO card data
+ * (card removed – driver resting), Monday has activity starting mid-morning.
+ * The continuous rest should span Sat-rest + Sun-full-day + Mon-morning = >45h.
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 19: longestWeeklyRest counts missing data days (card removed) as rest\n";
+
+// Saturday 2025-02-15: 6h drive then rest from 18:00 to midnight (360 min rest)
+$segs19_sat = [
+    ['act' => 3, 'start' => 0,    'end' => 1080, 'dur' => 1080],  // drive 0-18:00
+    ['act' => 0, 'start' => 1080, 'end' => 1440, 'dur' => 360],   // rest 18:00-midnight
+];
+// Sunday 2025-02-16: NO entry → treated as full rest day (card removed)
+// Monday 2025-02-17: rest continues until 09:00 (540 min), then drive
+$segs19_mon = [
+    ['act' => 0, 'start' => 0,   'end' => 540,  'dur' => 540],    // rest 0-09:00
+    ['act' => 3, 'start' => 540, 'end' => 1440, 'dur' => 900],    // drive rest of day
+];
+
+// Build week using buildWeeklySummary (same as parseDriverCardFull internal).
+// Note: Sunday is intentionally ABSENT from the $days array to simulate no card data.
+$days19 = [
+    makeDay('2025-02-15', 1080, 0, 360, 0, $segs19_sat),          // Saturday – data
+    // 2025-02-16 (Sunday) MISSING – simulates card not in vehicle
+    makeDay('2025-02-17', 900,  0, 540, 0, $segs19_mon),          // Monday – data
+];
+
+$w19  = buildWeeklySummary($days19);
+// Week 2025-W07 contains Feb 10–16; week 2025-W08 contains Feb 17–23.
+// The Saturday rest (360 min) + missing Sunday (1440 min) = 1800 min within W07.
+// With the null-day fix the gap counts, so longest rest in W07 ≥ 1440 min → reduced rest warning.
+$wk07_key = '2025-W07';
+$wk08_key = '2025-W08';
+$wk07_19  = null;
+$wk08_19  = null;
+foreach ($w19 as $wk19e) {
+    if (($wk19e['week_key'] ?? '') === $wk07_key) $wk07_19 = $wk19e;
+    if (($wk19e['week_key'] ?? '') === $wk08_key) $wk08_19 = $wk19e;
+}
+
+// W07: Sat 18:00-midnight (360) + null Sunday (1440) = 1800 min rest.
+// The gap-day fix should make longestWeeklyRest = 1800 (≥1440, reduced weekly rest).
+$rest19_w07 = $wk07_19['longest_rest_min'] ?? 0;
+ok('19a: W07 longest rest includes null Sunday (>= 1800)',  $rest19_w07 >= 1800);
+ok('19b: W07 does NOT have missing-rest error (rest ≥ 24h)', !array_filter($wk07_19['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', 'min 24h')));
+
+// W08: Mon rest 540 min only within that week – no weekly-rest violation expected
+// (rest < 24h but the weekly rest was taken in W07; W08 reduced/missing rest is
+// a separate concern beyond scope of this test).
+ok('19c: W08 entry present',  $wk08_19 !== null);
+ok('19d: W07 entry present',  $wk07_19 !== null);
+
+
 echo "\n";
 echo str_repeat('─', 50) . "\n";
 echo "Passed: $passed  |  Failed: $failed\n";
