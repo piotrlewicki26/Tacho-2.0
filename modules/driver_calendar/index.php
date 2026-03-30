@@ -700,6 +700,19 @@ include __DIR__ . '/../../templates/header.php';
                 <?php endif; ?>
               </div>
               <?php endif; ?>
+              <?php
+                $totalActive = $day ? ($day['drive'] + $day['work'] + $day['rest']) : 0;
+                if ($totalActive > 0):
+                  $totalPct = min(100, round($totalActive / 1440 * 100));
+                  $th = floor($totalActive / 60); $tm = $totalActive % 60;
+              ?>
+              <div class="dc-total-row">
+                <div class="dc-total-bar">
+                  <div class="dc-total-fill" style="width:<?= $totalPct ?>%"></div>
+                </div>
+                <span class="dc-total-time"><?= $th ?>h<?= $tm > 0 ? '&nbsp;' . $tm . 'm' : '' ?></span>
+              </div>
+              <?php endif; ?>
               <?php if ($day && ($day['drive'] + $day['work'] + $day['avail'] + $day['rest']) > 0): ?>
               <div class="dc-bar-wrap">
                 <?php
@@ -1079,12 +1092,37 @@ include __DIR__ . '/../../templates/header.php';
   line-height: 1;
   display: block;
 }
+.dc-total-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: auto;
+  margin-bottom: 2px;
+}
+.dc-total-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #dcfce7;
+  overflow: hidden;
+}
+.dc-total-fill {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 2px;
+}
+.dc-total-time {
+  font-size: .58rem;
+  font-weight: 700;
+  color: #16a34a;
+  white-space: nowrap;
+  line-height: 1;
+}
 .dc-bar-wrap {
   display: flex;
   height: 6px;
   border-radius: 2px;
   overflow: hidden;
-  margin-top: auto;
 }
 .dc-sum {
   margin-top: 3px;
