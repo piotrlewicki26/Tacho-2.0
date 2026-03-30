@@ -359,7 +359,7 @@
 
     /* Compensation detection: find first qualifying rest span (≥24h) that covers
      * pending shortfalls from previous shortened weekly rests. */
-    var _COMP_COLOR   = '#E65100';   /* deep orange for compensation overlay */
+    var _COMP_COLOR   = '#4A148C';   /* dark purple for compensation overlay */
     var _totalPending = 0;
     if (pendingComps && pendingComps.length) {
       pendingComps.forEach(function(c) { _totalPending += c.shortfall_min; });
@@ -1031,7 +1031,7 @@
       '<div data-tperiod="drive" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;margin-top:2px;font-size:14px;font-weight:700;color:'+dCol+';">'+hhmm(weekDrive)+'</div>' +
       '<div data-tperiod="rest" title="Kliknij aby zobaczyć szczegóły" style="cursor:pointer;font-size:12px;color:#0288D1;">\u25A0 Odpocz.: '+hhmm(restDispVal)+restTypeSfx+'</div>' +
       (weekShortfall > 0 ? '<div style="font-size:11px;padding:1px 4px;border-radius:2px;background:#FFF3E0;color:#E65100;font-weight:700;margin-top:2px;">\u26a1 Deficyt: '+hhmm(weekShortfall)+'</div>' : '') +
-      (_compConsumedSb > 0 ? '<div style="font-size:11px;padding:1px 4px;border-radius:2px;background:#FFF3E0;color:#E65100;font-weight:700;margin-top:2px;">\u2714 Rekompensata: '+hhmm(_compConsumedSb)+'</div>' : '') +
+      (_compConsumedSb > 0 ? '<div style="font-size:11px;padding:1px 4px;border-radius:2px;background:#F3E5F5;color:#4A148C;font-weight:700;margin-top:2px;">\u2714 Rekompensata: '+hhmm(_compConsumedSb)+'</div>' : '') +
       wkBadge;
 
     /* Click handlers for sidebar drive time and rest time values */
@@ -2003,7 +2003,7 @@
     legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
     [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek'},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda'},
      {fill:'#FF9800',bd:'#F57C00',lbl:'Praca'},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107'},
-     {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'},{fill:'#E65100',bd:'#BF360C',lbl:'Rekompensata'}].forEach(function(it) {
+     {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'},{fill:'#4A148C',bd:'#38006b',lbl:'Rekompensata'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
       d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
