@@ -701,21 +701,6 @@ include __DIR__ . '/../../templates/header.php';
               </div>
               <?php endif; ?>
 
-              <?php if ($day && ($day['drive'] + $day['work'] + $day['avail'] + $day['rest']) > 0): ?>
-              <div class="dc-bar-wrap">
-                <?php
-                  $total = max(1, $day['drive'] + $day['work'] + $day['avail'] + $day['rest']);
-                  $driveW = round($day['drive'] / $total * 100);
-                  $workW  = round($day['work']  / $total * 100);
-                  $availW = round($day['avail'] / $total * 100);
-                  $restW  = 100 - $driveW - $workW - $availW;
-                ?>
-                <div class="dc-bar dc-bar-drive" style="width:<?= $driveW ?>%"></div>
-                <div class="dc-bar dc-bar-work"  style="width:<?= $workW  ?>%"></div>
-                <div class="dc-bar dc-bar-avail" style="width:<?= $availW ?>%"></div>
-                <div class="dc-bar dc-bar-rest"  style="width:<?= max(0,$restW) ?>%"></div>
-              </div>
-              <?php endif; ?>
               <?php if ($hasError): ?><span class="dc-viol-dot"></span><?php endif; ?>
             </div>
             <?php endfor; ?>
@@ -1081,12 +1066,6 @@ include __DIR__ . '/../../templates/header.php';
   display: block;
 }
 
-.dc-bar-wrap {
-  display: flex;
-  height: 6px;
-  border-radius: 2px;
-  overflow: hidden;
-}
 .dc-sum {
   margin-top: 3px;
   display: flex;
@@ -1131,11 +1110,6 @@ include __DIR__ . '/../../templates/header.php';
   color: #9ca3af;
   line-height: 1;
 }
-.dc-bar { height: 100%; }
-.dc-bar-drive { background: var(--tp-primary, #2563eb); }
-.dc-bar-work  { background: #f59e0b; }
-.dc-bar-avail { background: #10b981; }
-.dc-bar-rest  { background: #94a3b8; }
 .dc-viol-dot {
   position: absolute;
   top: 3px; right: 4px;
