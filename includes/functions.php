@@ -592,11 +592,17 @@ function parseDddFile(string $path): array {
 
             // If the first activity entry starts after midnight (no activity change at
             // midnight – driver continued previous day's activity without interruption),
-            // prepend an implicit carry-over segment from 00:00 to the first entry.
-            // This is common when a long rest spans the day boundary.
-            // Only applied for gaps ≤ 4 hours (240 min) to avoid accepting bad records.
+            // prepend an implicit carry-over REST segment from 00:00 to the first entry.
+            // This is the normal case when a long rest (e.g. weekly rest) spans the day
+            // boundary: the tachograph records no change at midnight because the driver
+            // was still resting, so the first slot only appears when the rest ends.
+            // The previous 4-hour (240 min) upper-limit was too conservative: it caused
+            // day records to be rejected whenever a rest ended more than 4 h after
+            // midnight, inflating the rest span via the empty-day fallback in
+            // buildRestSpans and masking genuine weekly-rest shortfalls (→ compensation
+            // for shortened weekly rest was not displayed on the timeline).
             $firstTmin = $mono ? $mono[0]['tmin'] : 0;
-            if ($firstTmin > 0 && $firstTmin <= 240) {
+            if ($firstTmin > 0) {
                 array_unshift($slots, ['act' => 0, 'start' => 0, 'end' => $firstTmin, 'dur' => $firstTmin]);
             }
 
