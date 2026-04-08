@@ -139,6 +139,12 @@ $_hdrPlanLabel = match($_hdrPlan) {
       </a>
     </li>
 
+    <li class="tp-nav-item<?= ($activePage??'')==='working_time' ? ' active':'' ?>">
+      <a href="/modules/working_time/" class="tp-nav-link">
+        <i class="bi bi-clock-history"></i><span>Ewidencja czasu pracy</span>
+      </a>
+    </li>
+
     <li class="tp-nav-separator"><small>Moduły PRO+</small></li>
 
     <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?><?= !$_hdrHasProPlus ? ' tp-nav-locked' : '' ?>">
