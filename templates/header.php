@@ -145,6 +145,13 @@ $_hdrPlanLabel = match($_hdrPlan) {
       </a>
     </li>
 
+    <li class="tp-nav-item<?= ($activePage??'')==='working_time_manual' ? ' active':'' ?>">
+      <a href="/modules/working_time_manual/" class="tp-nav-link">
+        <i class="bi bi-pencil-square"></i><span>Ewidencja – Generator</span>
+        <span style="background:#F57C00;color:#fff;font-size:8px;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px;">2,8-3,5t</span>
+      </a>
+    </li>
+
     <li class="tp-nav-separator"><small>Moduły PRO+</small></li>
 
     <li class="tp-nav-item<?= ($activePage??'')==='delegation' ? ' active':'' ?><?= !$_hdrHasProPlus ? ' tp-nav-locked' : '' ?>">

@@ -17,7 +17,8 @@
  *   driver_analysis  – DDD tachograph timeline + EU 561 violation indicators
  *   vehicle_analysis – Vehicle DDD analysis
  *   reports          – Reports page
- *   working_time    – Working time records / Ewidencja czasu pracy (PRO)
+ *   working_time         – Working time records / Ewidencja czasu pracy (PRO)
+ *   working_time_manual  – Manual working time generator for 2.8-3.5t vehicles (PRO)
  *   delegation       – Delegation management (PRO+ only)
  *   violations       – Infringement reports (PRO+ only)
  *   multi_company    – Multiple companies per account (PRO+ only)
