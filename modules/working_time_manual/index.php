@@ -21,17 +21,24 @@ $companyId = (int)$_SESSION['company_id'];
 $userId    = (int)$_SESSION['user_id'];
 
 // ── Ensure table exists (auto-migrate) ────────────────────────
+$tableReady = false;
 try {
     $db->exec("SELECT 1 FROM working_time_manual_entries LIMIT 0");
+    $tableReady = true;
 } catch (\Throwable $e) {
-    $sqlPath = __DIR__ . '/../../sql/migrate_025_working_time_manual.sql';
-    if (file_exists($sqlPath)) {
-        $db->exec(file_get_contents($sqlPath));
+    try {
+        $sqlPath = __DIR__ . '/../../sql/migrate_025_working_time_manual.sql';
+        if (file_exists($sqlPath)) {
+            $db->exec(file_get_contents($sqlPath));
+            $tableReady = true;
+        }
+    } catch (\Throwable $e2) {
+        error_log('TachoPro: failed to create working_time_manual_entries table: ' . $e2->getMessage());
     }
 }
 
 // ── Handle AJAX save ──────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ajax_action'] ?? '') === 'save_entries') {
+if ($tableReady && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ajax_action'] ?? '') === 'save_entries') {
     header('Content-Type: application/json; charset=utf-8');
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
         echo json_encode(['ok' => false, 'error' => 'CSRF']);
@@ -95,7 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ajax_action'] ?? '') === '
 }
 
 // ── Handle AJAX delete ────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ajax_action'] ?? '') === 'delete_entry') {
+if ($tableReady && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['ajax_action'] ?? '') === 'delete_entry') {
     header('Content-Type: application/json; charset=utf-8');
     if (!validateCsrf($_POST['csrf_token'] ?? '')) {
         echo json_encode(['ok' => false, 'error' => 'CSRF']);
@@ -185,7 +192,7 @@ if ($selDriverId) {
     }
 }
 
-if ($selDriverId || $selDriverName) {
+if ($tableReady && ($selDriverId || $selDriverName)) {
     $hasReport = true;
     if ($selDriverId) {
         $eStmt = $db->prepare(
@@ -201,6 +208,8 @@ if ($selDriverId || $selDriverName) {
     foreach ($eStmt->fetchAll() as $row) {
         $entries[$row['entry_date']] = $row;
     }
+} elseif ($selDriverId || $selDriverName) {
+    $hasReport = true;
 }
 
 // ── Build day data ────────────────────────────────────────────
