@@ -68,7 +68,7 @@ if ($driverId) {
         // Load calendar rows
         try {
             $rows = $db->prepare(
-                'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, segments
+                'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, segments, border_crossings
                  FROM driver_activity_calendar
                  WHERE driver_id=? AND date BETWEEN ? AND ?
                  ORDER BY date ASC'
@@ -77,12 +77,13 @@ if ($driverId) {
             foreach ($rows->fetchAll() as $row) {
                 $segs = json_decode($row['segments'] ?? '[]', true) ?: [];
                 $calDays[$row['date']] = [
-                    'drive' => (int)$row['drive_min'],
-                    'work'  => (int)$row['work_min'],
-                    'avail' => (int)$row['avail_min'],
-                    'rest'  => (int)$row['rest_min'],
-                    'dist'  => (int)$row['dist_km'],
-                    'segs'  => $segs,
+                    'drive'            => (int)$row['drive_min'],
+                    'work'             => (int)$row['work_min'],
+                    'avail'            => (int)$row['avail_min'],
+                    'rest'             => (int)$row['rest_min'],
+                    'dist'             => (int)$row['dist_km'],
+                    'segs'             => $segs,
+                    'border_crossings' => $row['border_crossings'],
                 ];
             }
         } catch (Throwable $e) {
@@ -93,10 +94,26 @@ if ($driverId) {
 
 // ── Polish holidays (for the given year) ──────────────────────
 function getPolishHolidays(int $year): array {
-    $easter = easter_date($year);
-    $easterDate = date('Y-m-d', $easter);
-    $easterMonday = date('Y-m-d', strtotime('+1 day', $easter));
-    $corpusChristi = date('Y-m-d', strtotime('+60 days', $easter));
+    // Anonymous Gregorian algorithm – no ext/calendar required.
+    $a = $year % 19;
+    $b = intdiv($year, 100);
+    $c = $year % 100;
+    $d = intdiv($b, 4);
+    $e = $b % 4;
+    $f = intdiv($b + 8, 25);
+    $g = intdiv($b - $f + 1, 3);
+    $h = (19 * $a + $b - $d - $g + 15) % 30;
+    $i = intdiv($c, 4);
+    $k = $c % 4;
+    $l = (32 + 2 * $e + 2 * $i - $h - $k) % 7;
+    $m = intdiv($a + 11 * $h + 22 * $l, 451);
+    $easterMonth = intdiv($h + $l - 7 * $m + 114, 31);
+    $easterDay   = (($h + $l - 7 * $m + 114) % 31) + 1;
+    $easterTs    = mktime(0, 0, 0, $easterMonth, $easterDay, $year);
+
+    $easterDate    = date('Y-m-d', $easterTs);
+    $easterMonday  = date('Y-m-d', strtotime('+1 day',  $easterTs));
+    $corpusChristi = date('Y-m-d', strtotime('+60 days', $easterTs));
 
     return [
         sprintf('%04d-01-01', $year),  // Nowy Rok
@@ -325,6 +342,112 @@ for ($d = 1; $d <= $daysInMonth; $d++) {
 // Overtime total
 $overtimeTotal = $totals['overtime_base_50'] + $totals['overtime_base_100'];
 
+// ── Border crossing processing ────────────────────────────────
+// Collect all per-day crossings for the month and compute time per country.
+$borderData      = []; // date → ['countries' => 'PL DE', 'count' => N]
+$allMonthCrossings = []; // unified sorted list
+
+foreach ($calDays as $date => $cd) {
+    $raw = $cd['border_crossings'] ?? null;
+    if (!$raw || $raw === '0' || $raw === 'false') {
+        $borderData[$date] = ['countries' => '', 'count' => 0];
+        continue;
+    }
+    $crossings = json_decode($raw, true);
+    if (!is_array($crossings) || empty($crossings)) {
+        $borderData[$date] = ['countries' => '', 'count' => 0];
+        continue;
+    }
+    usort($crossings, fn($a, $b) => ($a['ts'] ?? 0) <=> ($b['ts'] ?? 0));
+    $countries = [];
+    foreach ($crossings as $c) {
+        $co = $c['country'] ?? '';
+        if ($co !== '' && !in_array($co, $countries, true)) {
+            $countries[] = $co;
+        }
+    }
+    $borderData[$date] = [
+        'countries' => implode(' ', $countries),
+        'count'     => count($crossings),
+    ];
+    foreach ($crossings as $c) {
+        $allMonthCrossings[] = $c + ['date' => $date];
+    }
+}
+
+// Sort all month crossings by timestamp
+usort($allMonthCrossings, fn($a, $b) => ($a['ts'] ?? 0) <=> ($b['ts'] ?? 0));
+
+// Determine the country active at the very start of the reporting period
+// by loading the last crossing from before the month start.
+$startingCountry = null;
+if ($driverId && !empty($calDays)) {
+    try {
+        $preStmt = $db->prepare(
+            "SELECT border_crossings FROM driver_activity_calendar
+             WHERE driver_id=? AND date < ?
+               AND border_crossings IS NOT NULL
+               AND border_crossings NOT IN ('0','[]','null','false')
+             ORDER BY date DESC LIMIT 1"
+        );
+        $preStmt->execute([$driverId, $dateFrom]);
+        $preRow = $preStmt->fetch();
+        if ($preRow) {
+            $preList = json_decode($preRow['border_crossings'], true) ?: [];
+            if (!empty($preList)) {
+                usort($preList, fn($a, $b) => ($b['ts'] ?? 0) <=> ($a['ts'] ?? 0));
+                $startingCountry = $preList[0]['country'] ?? null;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('working_time: border crossing pre-query error: ' . $e->getMessage());
+    }
+}
+
+// Compute accumulated driving/work time per country for the month.
+// We walk through all crossings in chronological order and credit the
+// interval [lastTs … currentTs] to $currentCountry.  Only minutes that
+// fall within a day that has actual driving/work activity are credited so
+// rest and off-duty time does not inflate the totals.
+$countryMinutes  = []; // country → total minutes
+$currentCountry  = $startingCountry;
+$periodStartTs   = strtotime($dateFrom . ' 00:00:00');
+$periodEndTs     = strtotime($dateTo   . ' 23:59:59');
+$lastTs          = $periodStartTs;
+
+// Build a quick lookup of dates that have work activity
+$workDates = [];
+foreach ($calDays as $date => $cd) {
+    if (($cd['drive'] ?? 0) + ($cd['work'] ?? 0) > 0) {
+        $workDates[$date] = true;
+    }
+}
+
+foreach ($allMonthCrossings as $c) {
+    $ts = (int)($c['ts'] ?? 0);
+    if ($ts <= 0 || $ts < $periodStartTs || $ts > $periodEndTs) continue;
+    $elapsed = max(0, $ts - $lastTs);
+    if ($currentCountry !== null && $elapsed > 0) {
+        // Only credit time on working days
+        $cDate = gmdate('Y-m-d', (int)round(($lastTs + $ts) / 2));
+        if ($workDates[$cDate] ?? false) {
+            $countryMinutes[$currentCountry] = ($countryMinutes[$currentCountry] ?? 0) + (int)round($elapsed / 60);
+        }
+    }
+    $currentCountry = $c['country'] ?? $currentCountry;
+    $lastTs = $ts;
+}
+// Credit time after the last crossing to end of period
+if ($currentCountry !== null && $lastTs < $periodEndTs) {
+    $elapsed = $periodEndTs - $lastTs;
+    $cDate   = gmdate('Y-m-d', (int)round(($lastTs + $periodEndTs) / 2));
+    if ($workDates[$cDate] ?? false) {
+        $countryMinutes[$currentCountry] = ($countryMinutes[$currentCountry] ?? 0) + (int)round($elapsed / 60);
+    }
+}
+arsort($countryMinutes);
+$totalBorderCrossings = count($allMonthCrossings);
+
 // ── Helpers ───────────────────────────────────────────────────
 function fmtMin(int $minutes): string {
     if ($minutes <= 0) return '-';
@@ -459,6 +582,11 @@ include __DIR__ . '/../../templates/header.php';
     background: #f0f0f0;
     font-weight: 600;
     text-align: left;
+}
+.wt-country-badge {
+    display: inline-block; padding: 0 4px; border-radius: 3px;
+    font-size: 9px; font-weight: 700; background: #e3f2fd; color: #0d47a1;
+    margin: 1px;
 }
 </style>
 
@@ -713,6 +841,42 @@ include __DIR__ . '/../../templates/header.php';
         <td class="wt-total-col"><?= fmtMinFull($totals['overtime_add_100']) ?></td>
       </tr>
 
+      <?php if ($totalBorderCrossings > 0): ?>
+      <!-- Przekroczenia granic -->
+      <tr class="wt-section-header">
+        <td colspan="<?= $daysInMonth + 2 ?>">🌍 Przekroczenia granic</td>
+      </tr>
+      <tr>
+        <td class="wt-row-header">Kraje (wjazd)</td>
+        <?php for ($d = 1; $d <= $daysInMonth; $d++):
+            $dd  = $dayData[$d];
+            $bd  = $borderData[$dd['date']] ?? ['countries' => '', 'count' => 0];
+            $cos = $bd['countries'] !== '' ? explode(' ', $bd['countries']) : [];
+        ?>
+        <td style="font-size:9px;line-height:1.4;">
+          <?php if (!empty($cos)):
+              foreach ($cos as $co): ?>
+          <span class="wt-country-badge"><?= e($co) ?></span>
+          <?php endforeach; else: ?>-<?php endif; ?>
+        </td>
+        <?php endfor; ?>
+        <td class="wt-total-col" style="font-size:9px;">
+          <?php foreach (array_keys($countryMinutes) as $co): ?>
+          <span class="wt-country-badge"><?= e($co) ?></span>
+          <?php endforeach; ?>
+        </td>
+      </tr>
+      <tr>
+        <td class="wt-row-header">Liczba przekroczeń</td>
+        <?php for ($d = 1; $d <= $daysInMonth; $d++):
+            $bd = $borderData[$dayData[$d]['date']] ?? ['count' => 0];
+        ?>
+        <td><?= $bd['count'] > 0 ? $bd['count'] : '-' ?></td>
+        <?php endfor; ?>
+        <td class="wt-total-col"><?= $totalBorderCrossings ?></td>
+      </tr>
+      <?php endif; ?>
+
     </tbody>
   </table>
   </div><!-- /overflow -->
@@ -760,6 +924,53 @@ include __DIR__ . '/../../templates/header.php';
       </div>
     </div>
 
+    <?php if (!empty($countryMinutes)): ?>
+    <div class="row mt-3">
+      <div class="col-md-6">
+        <table>
+          <tr><th colspan="3">🌍 Czas pracy wg krajów (szacunkowy)</th></tr>
+          <tr>
+            <th>Kraj</th>
+            <th>Czas (h:mm)</th>
+            <th>Przekroczeń</th>
+          </tr>
+          <?php
+          $countryCrossCount = [];
+          foreach ($allMonthCrossings as $c) {
+              $co = $c['country'] ?? '';
+              if ($co !== '') $countryCrossCount[$co] = ($countryCrossCount[$co] ?? 0) + 1;
+          }
+          foreach ($countryMinutes as $country => $mins): ?>
+          <tr>
+            <td><span class="wt-country-badge" style="font-size:11px;"><?= e($country) ?></span></td>
+            <td><strong><?= fmtMinFull($mins) ?></strong></td>
+            <td><?= $countryCrossCount[$country] ?? 0 ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <div class="col-md-6">
+        <table>
+          <tr><th colspan="2">📍 Podsumowanie przekroczeń</th></tr>
+          <tr>
+            <td>Łączna liczba przekroczeń:</td>
+            <td><strong><?= $totalBorderCrossings ?></strong></td>
+          </tr>
+          <tr>
+            <td>Liczba krajów:</td>
+            <td><strong><?= count($countryMinutes) ?></strong></td>
+          </tr>
+          <?php if ($startingCountry !== null): ?>
+          <tr>
+            <td>Kraj na początku okresu:</td>
+            <td><span class="wt-country-badge" style="font-size:11px;"><?= e($startingCountry) ?></span></td>
+          </tr>
+          <?php endif; ?>
+        </table>
+      </div>
+    </div>
+    <?php endif; ?>
+
     <div class="row mt-3 no-print">
       <div class="col-12 text-muted" style="font-size:11px;">
         <i class="bi bi-info-circle me-1"></i>
@@ -769,6 +980,10 @@ include __DIR__ . '/../../templates/header.php';
         <br>
         <strong>Symbole dni:</strong>
         W = dzień pracy, W6 = sobota, Św = niedziela/święto, P = wolne, - = brak danych.
+        <?php if ($totalBorderCrossings > 0): ?>
+        <br>
+        <strong>Czas wg krajów:</strong> szacowany na podstawie znaczników przekroczeń granic z pliku DDD.
+        <?php endif; ?>
         <br>
         <strong>Eksport PDF:</strong> Kliknij przycisk „Eksport PDF" lub użyj Ctrl+P → drukuj jako PDF (orientacja: pozioma A4).
       </div>
