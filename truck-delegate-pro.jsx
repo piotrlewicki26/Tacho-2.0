@@ -80,6 +80,19 @@ function fmtNum(n,decimals=2){return Number(n).toLocaleString("pl-PL",{minimumFr
 function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 function diffDays(from,to){if(!from||!to)return 0;return Math.max(0,Math.round((new Date(to)-new Date(from))/86400000));}
 function toInputDate(d){if(!d)return"";const dd=new Date(d);return dd.getFullYear()+"-"+String(dd.getMonth()+1).padStart(2,"0")+"-"+String(dd.getDate()).padStart(2,"0");}
+function yearBackFrom(d){const r=new Date(d);r.setFullYear(d.getFullYear()-1);return r;}
+function defaultTripValues(){
+  const today=new Date();
+  const yearBack=yearBackFrom(today);
+  return{
+    nr_delegacji:`DEL/${today.getFullYear()}/001`,
+    data_wyjazdu:toInputDate(yearBack),
+    data_powrotu:toInputDate(today),
+    nr_rejestracyjny:"",
+    cel_podrozy:"",
+    trasa:[{country:"DE",days:1,hours:8,operationType:"international",kilometers:0}]
+  };
+}
 
 function dayStatus(slots){
   if(!slots||!slots.length)return null;
@@ -129,9 +142,45 @@ function parseDDD(buffer){
   }
 
   // ── 2. Vehicle reg ──
-  for(let i=0;i<len-14;i++){
-    const s=readStr(i,14).trim();
-    if(/^[A-Z]{2,4}\s[A-Z0-9]{4,6}$/.test(s)){vehicle=s;break;}
+  const REG_MIN_LEN=6,REG_MAX_LEN=10,REG_SEARCH_RADIUS=96,REG_CHUNK_LEN=24;
+  const normReg=s=>{
+    const raw=(s||"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim();
+    if(!raw)return null;
+    const compact=raw.replace(/\s+/g,"");
+    if(compact.length<REG_MIN_LEN||compact.length>REG_MAX_LEN||!/^[A-Z0-9]+$/.test(compact))return null;
+    const pm=compact.match(/^([A-Z]{2,3})([A-Z0-9]{3,7})$/);
+    if(!pm)return null;
+    const suffix=pm[2];
+    if(!/\d/.test(suffix))return null;
+    return pm[1]+" "+suffix;
+  };
+  const pickRegFromChunk=chunk=>{
+    const ms=[...chunk.matchAll(/[A-Z]{2,3}\s?[A-Z0-9]{3,8}/g)];
+    if(!ms.length)return null;
+    let best=null,bestScore=-1;
+    for(const m of ms){
+      const reg=normReg(m[0]);
+      if(!reg)continue;
+      const c=reg.replace(" ","");
+      const suffixLen=c.length-reg.split(" ")[0].length;
+      const score=suffixLen*10+(/[A-Z]/.test(reg.split(" ")[1])?1:0);
+      if(score>bestScore){best=reg;bestScore=score;}
+    }
+    return best;
+  };
+  const findRegNear=off=>{
+    const st=Math.max(0,off-REG_SEARCH_RADIUS),en=Math.min(len-REG_CHUNK_LEN,off+REG_SEARCH_RADIUS);
+    for(let i=st;i<=en;i++){
+      const chunk=readStr(i,REG_CHUNK_LEN).replace(/\0/g," ");
+      const reg=pickRegFromChunk(chunk);
+      if(reg)return reg;
+    }
+    return null;
+  };
+  for(let i=0;i<len-REG_CHUNK_LEN;i++){
+    const chunk=readStr(i,REG_CHUNK_LEN).replace(/\0/g," ");
+    const reg=pickRegFromChunk(chunk);
+    if(reg){vehicle=reg;break;}
   }
 
   // ── 3. Find ALL candidate record headers (pres 500-8000, dist≤1100, year 2023-2027) ──
@@ -188,6 +237,8 @@ function parseDDD(buffer){
   };
 
   const days=[];
+  let prevOdo=null;
+  const vehicleHits={};
   for(const r of filtered){
     const bound=Math.min(nextOff(r.off),r.off+600,len-1);
     const pts=[];
@@ -199,10 +250,23 @@ function parseDDD(buffer){
     const slots=mkSlots(pts);
     const total=slots.reduce((s,x)=>s+x.duration,0);
     if(total<1350||total>1460)continue;
-    days.push({date:new Date(r.ts*1000),slots,distance:r.dist,crossings:[],vehicle});
+    const odometerEnd=Number.isFinite(r.dist)?r.dist:null;
+    let odometerStart=odometerEnd;
+    let distance=0;
+    if(odometerEnd!==null){
+      if(prevOdo!==null&&odometerEnd>=prevOdo){odometerStart=prevOdo;distance=odometerEnd-prevOdo;}
+      else if(prevOdo!==null&&odometerEnd<prevOdo){odometerStart=odometerEnd;distance=0;}
+      prevOdo=odometerEnd;
+    }
+    const dayVehicle=findRegNear(r.off)||vehicle;
+    if(dayVehicle)vehicleHits[dayVehicle]=(vehicleHits[dayVehicle]||0)+1;
+    days.push({date:new Date(r.ts*1000),slots,distance,odometerStart,odometerEnd,crossings:[],vehicle:dayVehicle||vehicle});
   }
 
   if(!days.length)return null;
+  const vehicleRank=Object.entries(vehicleHits).sort((a,b)=>b[1]-a[1]);
+  const topVehicle=(vehicleRank[0]&&vehicleRank[0][0])||vehicle||null;
+  if(topVehicle)days.forEach(d=>{if(!d.vehicle)d.vehicle=topVehicle;});
   return{driver,days};
 }
 
@@ -242,8 +306,8 @@ function extractDelegationFromTacho(tachoData) {
   const nameParts = (tachoData.driver || '').split(' ').filter(Boolean);
   const imie = nameParts[0] || '';
   const nazwisko = nameParts.slice(1).join(' ') || '';
-  const firstDay = sortedDays[0].date;
-  const lastDay = sortedDays[sortedDays.length - 1].date;
+  const today = new Date();
+  const yearBack = yearBackFrom(today);
 
   const allCrossings = [];
   sortedDays.forEach(day => {
@@ -275,13 +339,15 @@ function extractDelegationFromTacho(tachoData) {
       kilometers: 0,
     }));
 
-  const vehicle = sortedDays.find(d => d.vehicle)?.vehicle || '';
+  const vehicleMap={};
+  sortedDays.forEach(d=>{if(!d.vehicle)return;vehicleMap[d.vehicle]=(vehicleMap[d.vehicle]||0)+1;});
+  const vehicle = Object.entries(vehicleMap).sort((a,b)=>b[1]-a[1])[0]?.[0] || '';
   return {
     driver: { imie, nazwisko, pesel: '', nr_prawa_jazdy: '', kategoria: 'C+E', data_zatrudnienia: '', wynagrodzenie_podstawowe: '' },
     trip: {
       nr_delegacji: `DEL/${new Date().getFullYear()}/${String(Math.floor(Math.random()*999)+1).padStart(3,'0')}`,
-      data_wyjazdu: toInputDate(firstDay),
-      data_powrotu: toInputDate(lastDay),
+      data_wyjazdu: toInputDate(yearBack),
+      data_powrotu: toInputDate(today),
       nr_rejestracyjny: vehicle,
       cel_podrozy: '',
       trasa: trasa.length ? trasa : [{ country: 'PL', days: 1, hours: 8, operationType: 'international', kilometers: 0 }],
@@ -354,6 +420,8 @@ function DayModal({day,onClose}){
         <div style={{padding:"14px 18px",background:"#F0F4F8",borderBottom:"1px solid #E0E4E8",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <div><div style={{fontSize:10,color:"#9AA0AA",fontWeight:600,marginBottom:2}}>{dow[dowd].toUpperCase()}</div><div style={{fontSize:18,fontWeight:700,color:"#1A2030"}}>{fmtDate(day.date)}</div></div>
           {day.vehicle&&<div style={{padding:"3px 10px",background:"#E3F2FD",border:"1px solid #BBDEFB",borderRadius:4,fontSize:11,color:"#1565C0",fontWeight:600}}>{day.vehicle}</div>}
+          {day.odometerStart!==null&&day.odometerStart!==undefined&&<div style={{padding:"3px 10px",background:"#F3F4F7",border:"1px solid #DDE1E6",borderRadius:4,fontSize:11,color:"#5A6070",fontWeight:500}}>Licznik start: {day.odometerStart} km</div>}
+          {day.odometerEnd!==null&&day.odometerEnd!==undefined&&<div style={{padding:"3px 10px",background:"#F3F4F7",border:"1px solid #DDE1E6",borderRadius:4,fontSize:11,color:"#5A6070",fontWeight:500}}>Licznik koniec: {day.odometerEnd} km</div>}
           {day.distance>0&&<div style={{padding:"3px 10px",background:"#F3F4F7",border:"1px solid #DDE1E6",borderRadius:4,fontSize:11,color:"#5A6070",fontWeight:500}}>{day.distance} km</div>}
           <div style={{padding:"3px 10px",background:stCol+"18",border:"1px solid "+stCol+"60",borderRadius:4,fontSize:11,color:stCol,fontWeight:600}}>{stLbl}</div>
           <button onClick={onClose} style={{marginLeft:"auto",background:"none",border:"none",fontSize:18,color:"#9AA0AA",cursor:"pointer",padding:"0 4px",lineHeight:1}}>&#x2715;</button>
@@ -853,7 +921,7 @@ function DelegationPanel({tachoData}) {
   const [manualDriver,setManualDriver]=useState({imie:"",nazwisko:"",pesel:"",nr_prawa_jazdy:"",kategoria:"C+E",data_zatrudnienia:"",wynagrodzenie_podstawowe:""});
   const [driverMode,setDriverMode]=useState("manual");
   const [countries,setCountries]=useState(DEFAULT_COUNTRIES);
-  const [trip,setTrip]=useState({nr_delegacji:"DEL/2025/001",data_wyjazdu:"",data_powrotu:"",nr_rejestracyjny:"",cel_podrozy:"",trasa:[{country:"DE",days:1,hours:8,operationType:"international",kilometers:0}]});
+  const [trip,setTrip]=useState(defaultTripValues);
   const [result,setResult]=useState(null);
   const [importNotice,setImportNotice]=useState(null);
   const fileRef=useRef();
