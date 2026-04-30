@@ -342,16 +342,30 @@ function dddParseDriverInfo(string $data): ?array
         if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
             continue;
         }
-        if ($i + 6 >= $len) {
+        if ($i + 4 >= $len) {
             continue;
         }
-        // 6-byte block header: tag(2) + reserved(2) + data-length(2, big-endian)
-        $bl = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
-        if ($bl < 130 || $bl > 600 || $i + 6 + $bl > $len) {
+        // Try 6-byte header first (tag[2] + reserved[2] + length[2]),
+        // then 4-byte fallback (tag[2] + length[2]) for cards that omit the reserved field.
+        $bl   = null;
+        $base = null;
+        if ($i + 6 <= $len) {
+            $bl6 = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
+            if ($bl6 >= 130 && $bl6 <= 600 && $i + 6 + $bl6 <= $len) {
+                $bl   = $bl6;
+                $base = $i + 6;
+            }
+        }
+        if ($bl === null) {
+            $bl4 = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl4 >= 130 && $bl4 <= 600 && $i + 4 + $bl4 <= $len) {
+                $bl   = $bl4;
+                $base = $i + 4;
+            }
+        }
+        if ($bl === null) {
             continue;
         }
-
-        $base = $i + 6;
 
         // ── Card number: 16 bytes at base+1 (IA5String – alphanumeric ASCII) ─
         $cardRaw = substr($data, $base + 1, 16);
@@ -385,7 +399,7 @@ function dddParseDriverInfo(string $data): ?array
         }
 
         // ── Birth date: holderBirthDate (TimeReal 4 bytes) at base+137 ────────
-        if ($birthDate === null && $bl >= 141 && $i + 6 + 141 <= $len) {
+        if ($birthDate === null && $bl >= 141 && $base + 141 <= $len) {
             $birthTs   = unpack('N', substr($data, $base + 137, 4))[1];
             $birthYear = (int)gmdate('Y', $birthTs);
             if ($birthYear >= 1930 && $birthYear <= 2005) {
@@ -394,7 +408,7 @@ function dddParseDriverInfo(string $data): ?array
         }
 
         // ── Card expiry date: cardExpiryDate (TimeReal 4 bytes) at base+61 ───
-        if ($cardValidUntil === null && $bl >= 65 && $i + 6 + 65 <= $len) {
+        if ($cardValidUntil === null && $bl >= 65 && $base + 65 <= $len) {
             $expiryTs   = unpack('N', substr($data, $base + 61, 4))[1];
             $expiryYear = (int)gmdate('Y', $expiryTs);
             if ($expiryYear >= 2000 && $expiryYear <= 2050) {
@@ -410,7 +424,7 @@ function dddParseDriverInfo(string $data): ?array
         // a valid 2-3 letter country code.
         // Minimum $bl to have at least 2 bytes at base+141 is 143.
         if ($nationality === null && $bl >= 142) {
-            $natAvail = min(3, ($i + 6 + $bl) - ($base + 141), $len - ($base + 141));
+            $natAvail = min(3, $bl - 141, $len - ($base + 141));
             if ($natAvail >= 2) {
                 // Try base+141 directly as NationAlpha
                 $nat3 = strtolower(trim(dddNameTrim(substr($data, $base + 141, $natAvail))));
@@ -435,6 +449,70 @@ function dddParseDriverInfo(string $data): ?array
         }
     }
 
+    // ── Strategy 3: EF_CardIccIdentification tag 0x05 0x02 ──────────────────────
+    // Used in some Gen-1 implementations where the driver name is embedded at known offsets.
+    if (!$driverName) {
+        for ($i = 0; $i < $len - 4; $i++) {
+            if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x02) continue;
+            $bl3 = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl3 < 100 || $bl3 > 600 || $i + 4 + $bl3 > $len) continue;
+            $base3 = $i + 4;
+            for ($k = 0; $k < $bl3 - 71; $k++) {
+                $b = ord($data[$base3 + $k]);
+                if ($b < 65 || $b > 90) continue;
+                $snCodeType = 0x02;
+                if ($k > 0) {
+                    $prev = ord($data[$base3 + $k - 1]);
+                    if ($prev <= 0x20) $snCodeType = $prev;
+                }
+                $snRaw = substr($data, $base3 + $k, 36);
+                $fnCodeType = 0x02;
+                if (isset($snRaw[35])) {
+                    $fnByte = ord($snRaw[35]);
+                    if ($fnByte <= 0x20) $fnCodeType = $fnByte;
+                }
+                $fnRaw = substr($data, $base3 + $k + 36, 35);
+                $sn = dddNameTrim($snRaw, $snCodeType);
+                $fn = dddNameTrim($fnRaw, $fnCodeType);
+                if (mb_strlen($sn) >= 3 && preg_match($namePattern, $sn)
+                    && mb_strlen($fn) >= 2 && preg_match($namePattern, $fn)) {
+                    $driverName = ['last_name' => $sn, 'first_name' => $fn];
+                    break;
+                }
+            }
+            if ($driverName) break;
+        }
+    }
+
+    // ── Card generation detection: EF_ApplicationIdentification tag 0x05 0x01 ──
+    $cardType       = 'Driver';
+    $cardGeneration = 'Gen 1';
+    for ($i = 0; $i < $len - 4; $i++) {
+        if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x01) continue;
+        $blA = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        if ($blA < 5 || $blA > 50 || $i + 4 + $blA > $len) continue;
+        $baseA    = $i + 4;
+        $typeByte = ord($data[$baseA]);
+        $cardType = match($typeByte) {
+            0x01    => 'Workshop',
+            0x02    => 'Control',
+            0x03    => 'Company',
+            0x04    => 'Driver',
+            default => 'Driver',
+        };
+        $genOff = ($blA >= 4) ? 3 : 1;
+        if ($baseA + $genOff < $len) {
+            $genByte = ord($data[$baseA + $genOff]);
+            $cardGeneration = match($genByte) {
+                0x01    => 'Gen 1',
+                0x02    => 'Gen 2',
+                0x03    => 'Gen 2 V2',
+                default => 'Gen 1',
+            };
+        }
+        break;
+    }
+
     if (!$driverName) {
         return null;
     }
@@ -446,6 +524,8 @@ function dddParseDriverInfo(string $data): ?array
         'birth_date'       => $birthDate,
         'card_valid_until' => $cardValidUntil,
         'nationality'      => $nationality,
+        'card_type'        => $cardType,
+        'card_generation'  => $cardGeneration,
     ];
 }
 
@@ -579,6 +659,24 @@ function parseDddFile(string $path): array {
 
     $empty = ['days' => [], 'summary' => ['drive'=>0,'work'=>0,'rest'=>0,'avail'=>0,'violations'=>[]]];
 
+    // ── Step 0: TLV-bounded scan for EF_DriverActivityData ───────────────────
+    // Search known EF_DriverActivityData TLV tags; take the largest valid block
+    // to use as the scan region for activity record headers (Step 1).
+    $activityStart = null;
+    $activityEnd   = null;
+    $activityBestBl = 0;
+    foreach ([[0x05, 0x05], [0x05, 0x03], [0x05, 0x0D]] as [$t0, $t1]) {
+        for ($i = 0; $i < $len - 4; $i++) {
+            if (ord($data[$i]) !== $t0 || ord($data[$i + 1]) !== $t1) continue;
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl >= 200 && $bl <= 300000 && $i + 4 + $bl <= $len && $bl > $activityBestBl) {
+                $activityBestBl = $bl;
+                $activityStart  = $i + 4;
+                $activityEnd    = $i + 4 + $bl;
+            }
+        }
+    }
+
     // ── Step 1: Collect candidate record headers ───────────────────────────────
     // Dynamic 5-year window so the parser keeps working for future card downloads.
     // tsMax caps candidates at 90 days into the future to prevent coincidental
@@ -588,7 +686,10 @@ function parseDddFile(string $path): array {
     $yrMax   = $curYear + 1;
     $tsMax   = time() + 90 * 86400;   // at most 90 days ahead of today
     $cands   = [];
-    for ($i = 0; $i < $len - 8; $i += 2) {
+    // Use TLV-bounded region if found; skip first 4 management bytes (pointers/length).
+    $scanStart = ($activityStart !== null) ? $activityStart + 4 : 0;
+    $scanEnd   = $activityEnd ?? $len;
+    for ($i = $scanStart; $i < $scanEnd - 8; $i += 2) {
         $ts   = unpack('N', substr($data, $i, 4))[1];
         $yr   = (int)gmdate('Y', $ts);
         if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
@@ -598,7 +699,7 @@ function parseDddFile(string $path): array {
         // Lower bound lowered from 500→1: cards with no garbage (new cards whose
         // circular buffer has not yet wrapped) can have presenceCounter < 500.
         // The IQR filter in Step 4 removes stale records from old use-periods.
-        if ($pres < 1 || $pres > 8000 || $dist > 1100) continue;
+        if ($pres < 1 || $pres > 16000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist, 'tmin' => (int)(($ts % 86400) / 60)];
     }
@@ -766,11 +867,18 @@ function parseDddFile(string $path): array {
                 array_unshift($slots, ['act' => 0, 'start' => 0, 'end' => $firstTmin, 'dur' => $firstTmin]);
             }
 
-            // Validate total minutes (accept 1350–1460 to handle minor truncation)
-            $total = array_sum(array_column($slots, 'dur'));
-            if ($total < 1350 || $total > 1460) continue; // try next candidate
-
+            // Validate total minutes (accept 1350–1460 to handle minor truncation;
+            // wider 1200–1560 fallback accepted when driving activity is non-zero).
+            $total      = array_sum(array_column($slots, 'dur'));
             $driveTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 3), 'dur'));
+            $isFallback = false;
+            if ($total < 1350 || $total > 1460) {
+                if ($total >= 1200 && $total <= 1560 && $driveTotal > 0) {
+                    $isFallback = true; // wider range accepted; record has driving activity
+                } else {
+                    continue; // try next candidate
+                }
+            }
             $restTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 0), 'dur'));
             $workTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 2), 'dur'));
             $availTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 1), 'dur'));
@@ -798,14 +906,15 @@ function parseDddFile(string $path): array {
             }
 
             $days[$dateKey] = [
-                'date'  => $dateKey,
-                'drive' => $driveTotal,
-                'work'  => $workTotal,
-                'avail' => $availTotal,
-                'rest'  => $restTotal,
-                'dist'  => $r['dist'],
-                'segs'  => $slots,
-                'viol'  => $viol,
+                'date'     => $dateKey,
+                'drive'    => $driveTotal,
+                'work'     => $workTotal,
+                'avail'    => $availTotal,
+                'rest'     => $restTotal,
+                'dist'     => $r['dist'],
+                'segs'     => $slots,
+                'viol'     => $viol,
+                'fallback' => $isFallback,
             ];
             break; // valid record found – no need to try remaining candidates
         }
@@ -1236,7 +1345,7 @@ function parseVehicleDdd(string $path): array {
         $dist = unpack('n', substr($data, $i+6, 2))[1];
         // Lower bound lowered from 500→1: cards with no garbage (new cards whose
         // circular buffer has not yet wrapped) can have presenceCounter < 500.
-        if ($pres < 1 || $pres > 8000 || $dist > 1100) continue;
+        if ($pres < 1 || $pres > 16000 || $dist > 1100) continue;
 
         $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist];
     }
@@ -1996,6 +2105,81 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
  *   summary:array
  * }
  */
+/**
+ * Parse EF_CardEventData and EF_CardFaultData from a driver-card DDD binary blob.
+ *
+ * EU Reg. 165/2014 Annex IC §3.12 – CardEventRecord = 24 bytes:
+ *   eventType (1) + eventBeginTime (4) + eventEndTime (4)
+ *   + vehicleRegistration: nationNumeric(1) + codePage(1) + regNumber(13) = 15 bytes
+ *
+ * Tries TLV tags: 0x05 0x0A (EF_CardEventData) and 0x05 0x0C (EF_CardFaultData).
+ *
+ * @return array[] List of event records sorted by begin timestamp.
+ */
+function dddParseCardEvents(string $data): array
+{
+    $len   = strlen($data);
+    $now   = time();
+    $tsMin = $now - 5 * 365 * 86400;
+    $tsMax = $now + 5 * 365 * 86400;
+
+    static $eventLabels = [
+        0x01 => 'Ogólna awaria',
+        0x02 => 'Przerwa zasilania',
+        0x03 => 'Błąd danych ruchu',
+        0x04 => 'Konflikt danych ruchu pojazdu',
+        0x05 => 'Korekta czasu',
+        0x10 => 'Jazda bez ważnej karty',
+        0x11 => 'Karta włożona podczas jazdy',
+        0x12 => 'Sesja karty nie zamknięta',
+        0x13 => 'Przekroczenie prędkości',
+        0x14 => 'Przerwa zasilania pojazdu',
+        0x15 => 'Odłączenie czujnika ruchu',
+        0x16 => 'Próba naruszenia zabezpieczeń',
+    ];
+
+    $validTypes = array_merge(range(0x01, 0x05), range(0x10, 0x16));
+    $events     = [];
+
+    foreach ([[0x05, 0x0A], [0x05, 0x0C]] as [$t0, $t1]) {
+        for ($i = 0; $i < $len - 4; $i++) {
+            if (ord($data[$i]) !== $t0 || ord($data[$i + 1]) !== $t1) continue;
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl < 24 || $bl > 50000 || $i + 4 + $bl > $len) continue;
+            $base     = $i + 4;
+            $recCount = (int)floor($bl / 24);
+            for ($r = 0; $r < $recCount; $r++) {
+                $off     = $base + $r * 24;
+                $evType  = ord($data[$off]);
+                $beginTs = unpack('N', substr($data, $off + 1, 4))[1];
+                $endTs   = unpack('N', substr($data, $off + 5, 4))[1];
+                if ($beginTs < $tsMin || $beginTs > $tsMax) continue;
+                if ($endTs   < $tsMin || $endTs   > $tsMax) continue;
+                if (!in_array($evType, $validTypes, true)) continue;
+                $regRaw = substr($data, $off + 11, 13);
+                $regStr = strtoupper(trim(preg_replace('/\s+/', ' ',
+                    preg_replace('/[^A-Z0-9 ]/', '',
+                        str_replace(["\x00", "\xFF"], ' ', $regRaw)))));
+                $label   = $eventLabels[$evType] ?? ('Zdarzenie ' . $evType);
+                $durMin  = (int)round(abs($endTs - $beginTs) / 60);
+                $events[] = [
+                    'type'         => $evType,
+                    'type_label'   => $label,
+                    'begin_ts'     => $beginTs,
+                    'end_ts'       => $endTs,
+                    'begin_date'   => gmdate('Y-m-d', $beginTs),
+                    'end_date'     => gmdate('Y-m-d', $endTs),
+                    'duration_min' => $durMin,
+                    'reg'          => $regStr,
+                ];
+            }
+        }
+    }
+
+    usort($events, fn($a, $b) => $a['begin_ts'] <=> $b['begin_ts']);
+    return $events;
+}
+
 function parseDriverCardFull(string $path): array
 {
     $empty = [
@@ -2004,6 +2188,7 @@ function parseDriverCardFull(string $path): array
         'weeks'            => [],
         'vehicles'         => [],
         'border_crossings' => [],
+        'events'           => [],
         'summary'          => [
             'drive'                  => 0,
             'work'                   => 0,
@@ -2028,6 +2213,9 @@ function parseDriverCardFull(string $path): array
 
     // ── 3. Vehicles used (odometer begin/end, first/last use dates) ──────────
     $vehicles = parseDriverCardVehicles($data);
+
+    // ── 3b. Card events (EF_CardEventData / EF_CardFaultData) ────────────────
+    $events = dddParseCardEvents($data);
 
     // ── 4. Weekly summaries + weekly/bi-weekly violation checks ─────────────
     // EU Regulation 561/2006:
@@ -2207,6 +2395,50 @@ function parseDriverCardFull(string $path): array
         }
     }
 
+    // ── 5b. Rest compensation obligation check ───────────────────────────────
+    // EU Reg. 561/2006 art. 8(6): compensation for a reduced weekly rest must
+    // be taken before the end of the 3rd week following the week of reduction,
+    // attached to a regular weekly rest of ≥ 45 h.
+    foreach (array_keys($weeks) as $wKey) {
+        $longestWeeklyRest = $weeks[$wKey]['longest_rest_min'] ?? 0;
+        if ($longestWeeklyRest < $EU_WEEKLY_REST_RED || $longestWeeklyRest >= $EU_WEEKLY_REST_REG) {
+            continue; // not a reduced weekly rest
+        }
+        $comp = $EU_WEEKLY_REST_REG - $longestWeeklyRest;
+
+        $wParts      = explode('-W', $wKey);
+        $wIsoYear    = (int)($wParts[0] ?? 0);
+        $wIsoWeekNum = (int)($wParts[1] ?? 1);
+        $wMondayTs   = strtotime($wIsoYear . 'W' . sprintf('%02d', $wIsoWeekNum) . '1');
+
+        $compensated            = false;
+        $followingWeeksWithData = 0;
+        for ($n = 1; $n <= 3; $n++) {
+            $nextDate    = gmdate('Y-m-d', strtotime('+' . ($n * 7) . ' days', $wMondayTs));
+            $nextTs      = strtotime($nextDate . 'T00:00:00Z');
+            $nextIsoYear = (int)gmdate('o', $nextTs);
+            $nextIsoWeek = (int)gmdate('W', $nextTs);
+            $nextWKey    = $nextIsoYear . '-W' . sprintf('%02d', $nextIsoWeek);
+
+            if (!isset($weeks[$nextWKey])) continue;
+            $followingWeeksWithData++;
+
+            $nextRest = $weeks[$nextWKey]['longest_rest_min'] ?? 0;
+            if ($nextRest >= $EU_WEEKLY_REST_REG + $comp) {
+                $compensated = true;
+                break;
+            }
+        }
+
+        if (!$compensated && $followingWeeksWithData >= 2) {
+            $msg = sprintf(
+                'Nie wykryto kompensaty skróconego odpoczynku tygodniowego (%dh %dm) do końca 3. tygodnia po tygodniu %s',
+                (int)floor($comp / 60), $comp % 60, $wKey
+            );
+            $weeks[$wKey]['violations'][] = ['type' => 'warn', 'msg' => $msg];
+        }
+    }
+
     // ── 6. Build overall summary ─────────────────────────────────────────────
     $summary = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'violations' => [], 'border_crossings_count' => 0];
     foreach ($days as $day) {
@@ -2243,6 +2475,7 @@ function parseDriverCardFull(string $path): array
         'weeks'            => array_values($weeks),
         'vehicles'         => $vehicles,
         'border_crossings' => $allBorderCrossings,
+        'events'           => $events,
         'summary'          => $summary,
     ];
 }
