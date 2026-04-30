@@ -1,0 +1,1039 @@
+<?php
+/**
+ * Standalone test for parseDriverCardVehicles() and mergeVehicleRecords().
+ *
+ * Run:  php tests/test_parseDriverCardVehicles.php
+ *
+ * Covers:
+ *   1. TLV Phase-1, Gen-2 (32-byte) record – basic valid plate
+ *   2. TLV Phase-1, Gen-1 (29-byte) record – compact format
+ *   3. TLV Phase-1, multiple records returned in date order
+ *   4. Phase-2 fallback (no TLV tag) – consecutive Gen-2 records
+ *   5. False-positive: single-letter middle token ("AIA M 3") rejected
+ *   6. Valid 3-token plate "KR 123AB" accepted
+ *   7. Nation from NationAlpha (Gen-2) takes precedence
+ *   8. Nation resolved from NationNumeric when alpha absent / Gen-1
+ *   9. Future timestamp (> tsMax) rejected
+ *  10. Too-old timestamp (< tsMin) rejected
+ *  11. Odometer overflow (> 9 999 999) rejected
+ *  12. Short / empty data returns []
+ *  13. Alternative TLV tag 0x0528
+ *  14. Two-record minimum in Phase-2 fallback (single record not returned)
+ *  19. Epoch firstUse (VU unset) accepted, falls back to lastUse as display date
+ *  20. Multi-vehicle card with epoch firstUse on most records – all found
+ *  21. Phase-1 extended scan: unknown 0x05xx TLV tag found; all epoch-firstUse
+ *      vehicles returned (regression for "only 1 vehicle" bug)
+ *  22. Phase-2b best-group: no TLV at all + all epoch firstUse – all vehicles found
+ *  27. mergeVehicleRecords: different date_to = different sessions, both kept
+ *  28. mergeVehicleRecords: different date_to kept as separate sessions
+ *  28b. mergeVehicleRecords: odo_begin rescued when identical session in two files
+ *  29. mergeVehicleRecords: same first+date_to tiebreak by distance; sorted by date_from
+ */
+
+require_once __DIR__ . '/../includes/functions.php';
+
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+
+$passed = 0;
+$failed = 0;
+
+function ok(string $label, bool $cond): void {
+    global $passed, $failed;
+    if ($cond) {
+        echo "  PASS  $label\n";
+        $passed++;
+    } else {
+        echo "  FAIL  $label\n";
+        $failed++;
+    }
+}
+
+/**
+ * Build a Gen-2 (32-byte) EF_CardVehiclesUsed record.
+ *
+ * @param string $reg       Registration number (max 13 chars, ASCII)
+ * @param string $nation    NationAlpha (1-3 chars), e.g. "PL"
+ * @param int    $nationNum NationNumeric (1-50)
+ * @param int    $firstUse  Unix timestamp
+ * @param int    $lastUse   Unix timestamp
+ * @param int    $odoB      Odometer begin (3-byte value)
+ * @param int    $odoE      Odometer end   (3-byte value)
+ */
+function buildGen2Rec(
+    string $reg,
+    string $nation,
+    int $nationNum,
+    int $firstUse,
+    int $lastUse,
+    int $odoB = 100000,
+    int $odoE = 150000
+): string {
+    $nationAlpha = str_pad(substr($nation, 0, 3), 3, "\x00");
+    $codePage    = "\x00";
+    $regPad      = str_pad(substr($reg, 0, 13), 13, "\x00");
+    $ts1         = pack('N', $firstUse);
+    $ts2         = pack('N', $lastUse);
+    $ob          = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe          = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+
+    return chr($nationNum) . $nationAlpha . $codePage . $regPad . $ts1 . $ts2 . $ob . $oe;
+}
+
+/**
+ * Build a Gen-1 (29-byte) EF_CardVehiclesUsed record.
+ */
+function buildGen1Rec(
+    string $reg,
+    int $nationNum,
+    int $firstUse,
+    int $lastUse,
+    int $odoB = 100000,
+    int $odoE = 150000
+): string {
+    $codePage = "\x00";
+    $regPad   = str_pad(substr($reg, 0, 13), 13, "\x00");
+    $ts1      = pack('N', $firstUse);
+    $ts2      = pack('N', $lastUse);
+    $ob       = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe       = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+
+    return chr($nationNum) . $codePage . $regPad . $ts1 . $ts2 . $ob . $oe;
+}
+
+/**
+ * Wrap records in a TLV EF_CardVehiclesUsed envelope.
+ *
+ * @param string $records      Concatenated raw records
+ * @param int    $recCount     noOfVehicleUsed value
+ * @param int    $tagByte2     Second tag byte (0x04 or 0x28)
+ * @param string $prefix       Random prefix bytes to prepend
+ */
+function buildTlvBlob(
+    string $records,
+    int $recCount,
+    int $tagByte2 = 0x04,
+    string $prefix = ''
+): string {
+    // TLV content: 2-byte noOfVeh + 2-byte noOfVehForUse + records
+    $tlvContent = pack('n', $recCount) . pack('n', $recCount) . $records;
+    $bl         = strlen($tlvContent);
+
+    $header = "\x05" . chr($tagByte2) . pack('n', $bl);
+
+    return $prefix . $header . $tlvContent . str_repeat("\x00", 64);
+}
+
+/* ── Fixed timestamps within the valid window (last 12 months from now) ── */
+/* Use rolling dates relative to today so tests stay valid regardless of when run */
+$now          = time();
+$firstUse2023 = $now - 300 * 86400;               // ~10 months ago
+$lastUse2023  = $now - 270 * 86400;               // ~9 months ago
+$firstUse2024 = $now - 180 * 86400;               // ~6 months ago
+$lastUse2024  = $now -  60 * 86400;               // ~2 months ago
+$firstUse2023Fmt = gmdate('Y-m-d', $firstUse2023);
+$lastUse2023Fmt  = gmdate('Y-m-d', $lastUse2023);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 1: TLV Phase-1, Gen-2 single record – basic valid plate
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 1: TLV Gen-2 single record\n";
+
+$rec  = buildGen2Rec('WX12345', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('returns exactly 1 vehicle', count($out) === 1);
+ok('registration = WX12345',    ($out[0]['reg'] ?? '') === 'WX12345');
+ok('nation = PL (alpha)',        ($out[0]['nation'] ?? '') === 'PL');
+ok('date_from matches',         ($out[0]['date_from'] ?? '') === $firstUse2023Fmt);
+ok('date_to matches',          ($out[0]['date_to']  ?? '') === $lastUse2023Fmt);
+ok('distance  = 50000',         ($out[0]['distance']  ?? -1) === 50000);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 2: TLV Phase-1, Gen-1 (29-byte) single record
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 2: TLV Gen-1 single record\n";
+
+$rec  = buildGen1Rec('BI1234C', 40, $firstUse2023, $lastUse2023, 50000, 75000);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('returns exactly 1 vehicle', count($out) === 1);
+ok('registration = BI1234C',    ($out[0]['reg'] ?? '') === 'BI1234C');
+ok('nation from numeric = PL',  ($out[0]['nation'] ?? '') === 'PL');
+ok('distance = 25000',          ($out[0]['distance'] ?? -1) === 25000);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 3: TLV Phase-1, multiple records sorted by date_from
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 3: TLV Gen-2 multiple records (sorted)\n";
+
+$rec1 = buildGen2Rec('DW123AB', 'PL', 40, $firstUse2024, $lastUse2024);
+$rec2 = buildGen2Rec('KR456CD', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec1 . $rec2, 2);
+$out  = parseDriverCardVehicles($blob);
+
+ok('returns 2 vehicles',                 count($out) === 2);
+ok('first record is older date_from',    ($out[0]['reg'] ?? '') === 'KR456CD');
+ok('second record is newer date_from',   ($out[1]['reg'] ?? '') === 'DW123AB');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 4: Phase-2 fallback – no TLV, raw consecutive Gen-2 records
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 4: Phase-2 fallback (no TLV)\n";
+
+$rec1 = buildGen2Rec('GD789EF', 'PL', 40, $firstUse2023, $lastUse2023);
+$rec2 = buildGen2Rec('PO321GH', 'PL', 40, $firstUse2024, $lastUse2024);
+// Raw bytes with no TLV header.  Records placed at offset 0 so Phase-2 finds
+// them immediately (score 4) and any misaligned groups at later offsets cannot
+// beat the same score due to the strict-greater-than condition ($score > $bestScore).
+$blob = $rec1 . $rec2 . str_repeat("\x00", 100);
+$out  = parseDriverCardVehicles($blob);
+
+ok('returns 2 vehicles',           count($out) === 2);
+ok('plate GD789EF present',        in_array('GD789EF', array_column($out, 'reg')));
+ok('plate PO321GH present',        in_array('PO321GH', array_column($out, 'reg')));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 5: False-positive rejection – "AIA M 3" (middle token = lone letter)
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 5: False-positive 'AIA M 3' rejected\n";
+
+$rec  = buildGen2Rec('AIA M 3', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('false-positive plate rejected', count($out) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 6: Valid 3-token plate "KR 123AB" is accepted
+ *         (only middle tokens that are a single letter get rejected)
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 6: Valid 3-token plate 'KR 123AB' accepted\n";
+
+$rec  = buildGen2Rec('KR 123AB', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('3-token plate accepted',           count($out) === 1);
+ok('plate = KR 123AB',                 ($out[0]['reg'] ?? '') === 'KR 123AB');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 7: German-style plate "B AB 1234" accepted (middle token "AB" len > 1)
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 7: German-style 'B AB 1234' accepted\n";
+
+$rec  = buildGen2Rec('B AB 1234', 'D', 13, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('plate accepted',      count($out) === 1);
+ok('plate = B AB 1234',   ($out[0]['reg'] ?? '') === 'B AB 1234');
+ok('nation = D',          ($out[0]['nation'] ?? '') === 'D');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 8: Nation from NationAlpha takes precedence over NationNumeric
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 8: NationAlpha precedence\n";
+
+// nationNum = 17 ('F' = France), but nationAlpha = 'EST' (Estonia)
+$rec  = buildGen2Rec('ABC123', 'EST', 17, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('alpha nation wins', ($out[0]['nation'] ?? '') === 'EST');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 9: Future timestamp (beyond tsMax) rejected
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 9: Future timestamp rejected\n";
+
+$farFuture = time() + 200 * 86400;  // +200 days, beyond 90-day tsMax
+$rec  = buildGen2Rec('LU1111X', 'PL', 40, $farFuture, $farFuture + 86400);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('future-ts record rejected', count($out) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 10: lastUse too old (before tsMin) → record rejected.
+ *          The parser rejects any record whose timestamps fall outside the
+ *          plausible 20-year window.  Use a date older than 20 years to test.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 10: Too-old lastUse rejected\n";
+
+$ancient = gmmktime(0, 0, 0, 1, 1, 1990); // well beyond 20-year window
+$rec  = buildGen2Rec('OLD0001', 'PL', 40, $ancient, $ancient + 86400);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('ancient lastUse record rejected', count($out) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 11: Odometer value > 9 999 999 rejected
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 11: Odometer overflow rejected\n";
+
+$rec  = buildGen2Rec('OD12345', 'PL', 40, $firstUse2023, $lastUse2023, 10_000_000, 10_100_000);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('odometer overflow rejected', count($out) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 12: Short / empty data returns empty array
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 12: Short/empty data\n";
+
+ok('empty string → []',      parseDriverCardVehicles('') === []);
+ok('39-byte string → []',    parseDriverCardVehicles(str_repeat("\x00", 39)) === []);
+ok('all-null 100 bytes → []', parseDriverCardVehicles(str_repeat("\x00", 100)) === []);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 13: Alternative TLV tag 0x0528 is also recognised
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 13: Alternative TLV tag 0x0528\n";
+
+$rec  = buildGen2Rec('ZK99887', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1, 0x28); // second tag byte = 0x28
+$out  = parseDriverCardVehicles($blob);
+
+ok('0x0528-tagged record found', count($out) === 1);
+ok('plate = ZK99887',            ($out[0]['reg'] ?? '') === 'ZK99887');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 14: Phase-2 requires ≥ 2 consecutive records; single record not returned
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 14: Phase-2 minimum 2 records\n";
+
+// Single isolated Gen-2 record with no TLV envelope → should NOT be returned
+$rec1 = buildGen2Rec('SO55555', 'PL', 40, $firstUse2023, $lastUse2023);
+// Fill surroundings with bytes that cannot form a valid record
+$blob = str_repeat("\xFF", 100) . $rec1 . str_repeat("\xFF", 100);
+$out  = parseDriverCardVehicles($blob);
+
+ok('single isolated record not returned by Phase-2', count($out) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 15: Null-byte padded registration ("WA\x00\x00\x0012345") is normalised
+ *           to "WA 12345" (no multiple consecutive spaces).
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 15: Null-padded registration normalised to single spaces\n";
+
+// Build a Gen-2 record manually to inject "\x00\x00" padding in the middle of the reg
+function buildGen2RecRaw(
+    string $regRaw13,   // exactly 13 bytes of raw regNumber field
+    string $nation,
+    int    $nationNum,
+    int    $firstUse,
+    int    $lastUse,
+    int    $odoB = 100000,
+    int    $odoE = 150000
+): string {
+    $nationAlpha = str_pad(substr($nation, 0, 3), 3, "\x00");
+    $codePage    = "\x00";
+    $ts1         = pack('N', $firstUse);
+    $ts2         = pack('N', $lastUse);
+    $ob          = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe          = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+    return chr($nationNum) . $nationAlpha . $codePage . $regRaw13 . $ts1 . $ts2 . $ob . $oe;
+}
+
+// "WA" + 1 null byte + "12345" + 5 null bytes = 13 bytes total
+// (The null byte in the middle becomes a space after normalisation → "WA 12345")
+$regRaw13 = "WA\x0012345\x00\x00\x00\x00\x00";
+$rec  = buildGen2RecRaw($regRaw13, 'PL', 40, $firstUse2023, $lastUse2023);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('padded reg: 1 result',            count($out) === 1);
+ok('padded reg: no consecutive spaces', ($out[0]['reg'] ?? '') === 'WA 12345');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 16: dddParseVehicleReg – classic plate with space
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 16: dddParseVehicleReg – various EU plate formats\n";
+
+/**
+ * Build a 14-byte blob as stored in a vehicle DDD file:
+ *   byte 0    = codePage (0x00)
+ *   bytes 1-13 = reg, padded with 0x00
+ * The function prepends random-ish bytes and appends padding so the scanner
+ * actually finds the plate somewhere in the middle.
+ */
+function makeVehicleDddBlob(string $reg): string {
+    $field = "\x00" . str_pad(substr($reg, 0, 13), 13, "\x00");
+    return str_repeat("\x01\x02\x03\x04", 50) . $field . str_repeat("\x00", 50);
+}
+
+// 16a: classic "WA 12345" (2-letter prefix + space + 5 digits)
+ok('16a: WA 12345',   dddParseVehicleReg(makeVehicleDddBlob('WA 12345')) === 'WA 12345');
+
+// 16b: plate without space "WA12345"
+ok('16b: WA12345',    dddParseVehicleReg(makeVehicleDddBlob('WA12345'))  === 'WA12345');
+
+// 16c: null-padded "WA\x0012345" → should normalise to "WA 12345"
+ok('16c: null-padded "WA12345"', dddParseVehicleReg(makeVehicleDddBlob("WA\x0012345")) === 'WA 12345');
+
+// 16d: German 3-token "B AB1234"
+ok('16d: B AB1234',   dddParseVehicleReg(makeVehicleDddBlob('B AB1234')) === 'B AB1234');
+
+// 16e: purely alphabetic "ABCDE" should NOT match (no digit)
+ok('16e: no-digit rejected', dddParseVehicleReg(makeVehicleDddBlob('ABCDE')) === null);
+
+// 16f: empty blob returns null
+ok('16f: empty → null', dddParseVehicleReg('') === null);
+
+/* ── Test 17: Proprietary 31-byte record format ──────────────────────────── */
+/* Layout: odoBegin(3)+firstUse(4)+lastUse(4)+nation(1)+codepage(1)+reg(13)+ctr(2)+odoEnd(3) */
+echo "\nTest 17: Proprietary 31-byte record format (odo-first, no nationAlpha)\n";
+
+function make31byteRec(string $reg, int $odoBegin, int $firstUse, int $lastUse, int $nation, int $odoEnd): string {
+    $r  = chr(($odoBegin >> 16) & 0xFF) . chr(($odoBegin >> 8) & 0xFF) . chr($odoBegin & 0xFF);  // odoBegin
+    $r .= pack('N', $firstUse);                                                                      // firstUse
+    $r .= pack('N', $lastUse);                                                                       // lastUse
+    $r .= chr($nation);                                                                              // nationNumeric
+    $r .= chr(0x02);                                                                                 // codePage
+    $r .= str_pad(substr($reg, 0, 13), 13, "\x20");                                                  // registration
+    $r .= "\x08\x06";                                                                                // counter (ignored)
+    $r .= chr(($odoEnd >> 16) & 0xFF) . chr(($odoEnd >> 8) & 0xFF) . chr($odoEnd & 0xFF);           // odoEnd
+    return $r;
+}
+
+$ts1 = mktime(0, 0, 0, 8, 22, 2025);
+$ts2 = mktime(23, 59, 59, 8, 22, 2025);
+$ts3 = mktime(0, 0, 0, 8, 23, 2025);
+$ts4 = mktime(23, 59, 59, 8, 23, 2025);
+
+// Build two consecutive 31-byte records for "PY 90501" (nationNumeric=40=PL)
+$rec1 = make31byteRec('PY 90501', 264270, $ts1, $ts2, 40, 264270);
+$rec2 = make31byteRec('PY 90501', 264358, $ts3, $ts4, 40, 264620);
+assert(strlen($rec1) === 31 && strlen($rec2) === 31, '31-byte records built');
+
+// Wrap in a TLV 0x0504 block without a standard noOfVeh/ptr header
+$records = $rec1 . $rec2;
+$bl      = strlen($records);
+$blob    = "\x05\x04" . chr(($bl >> 8) & 0xFF) . chr($bl & 0xFF) . $records;
+// Pad to at least 40 bytes total
+$blob   .= str_repeat("\x00", max(0, 40 - strlen($blob)));
+
+$result17 = parseDriverCardVehicles($blob);
+ok('17a: finds records in 31-byte format', count($result17) >= 2);
+ok('17b: registration = PY 90501', ($result17[0]['reg'] ?? '') === 'PY 90501');
+ok('17c: nation = PL',              ($result17[0]['nation'] ?? '') === 'PL');
+ok('17d: date_from = 2025-08-22',   ($result17[0]['date_from'] ?? '') === '2025-08-22');
+ok('17e: odo_begin correct',        ($result17[0]['odo_begin'] ?? -1) === 264270);
+ok('17f: odo_end stored correctly', ($result17[1]['odo_end'] ?? -1) === 264620);
+ok('17g: distance for rec2',        ($result17[1]['distance'] ?? -1) === 262);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 18: firstUse older than 12 months but lastUse recent → ACCEPTED.
+ *          Root-cause regression test: vehicles on the card for years but
+ *          still driven within the 12-month window must not be filtered out.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 18: Old firstUse + recent lastUse accepted\n";
+
+$oldFirstUse   = time() - 800 * 86400;  // ~2.2 years ago (well outside 12 months)
+$recentLastUse = time() -  30 * 86400;  // 30 days ago (clearly inside window)
+$rec  = buildGen2Rec('TR9988AB', 'PL', 40, $oldFirstUse, $recentLastUse);
+$blob = buildTlvBlob($rec, 1);
+$out  = parseDriverCardVehicles($blob);
+
+ok('18a: old-firstUse/recent-lastUse accepted', count($out) === 1);
+ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR9988AB');
+ok('18c: date_to is recent',                   ($out[0]['date_to'] ?? '') === gmdate('Y-m-d', $recentLastUse));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 19: firstUse = 0 (epoch / not recorded by VU) → ACCEPTED with
+ *          date_from falling back to lastUse (no spurious 1970-01-01).
+ *
+ * Some vehicle units leave vehicleFirstUse at zero.  The record is still
+ * valid – the driver DID use the vehicle – so we accept it and display the
+ * last-use date as both date_from and date_to rather than discarding it.
+ *
+ * 19b: A non-zero firstUse that is older than 20 years → still REJECTED
+ *      (distinguishes genuine corruption from the unset-epoch case).
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 19: Epoch firstUse (VU unset) – accepted, falls back to lastUse\n";
+
+$epochFirstUse = 0;                      // Unix epoch – VU didn't record firstUse
+$recentLastUse = time() - 30 * 86400;    // 30 days ago
+$rec19  = buildGen2Rec('AB12345', 'PL', 40, $epochFirstUse, $recentLastUse);
+$blob19 = buildTlvBlob($rec19, 1);
+$out19  = parseDriverCardVehicles($blob19);
+ok('19a: epoch firstUse accepted (VU unset field)',  count($out19) === 1);
+ok('19a: date_from falls back to date_to',          ($out19[0]['date_from'] ?? '') === gmdate('Y-m-d', $recentLastUse));
+ok('19a: no spurious 1970-01-01 date',               ($out19[0]['date_from'] ?? '') !== '1970-01-01');
+ok('19a: plate is AB12345',                          ($out19[0]['reg'] ?? '') === 'AB12345');
+
+// 19b: A non-zero firstUse older than 20 years → rejected (genuine corruption)
+echo "\nTest 19b: Ancient non-epoch firstUse rejected\n";
+$ancientFirstUse = strtotime('-25 years');
+$rec19b  = buildGen2Rec('CD67890', 'PL', 40, $ancientFirstUse, $recentLastUse);
+$blob19b = buildTlvBlob($rec19b, 1);
+$out19b  = parseDriverCardVehicles($blob19b);
+ok('19b: >20-year-old non-epoch firstUse rejected',  count($out19b) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 20: Realistic multi-vehicle card where most records have firstUse=0.
+ *          Root-cause regression: the epoch-firstUse guard must NOT silently
+ *          drop all records that the VU left with an unset vehicleFirstUse.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 20: Multi-vehicle card with epoch firstUse on most records\n";
+
+// Build 10 Gen-2 records; only PY 90501 has a proper firstUse,
+// all others have firstUse = 0 (VU didn't record it)
+$pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t20recs = '';
+$t20veh = [
+    ['PO 12345', 0,       mktime(23,59,59,  1, 15, 2024)],
+    ['WA 67890', 0,       mktime(23,59,59,  3, 21, 2024)],
+    ['GD 11111', 0,       mktime(23,59,59,  6,  5, 2024)],
+    ['KR 22222', 0,       mktime(23,59,59,  9, 10, 2024)],
+    ['WR 33333', 0,       mktime(23,59,59, 11, 25, 2024)],
+    ['LU 44444', 0,       mktime(23,59,59,  2, 14, 2025)],
+    ['RZ 55555', 0,       mktime(23,59,59,  5, 30, 2025)],
+    ['BY 66666', 0,       mktime(23,59,59,  8, 20, 2025)],
+    ['PY 90501', $pyFirst, mktime(23,59,59, 11, 19, 2025)],
+    ['SZ 77777', 0,       mktime(23,59,59,  2, 26, 2026)],
+];
+foreach ($t20veh as [$treg, $tfu, $tlu]) {
+    $t20recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+$t20blob = buildTlvBlob($t20recs, count($t20veh));
+$out20   = parseDriverCardVehicles($t20blob);
+
+ok('20a: all 10 vehicles found',         count($out20) === 10);
+ok('20b: PY 90501 present',              in_array('PY 90501', array_column($out20, 'reg')));
+ok('20c: SZ 77777 present (Feb 2026)',   in_array('SZ 77777', array_column($out20, 'reg')));
+ok('20d: no 1970-01-01 date_from dates', !in_array('1970-01-01', array_column($out20, 'date_from')));
+// Records with epoch firstUse should have date_from == date_to
+$szRec = current(array_filter($out20, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('20e: SZ 77777 date_from = date_to (epoch fallback)', $szRec && $szRec['date_from'] === $szRec['date_to']);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 21: Phase-1 extended scan – unknown TLV tag with epoch firstUse.
+ *
+ * This is the primary regression test for the "only one vehicle (PY 90501)
+ * with date November 19 2025 returned" bug.
+ *
+ * When a DDD file uses a non-standard TLV tag (not 0x0504/0x0528/0x050b),
+ * the old hard-coded tag list caused Phase 1 to miss the block, leaving
+ * Phase 2 (blind scan) to run with allowEpochFirstUse=false.  Phase 2 then
+ * rejected all 9 epoch-firstUse records and returned only PY 90501.
+ *
+ * After the fix, Phase 1 scans for ANY 0x05xx tag (first byte = 0x05), so
+ * it finds the block regardless of the second tag byte.  Because Phase 1
+ * passes allowEpochFirstUse=true, all 10 vehicles are correctly returned.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 21: Phase-1 extended scan – unknown TLV tag, epoch firstUse records\n";
+
+$t21pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t21veh = [
+    ['PO 12345', 0,            mktime(23, 59, 59,  1, 15, 2024)],
+    ['WA 67890', 0,            mktime(23, 59, 59,  3, 21, 2024)],
+    ['GD 11111', 0,            mktime(23, 59, 59,  6,  5, 2024)],
+    ['KR 22222', 0,            mktime(23, 59, 59,  9, 10, 2024)],
+    ['WR 33333', 0,            mktime(23, 59, 59, 11, 25, 2024)],
+    ['LU 44444', 0,            mktime(23, 59, 59,  2, 14, 2025)],
+    ['RZ 55555', 0,            mktime(23, 59, 59,  5, 30, 2025)],
+    ['BY 66666', 0,            mktime(23, 59, 59,  8, 20, 2025)],
+    ['PY 90501', $t21pyFirst,  mktime(23, 59, 59, 11, 19, 2025)],
+    ['SZ 77777', 0,            mktime(23, 59, 59,  2, 26, 2026)],
+];
+$t21recs = '';
+foreach ($t21veh as [$treg, $tfu, $tlu]) {
+    $t21recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+// Wrap in an UNKNOWN TLV tag (0x050F) so Phase 1 cannot find the block
+$t21hdr  = pack('n', 9) . pack('n', 10);       // vPtr=9, noOfVeh=10
+$t21val  = $t21hdr . $t21recs;
+$t21blob = "\x05\x0F" . pack('n', strlen($t21val)) . $t21val . str_repeat("\x00", 64);
+
+$out21 = parseDriverCardVehicles($t21blob);
+
+ok('21a: all 10 vehicles found via Phase-1 extended scan',  count($out21) === 10);
+ok('21b: PY 90501 present',                   in_array('PY 90501', array_column($out21, 'reg')));
+ok('21c: SZ 77777 (Feb 2026) present',        in_array('SZ 77777', array_column($out21, 'reg')));
+ok('21d: no 1970-01-01 dates',                !in_array('1970-01-01', array_column($out21, 'date_from')));
+$sz21 = current(array_filter($out21, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('21e: SZ 77777 date_from = date_to',      $sz21 && $sz21['date_from'] === $sz21['date_to']);
+ok('21f: PY 90501 date_from = 2025-11-19',    current(array_filter($out21, fn($r) => $r['reg'] === 'PY 90501'))['date_from'] ?? '' === '2025-11-19');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 22: Phase-2b best-group – no TLV structure at all, all epoch firstUse.
+ *
+ * When there is no TLV structure (Phase 1 finds nothing) AND all records have
+ * epoch firstUse (Phase 2a finds nothing because allowEpochFirstUse=false),
+ * Phase 2b runs with allowEpochFirstUse=true and picks the group with the
+ * MOST consecutive valid records.
+ *
+ * In this test, the real records (10 vehicles) are preceded by 100 zero bytes.
+ * Misaligned reads of the zero prefix produce no valid garbage (zeros fail
+ * the registration validation), so Phase 2b cleanly finds the real group.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 22: Phase-2b best-group – no TLV, all epoch firstUse\n";
+
+$t22pyFirst = mktime(0, 0, 0, 11, 19, 2025);
+$t22veh = [
+    ['PO 12345', 0,            mktime(23, 59, 59,  1, 15, 2024)],
+    ['WA 67890', 0,            mktime(23, 59, 59,  3, 21, 2024)],
+    ['GD 11111', 0,            mktime(23, 59, 59,  6,  5, 2024)],
+    ['KR 22222', 0,            mktime(23, 59, 59,  9, 10, 2024)],
+    ['WR 33333', 0,            mktime(23, 59, 59, 11, 25, 2024)],
+    ['LU 44444', 0,            mktime(23, 59, 59,  2, 14, 2025)],
+    ['RZ 55555', 0,            mktime(23, 59, 59,  5, 30, 2025)],
+    ['BY 66666', 0,            mktime(23, 59, 59,  8, 20, 2025)],
+    ['PY 90501', $t22pyFirst,  mktime(23, 59, 59, 11, 19, 2025)],
+    ['SZ 77777', 0,            mktime(23, 59, 59,  2, 26, 2026)],
+];
+$t22recs = '';
+foreach ($t22veh as [$treg, $tfu, $tlu]) {
+    $t22recs .= buildGen2Rec($treg, 'PL', 40, $tfu, $tlu);
+}
+// Precede with 100 zero bytes and NO TLV tag so Phase 1 finds nothing
+$t22blob = str_repeat("\x00", 100) . $t22recs . str_repeat("\x00", 100);
+
+$out22 = parseDriverCardVehicles($t22blob);
+
+ok('22a: all 10 vehicles found via Phase-2b',  count($out22) === 10);
+ok('22b: PY 90501 present',                    in_array('PY 90501', array_column($out22, 'reg')));
+ok('22c: SZ 77777 (Feb 2026) present',         in_array('SZ 77777', array_column($out22, 'reg')));
+ok('22d: no 1970-01-01 dates',                 !in_array('1970-01-01', array_column($out22, 'date_from')));
+$sz22 = current(array_filter($out22, fn($r) => $r['reg'] === 'SZ 77777'));
+ok('22e: SZ 77777 date_from = date_to',       $sz22 && $sz22['date_from'] === $sz22['date_to']);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 23: Phase-1 pollution guard – known vehicle tag (0x0504) results must
+ *          NOT be contaminated by garbage records from other 0x05xx TLV blocks.
+ *
+ * Root-cause regression: the old Phase-1 code merged records from ALL 0x05xx
+ * TLV blocks in the file.  Other EF files (calibration data, driver info, …)
+ * share the same 0x05 tag-byte prefix.  Binary data in those blocks can
+ * accidentally pass all record-level validation checks and appear in the
+ * vehicle list alongside the real records.
+ *
+ * The fix: Phase-1 now keeps a separate bucket for known vehicle tags
+ * (0x0504 etc.) and a "best block" bucket for unknown tags.  Known-tag results
+ * are returned first, ignoring any unknown-tag blocks.
+ *
+ * This test crafts a blob with:
+ *   1. A 0x0506 (unknown/non-vehicle) TLV block that accidentally contains
+ *      5 valid-looking vehicle records (garbage).
+ *   2. A 0x0504 (EF_CardVehiclesUsed) TLV block with the 2 real records
+ *      (GD789EF + PO321GH, epoch firstUse).
+ *
+ * Expected: only GD789EF and PO321GH are returned (2 records, not 7).
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 23: Phase-1 pollution guard – known tag not contaminated by garbage 0x05xx block\n";
+
+$t23lastGD = mktime(0, 0, 0,  5, 24, 2025);  // 2025-05-24
+$t23lastPO = mktime(0, 0, 0,  9, 21, 2025);  // 2025-09-21
+
+// Real records: epoch firstUse (0), recent lastUse
+$t23recGD = buildGen2Rec('GD789EF', 'PL', 40, 0, $t23lastGD);
+$t23recPO = buildGen2Rec('PO321GH', 'PL', 40, 0, $t23lastPO);
+
+// 5 "garbage" records: valid-looking but from a different EF – use known-good
+// timestamps and realistic-looking plates that pass all validation checks
+$t23garbageTs = [
+    [mktime(0, 0, 0, 2, 10, 2024), mktime(0, 0, 0, 3, 15, 2024)],
+    [mktime(0, 0, 0, 4,  5, 2024), mktime(0, 0, 0, 5, 20, 2024)],
+    [mktime(0, 0, 0, 6, 12, 2024), mktime(0, 0, 0, 7, 30, 2024)],
+    [mktime(0, 0, 0, 8,  1, 2024), mktime(0, 0, 0, 9, 10, 2024)],
+    [mktime(0, 0, 0, 10, 5, 2024), mktime(0, 0, 0, 11, 20, 2024)],
+];
+$t23garbageRecs = '';
+foreach ($t23garbageTs as $idx => [$gfu, $glu]) {
+    $t23garbageRecs .= buildGen2Rec('WA' . (10000 + $idx * 1111) . 'X', 'PL', 40, $gfu, $glu);
+}
+
+// Build the garbage TLV block with tag 0x0506 (not a known vehicle tag)
+$t23garbageTlvContent = pack('n', 5) . pack('n', 5) . $t23garbageRecs;
+$t23garbageTlv = "\x05\x06" . pack('n', strlen($t23garbageTlvContent)) . $t23garbageTlvContent;
+
+// Build the real EF_CardVehiclesUsed TLV block with tag 0x0504
+$t23realTlv = buildTlvBlob($t23recGD . $t23recPO, 2, 0x04);
+
+// Combine: garbage block first, then the real block
+$t23blob = $t23garbageTlv . $t23realTlv;
+
+$out23 = parseDriverCardVehicles($t23blob);
+
+ok('23a: exactly 2 vehicles returned (not 7)',  count($out23) === 2);
+ok('23b: GD789EF present',                      in_array('GD789EF', array_column($out23, 'reg')));
+ok('23c: PO321GH present',                      in_array('PO321GH', array_column($out23, 'reg')));
+ok('23d: no garbage plates in result',          !array_filter($out23, fn($r) => str_starts_with($r['reg'], 'WA')));
+ok('23e: GD789EF date_from = date_to (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'GD789EF'))['date_from'] === gmdate('Y-m-d', $t23lastGD));
+ok('23f: PO321GH date_from = date_to (epoch)', current(array_filter($out23, fn($r) => $r['reg'] === 'PO321GH'))['date_from'] === gmdate('Y-m-d', $t23lastPO));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 24: Phase-2 epoch-penalty regression – 2 vehicles with epoch firstUse,
+ *          no TLV; Phase-2 must return the real records, not a garbage group.
+ *
+ * Root-cause: the old Phase-2 scored groups as count² − epochCount.  With 2
+ * real epoch records the score was 4 − 2 = 2.  A garbage group with 2 records
+ * having distinct first/last timestamps scored 4 − 0 = 4 and won.
+ *
+ * Fix: remove epoch penalty; score = count² only.
+ *
+ * This test has ONLY the 2 real records (no competing group), so it simply
+ * verifies that 2 all-epoch records are found at all via Phase-2.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 24: Phase-2 epoch-penalty regression – 2 epoch vehicles found via Phase-2\n";
+
+$t24lastGD = mktime(0, 0, 0,  5, 24, 2025);  // 2025-05-24
+$t24lastPO = mktime(0, 0, 0,  9, 21, 2025);  // 2025-09-21
+
+$t24recGD = buildGen2Rec('GD789EF', 'PL', 40, 0, $t24lastGD);
+$t24recPO = buildGen2Rec('PO321GH', 'PL', 40, 0, $t24lastPO);
+
+// No TLV wrapper – Phase 1 finds nothing, Phase 2 must find these
+$t24blob = str_repeat("\x00", 100) . $t24recGD . $t24recPO . str_repeat("\x00", 100);
+
+$out24 = parseDriverCardVehicles($t24blob);
+
+ok('24a: 2 vehicles found via Phase-2',         count($out24) === 2);
+ok('24b: GD789EF present',                      in_array('GD789EF', array_column($out24, 'reg')));
+ok('24c: PO321GH present',                      in_array('PO321GH', array_column($out24, 'reg')));
+ok('24d: GD789EF date_from = 2025-05-24',       current(array_filter($out24, fn($r) => $r['reg'] === 'GD789EF'))['date_from'] === '2025-05-24');
+ok('24e: PO321GH date_from = 2025-09-21',       current(array_filter($out24, fn($r) => $r['reg'] === 'PO321GH'))['date_from'] === '2025-09-21');
+ok('24f: no 1970-01-01 dates',                  !in_array('1970-01-01', array_column($out24, 'date_from')));
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 25: Short registration "0 D" rejected (fewer than 4 non-space chars)
+ *
+ * "0 D" has only 2 non-space characters ("0D") and starts with a digit.
+ * It is a known false-positive produced by misaligned binary reads.
+ * Both the min-4-non-space check and the starts-with-letter check reject it.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 25: Short registration '0 D' rejected\n";
+
+$rec25 = buildGen2Rec('0 D', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob25 = buildTlvBlob($rec25, 1);
+$out25  = parseDriverCardVehicles($blob25);
+
+ok('25a: "0 D" rejected (too short / starts with digit)', count($out25) === 0);
+
+/* Also confirm a valid plate in the same blob is kept */
+$rec25b = buildGen2Rec('WA12345', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob25b = buildTlvBlob($rec25b, 1);
+$out25b  = parseDriverCardVehicles($blob25b);
+
+ok('25b: valid plate WA12345 still accepted',   count($out25b) === 1);
+ok('25c: plate = WA12345',                      ($out25b[0]['reg'] ?? '') === 'WA12345');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 26: Registration starting with a digit "7KNO" rejected
+ *
+ * "7KNO" starts with '7' (a digit).  EU plates always begin with letters
+ * (the country/area code prefix).  Digit-starting strings are artefacts of
+ * misaligned binary reads and must be rejected.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 26: Digit-first registration '7KNO' rejected\n";
+
+$rec26 = buildGen2Rec('7KNO', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob26 = buildTlvBlob($rec26, 1);
+$out26  = parseDriverCardVehicles($blob26);
+
+ok('26a: "7KNO" rejected (starts with digit)',  count($out26) === 0);
+
+/* Confirm a digit-first but otherwise valid plate is rejected */
+$rec26b = buildGen2Rec('1ABC234', 'PL', 40, $firstUse2023, $lastUse2023);
+$blob26b = buildTlvBlob($rec26b, 1);
+$out26b  = parseDriverCardVehicles($blob26b);
+
+ok('26b: "1ABC234" rejected (starts with digit)', count($out26b) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests 27–29: mergeVehicleRecords() – multi-file deduplication
+ *
+ * Validates the cross-file merge helper used by drivers.php and
+ * driver_calendar/index.php when the same driver has multiple DDD files.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Build a minimal vehicle record array (the shape returned by
+ * parseDriverCardVehicles, possibly augmented with 'source_file').
+ */
+function vRec(
+    string $reg,
+    string $firstUse,
+    string $lastUse,
+    int    $odoBegin  = 0,
+    int    $odoEnd    = 0,
+    string $nation    = 'PL',
+    string $sourceFile = ''
+): array {
+    $distance = ($odoEnd > $odoBegin && $odoBegin > 0) ? $odoEnd - $odoBegin : 0;
+    $r = compact('reg', 'nation', 'firstUse', 'lastUse', 'odoBegin', 'odoEnd', 'distance');
+    // Use snake_case keys to match parseDriverCardVehicles output
+    $r = [
+        'reg'        => $reg,
+        'nation'     => $nation,
+        'date_from'  => $firstUse,
+        'date_to'   => $lastUse,
+        'odo_begin'  => $odoBegin,
+        'odo_end'    => $odoEnd,
+        'distance'   => ($odoEnd > $odoBegin && $odoBegin > 0) ? $odoEnd - $odoBegin : 0,
+    ];
+    if ($sourceFile !== '') {
+        $r['source_file'] = $sourceFile;
+    }
+    return $r;
+}
+
+/* ── Test 27: different date_to → different sessions, both kept ──────── */
+echo "\nTest 27: mergeVehicleRecords – different date_to = different sessions\n";
+
+$t27Records = [
+    // File A: one download – has real odo values, session ended 2023-01-10
+    vRec('WA12345', '2023-01-01', '2023-01-10', 100000, 101500, 'PL', 'file_a.ddd'),
+    // File B: another download – same start date but different end date → different session
+    vRec('WA12345', '2023-01-01', '2023-03-20', 0, 0, 'PL', 'file_b.ddd'),
+    // Different vehicle – should appear as its own row
+    vRec('GD999XY', '2023-02-01', '2023-02-28', 50000, 51000, 'PL', 'file_a.ddd'),
+];
+
+$t27 = mergeVehicleRecords($t27Records);
+
+ok('27a: 3 records (WA12345 twice + GD999XY once)', count($t27) === 3);
+$t27wa = array_values(array_filter($t27, fn($r) => $r['reg'] === 'WA12345'));
+ok('27b: both WA12345 sessions present (2 rows)', count($t27wa) === 2);
+$t27lastUses = array_column($t27wa, 'date_to');
+sort($t27lastUses);
+ok('27c: WA12345 sessions have date_to 2023-01-10 and 2023-03-20',
+    $t27lastUses === ['2023-01-10', '2023-03-20']
+);
+ok('27d: GD999XY still present', count(array_filter($t27, fn($r) => $r['reg'] === 'GD999XY')) === 1);
+
+/* ── Test 28: different date_to → separate sessions kept independently ── */
+echo "\nTest 28: mergeVehicleRecords – different date_to kept as separate sessions\n";
+
+$t28Records = [
+    // Session A: long period, no odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 0, 200500, 'PL', 'file_b.ddd'),
+    // Session B: shorter period, has odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-06-30', 200000, 200300, 'PL', 'file_a.ddd'),
+];
+
+$t28 = mergeVehicleRecords($t28Records);
+
+ok('28a: 2 records (different sessions for same vehicle)', count($t28) === 2);
+$t28lastUses = array_column($t28, 'date_to');
+sort($t28lastUses);
+ok('28b: sessions have date_to 2023-06-30 and 2023-08-31',
+    $t28lastUses === ['2023-06-30', '2023-08-31']
+);
+$t28sessionA = array_values(array_filter($t28, fn($r) => $r['date_to'] === '2023-08-31'))[0];
+ok('28c: session A has odo_end = 200500',           $t28sessionA['odo_end'] === 200500);
+ok('28d: session A has odo_begin = 0',              $t28sessionA['odo_begin'] === 0);
+ok('28e: session A source_file = file_b',           $t28sessionA['source_file'] === 'file_b.ddd');
+$t28sessionB = array_values(array_filter($t28, fn($r) => $r['date_to'] === '2023-06-30'))[0];
+ok('28f: session B has odo_begin = 200000',         $t28sessionB['odo_begin'] === 200000);
+ok('28g: session B has distance = 300',             $t28sessionB['distance'] === 300);
+
+/* ── Test 28b: odo_begin rescued when same dates appear in two files ───── */
+echo "\nTest 28b: mergeVehicleRecords – odo_begin rescued for identical session\n";
+
+$t28bRecords = [
+    // File B: latest download – no odo_begin stored by VU
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 0, 200500, 'PL', 'file_b.ddd'),
+    // File A: older download of same card – identical session but has odo_begin
+    vRec('KR123AB', '2023-05-01', '2023-08-31', 200000, 200500, 'PL', 'file_a.ddd'),
+];
+
+$t28b = mergeVehicleRecords($t28bRecords);
+$t28bv = $t28b[0];
+
+ok('28b-a: one record (same dates = same session)',   count($t28b) === 1);
+ok('28b-b: date_to = 2023-08-31',                   $t28bv['date_to']  === '2023-08-31');
+ok('28b-c: odo_begin rescued = 200000',              $t28bv['odo_begin'] === 200000);
+ok('28b-d: odo_end = 200500',                        $t28bv['odo_end']   === 200500);
+ok('28b-e: distance recomputed = 500',               $t28bv['distance']  === 500);
+
+/* ── Test 29: same date_to → highest distance wins; sorted by date_from ─ */
+echo "\nTest 29: mergeVehicleRecords – same date_to, distance tiebreak; sort order\n";
+
+$t29Records = [
+    vRec('PO321GH', '2023-07-15', '2023-09-01', 300000, 300800, 'DE'),  // distance 800
+    vRec('WR456CD', '2022-11-01', '2023-09-01', 0, 0, 'PL'),            // distance 0, earlier
+    vRec('PO321GH', '2023-07-15', '2023-09-01', 300000, 300600, 'DE'),  // distance 600, same reg+date
+];
+
+$t29 = mergeVehicleRecords($t29Records);
+
+ok('29a: 2 unique vehicles', count($t29) === 2);
+ok('29b: PO321GH distance = 800 (higher wins)',
+    array_values(array_filter($t29, fn($r) => $r['reg'] === 'PO321GH'))[0]['distance'] === 800
+);
+ok('29c: sorted ascending by date_from – WR456CD first',
+    $t29[0]['reg'] === 'WR456CD'
+);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 30: Alt-31B record format
+ *   counter(2)+odoBegin(3)+odoEnd(3)+firstUse(4)+lastUse(4)+nation(1)+cp(1)+reg(13)
+ *   Used by some VUs that store one record per calendar day.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 30: Alt-31B record format (TLV no-header, best-count)\n";
+
+function buildAlt31BRec(
+    string $reg,
+    int $nationNum,
+    int $firstUse,
+    int $lastUse,
+    int $odoB = 100000,
+    int $odoE = 110000,
+    int $counter = 1
+): string {
+    $cnt  = pack('n', $counter);
+    $ob   = chr(($odoB >> 16) & 0xFF) . chr(($odoB >> 8) & 0xFF) . chr($odoB & 0xFF);
+    $oe   = chr(($odoE >> 16) & 0xFF) . chr(($odoE >> 8) & 0xFF) . chr($odoE & 0xFF);
+    $ts1  = pack('N', $firstUse);
+    $ts2  = pack('N', $lastUse);
+    $nat  = chr($nationNum);
+    $cp   = "\x02";
+    $regP = str_pad(substr($reg, 0, 13), 13, "\x20");  // space-padded like real VU
+
+    return $cnt . $ob . $oe . $ts1 . $ts2 . $nat . $cp . $regP; // 31 bytes
+}
+
+// Build a block with 4 Alt-31B records using the 0x0500 tag (second byte 0x00)
+$now30    = time();
+$t30fu1   = $now30 - 60 * 86400;
+$t30lu1   = $now30 - 59 * 86400;
+$t30fu2   = $now30 - 58 * 86400;
+$t30lu2   = $now30 - 57 * 86400;
+$t30fu3   = $now30 - 56 * 86400;
+$t30lu3   = $now30 - 55 * 86400;
+$t30fu4   = $now30 - 54 * 86400;
+$t30lu4   = $now30 - 53 * 86400;
+
+$t30r1    = buildAlt31BRec('PY 90501', 40, $t30fu1, $t30lu1, 235010, 235619, 1);
+$t30r2    = buildAlt31BRec('PY 90501', 40, $t30fu2, $t30lu2, 235619, 236152, 2);
+$t30r3    = buildAlt31BRec('PY 90501', 40, $t30fu3, $t30lu3, 236152, 236249, 3);
+$t30r4    = buildAlt31BRec('WGM7101N', 40, $t30fu4, $t30lu4, 100000, 101000, 4);
+
+// Build a raw TLV block: tag 0x0500, no EF header, records directly in value
+$t30Recs  = $t30r1 . $t30r2 . $t30r3 . $t30r4;
+$t30bl    = strlen($t30Recs);
+$t30Block = "\x05\x00" . pack('n', $t30bl) . $t30Recs . str_repeat("\x00", 64);
+
+$t30out   = parseDriverCardVehicles($t30Block);
+
+ok('30a: 4 Alt-31B records found', count($t30out) === 4);
+ok('30b: first record reg = PY 90501',
+    isset($t30out[0]) && $t30out[0]['reg'] === 'PY 90501');
+ok('30c: first record nation = PL',
+    isset($t30out[0]) && $t30out[0]['nation'] === 'PL');
+ok('30d: first record odo_begin = 235010',
+    isset($t30out[0]) && $t30out[0]['odo_begin'] === 235010);
+ok('30e: first record odo_end = 235619',
+    isset($t30out[0]) && $t30out[0]['odo_end'] === 235619);
+ok('30f: fourth record reg = WGM7101N',
+    isset($t30out[3]) && $t30out[3]['reg'] === 'WGM7101N');
+ok('30g: sorted ascending by date_from',
+    isset($t30out[0], $t30out[3]) && $t30out[0]['date_from'] <= $t30out[3]['date_from']);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 31: Odometer backward (odo_end < odo_begin) rejected
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 31: Odometer backward rejection\n";
+
+$now31  = time();
+$t31fu  = $now31 - 30 * 86400;
+$t31lu  = $now31 - 20 * 86400;
+// Gen-2 record with odo_end < odo_begin (backward odometer – should be rejected)
+$t31bad = buildGen2Rec('KR456AB', 'PL', 40, $t31fu, $t31lu, 500000, 100000); // end < begin
+// Gen-2 record with valid odometer (odo_end >= odo_begin)
+$t31ok  = buildGen2Rec('WA123CD', 'PL', 40, $t31fu, $t31lu, 100000, 150000);
+$t31blob = buildTlvBlob($t31bad . $t31ok, 2);
+$t31out  = parseDriverCardVehicles($t31blob);
+
+ok('31a: backward-odo record rejected, valid one kept',  count($t31out) === 1);
+ok('31b: the valid record (WA123CD) is returned',
+    isset($t31out[0]) && $t31out[0]['reg'] === 'WA123CD');
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 32: Invalid nationAlpha rejected; falls back to nationNum
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 32: Invalid nationAlpha rejected\n";
+
+$now32    = time();
+$t32fu    = $now32 - 30 * 86400;
+$t32lu    = $now32 - 20 * 86400;
+// Gen-2 record with garbage nationAlpha "PI" but valid nationNum 40 (PL)
+// Gen-2 layout: nation(1)+nationAlpha(3)+cp(1)+reg(13)+firstUse(4)+lastUse(4)+odoBegin(3)+odoEnd(3) = 32 bytes
+$t32rec   = chr(40)                                 // nationNum = 40 (PL)
+          . "PI\x00"                                // nationAlpha = "PI" (invalid, should be ignored)
+          . "\x00"                                  // codePage
+          . str_pad('KR456AB', 13, "\x00")          // reg
+          . pack('N', $t32fu)                       // firstUse
+          . pack('N', $t32lu)                       // lastUse
+          . "\x01\x86\xa0"                          // odoBegin = 100000 (3 bytes)
+          . "\x02\x49\xf0";                         // odoEnd   = 150000 (3 bytes)
+$t32blob  = buildTlvBlob($t32rec, 1);
+$t32out   = parseDriverCardVehicles($t32blob);
+
+ok('32a: record still returned (nationNum=40 valid)', count($t32out) === 1);
+ok('32b: nation resolved from nationNum (PL)',
+    isset($t32out[0]) && $t32out[0]['nation'] === 'PL');
+
+// Gen-2 record with garbage nationAlpha "XZ" AND invalid nationNum 99 → rejected
+$t32bad   = chr(99)                                 // nationNum = 99 (invalid, > 50)
+          . "XZ\x00"                                // nationAlpha = "XZ" (invalid)
+          . "\x00"                                  // codePage
+          . str_pad('KR456AB', 13, "\x00")          // reg
+          . pack('N', $t32fu)                       // firstUse
+          . pack('N', $t32lu)                       // lastUse
+          . "\x01\x86\xa0"                          // odoBegin (3 bytes)
+          . "\x02\x49\xf0";                         // odoEnd   (3 bytes)
+$t32blob2 = buildTlvBlob($t32bad, 1);
+$t32out2  = parseDriverCardVehicles($t32blob2);
+
+ok('32c: record with invalid nationAlpha and nationNum > 50 rejected', count($t32out2) === 0);
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 33: Regression – known-tag block before real vehicle EF must not
+ *   prevent the real EF from being scanned (no skip-forward past it).
+ *   A smaller known-tag block before the main vehicle block should not
+ *   cause the main block to be missed; dedup keeps the better (higher
+ *   distance) records from the main block.
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 33: No-skip regression – real vehicle EF found even when preceded by known-tag block\n";
+
+$now33   = time();
+$t33fu   = $now33 - 30 * 86400;
+$t33lu   = $now33 - 20 * 86400;
+
+// Earlier known-tag block (0x0508): single record with odo_begin=odo_end (no distance)
+$t33earlyRec  = buildAlt31BRec('PY 90501', 40, $t33fu, $t33lu, 100000, 100000, 1); // odo_end=odo_begin
+$t33earlyRecs = $t33earlyRec . $t33earlyRec; // need at least 2 to be accepted
+$t33earlyBl   = strlen($t33earlyRecs);
+$t33earlyBlock = "\x05\x08" . pack('n', $t33earlyBl) . $t33earlyRecs;
+
+// Main vehicle block (0x0500): same record but with real odometer data (distance > 0)
+$t33mainRec   = buildAlt31BRec('PY 90501', 40, $t33fu, $t33lu, 235010, 235619, 1);
+$t33mainRecs  = $t33mainRec . $t33mainRec; // at least 2 records for block to be valid
+$t33mainBl    = strlen($t33mainRecs);
+$t33mainBlock = "\x05\x00" . pack('n', $t33mainBl) . $t33mainRecs;
+
+// Place early block first, then main block (both with known tags)
+$t33blob = $t33earlyBlock . $t33mainBlock . str_repeat("\x00", 64);
+$t33out  = parseDriverCardVehicles($t33blob);
+
+ok('33a: record from main block (odo_end=235619) present',
+    count(array_filter($t33out, fn($r) => $r['odo_end'] === 235619)) >= 1);
+ok('33b: distance > 0 for main block record',
+    count(array_filter($t33out, fn($r) => $r['distance'] > 0)) >= 1);
+
+
+
+/* ── Summary ──────────────────────────────────────────────────────────────── */
+echo "\n";
+echo str_repeat('─', 50) . "\n";
+echo "Passed: $passed  |  Failed: $failed\n";
+echo str_repeat('─', 50) . "\n";
+
+exit($failed > 0 ? 1 : 0);
