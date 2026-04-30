@@ -735,6 +735,37 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        // ── Auto-create vehicles found on driver card ─────────────────────────
+        // Driver cards store the last ~84 vehicles used by the driver.
+        // Parse EF_CardVehiclesUsed and upsert each registration into the
+        // vehicles table so they appear in the main Pojazdy (vehicles) list.
+        if ($fileType === 'driver' && !empty($binaryData)) {
+            try {
+                $cardVehicles = parseDriverCardVehicles($binaryData);
+                if ($cardVehicles) {
+                    $checkVeh = $db->prepare(
+                        'SELECT id FROM vehicles
+                         WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
+                         LIMIT 1'
+                    );
+                    $insVeh = $db->prepare(
+                        'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
+                    );
+                    foreach ($cardVehicles as $cv) {
+                        $reg = strtoupper(trim($cv['reg'] ?? ''));
+                        if ($reg === '') continue;
+                        $checkVeh->execute([$companyId, $reg]);
+                        if (!$checkVeh->fetchColumn()) {
+                            $insVeh->execute([$companyId, $reg]);
+                        }
+                    }
+                }
+            } catch (Throwable $cvErr) {
+                // Non-fatal: vehicle extraction from driver card failed
+                error_log('DDD driver card vehicle auto-create error (file_id=' . $newFileId . '): ' . $cvErr->getMessage());
+            }
+        }
+
         $msg = 'Plik został wgrany do archiwum.';
         if ($autoCreated) $msg .= ' ' . $autoCreated . '.';
 

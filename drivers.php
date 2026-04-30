@@ -276,6 +276,14 @@ if ($action === 'profile' && $editDriver) {
         $vehFiles = $vfStmt->fetchAll();
 
         $rawVehicles = [];
+        $checkVehStmt = $db->prepare(
+            'SELECT id FROM vehicles
+             WHERE company_id=? AND is_active=1 AND UPPER(registration)=UPPER(?)
+             LIMIT 1'
+        );
+        $insVehStmt = $db->prepare(
+            'INSERT INTO vehicles (company_id, registration) VALUES (?,?)'
+        );
         foreach ($vehFiles as $vfRow) {
             $fp = dddPhysPath($vfRow, $companyId);
             if (!is_file($fp)) continue;
@@ -283,6 +291,14 @@ if ($action === 'profile' && $editDriver) {
             if ($rawData === false) continue;
             $recs = parseDriverCardVehicles($rawData);
             foreach ($recs as $r) {
+                // Backfill vehicles table with any missing registrations from driver card
+                $regUc = strtoupper(trim($r['reg'] ?? ''));
+                if ($regUc !== '') {
+                    $checkVehStmt->execute([$companyId, $regUc]);
+                    if (!$checkVehStmt->fetchColumn()) {
+                        try { $insVehStmt->execute([$companyId, $regUc]); } catch (Throwable $_) {}
+                    }
+                }
                 // Include vehicle if its usage period overlaps the filter window
                 if ($r['date_to']  < $vehFrom) continue;
                 if ($r['date_from'] > $vehTo)   continue;
