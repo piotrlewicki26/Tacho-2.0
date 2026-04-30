@@ -302,14 +302,54 @@ function dddParseDriverInfo(string $data): ?array
 function dddParseVehicleReg(string $data): ?string {
     $len = strlen($data);
     for ($i = 0; $i < $len - 14; $i++) {
-        /* Read up to 14 bytes (codePage(1) + regNumber(13)); strip null/FF padding */
-        $raw = dddReadStr($data, $i, 14);
-        $s   = strtoupper(trim(preg_replace('/\s+/', ' ',
-               preg_replace('/[^A-Z0-9 ]/', '', str_replace(["\x00", "\xFF"], ' ', $raw)))));
+        /* Read up to 14 bytes (codePage(1) + regNumber(13)) directly from binary data.
+         * First byte should be a valid codePage (0x00-0x02, or 0x20 for some cards).
+         * Extract printable ASCII (0x20-0x7E), replace null/0xFF with space, then
+         * normalize multiple spaces to single space. */
+        $raw = substr($data, $i, 14);
+        
+        /* Check byte 0 is a plausible codePage value. Common values are:
+         *   0x00 = ASCII
+         *   0x01 = ISO-8859-1
+         *   0x02 = ISO-8859-2
+         *   0x20 = space (some manufacturers)
+         * Additionally, byte 1 should be a letter (A-Z) since registrations start with letters. */
+        $codePage = ord($raw[0]);
+        if ($codePage > 0x20) {
+            continue;  // Invalid codePage
+        } elseif ($codePage !== 0x00 && $codePage !== 0x01 && $codePage !== 0x02 && $codePage !== 0x20) {
+            continue;  // Invalid codePage, skip this position
+        }
+        
+        /* Additional check: byte 1 (first byte of registration) should be a letter (A-Z, a-z) */
+        $firstRegByte = ord($raw[1]);
+        if (!(($firstRegByte >= 0x41 && $firstRegByte <= 0x5A) || ($firstRegByte >= 0x61 && $firstRegByte <= 0x7A))) {
+            continue;  // First byte of registration is not a letter
+        }
+        
+        $s = '';
+        for ($k = 0; $k < 14; $k++) {
+            $b = ord($raw[$k]);
+            if ($b >= 0x30 && $b <= 0x39) {        // digit
+                $s .= chr($b);
+            } elseif ($b >= 0x41 && $b <= 0x5A) {  // A-Z
+                $s .= chr($b);
+            } elseif ($b >= 0x61 && $b <= 0x7A) {  // a-z
+                $s .= chr($b - 32);  // convert to uppercase
+            } elseif ($b === 0x20) {               // space
+                $s .= ' ';
+            } elseif ($b === 0x00 || $b === 0xFF) { // null/padding
+                $s .= ' ';
+            }
+            // Skip all other bytes (control chars, etc.)
+        }
+        /* Collapse multiple consecutive spaces to single space, then trim */
+        $s = trim(preg_replace('/\s+/', ' ', $s));
         if ($s === '') continue;
+        
         /* Accept plates that:
          *  – contain only letters, digits and single spaces
-         *  – total visible length (no spaces) between 3 and 10 chars
+         *  – total visible length (no spaces) between 4 and 10 chars
          *  – start with 1–4 letters
          *  – contain at least one digit (avoids pure-word false positives)
          *  – suffix is at least 3 characters (avoids partial boundary reads)
