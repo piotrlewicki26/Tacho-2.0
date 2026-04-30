@@ -49,6 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $group = (int)($_POST['group_id']    ?? 0) ?: null;
     $card  = trim($_POST['card_number']  ?? '');
     $cardV = $_POST['card_valid_until']  ?? '';
+    $nat   = strtoupper(trim($_POST['nationality'] ?? ''));
     $lic   = trim($_POST['license_number'] ?? '');
     $licC  = trim($_POST['license_category'] ?? '');
     $emp   = $_POST['employment_date']   ?? '';
@@ -66,6 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'group_id'          => $group,
         'card_number'       => $card ?: null,
         'card_valid_until'  => $cardV ?: null,
+        'nationality'       => ($nat !== '' && preg_match('/^[A-Z]{2,3}$/', $nat)) ? $nat : null,
         'license_number'    => $lic ?: null,
         'license_category'  => $licC ?: null,
         'employment_date'   => $emp ?: null,
@@ -407,10 +409,16 @@ include __DIR__ . '/templates/header.php';
           <input type="text" name="card_number" class="form-control" maxlength="50"
                  value="<?= e($editDriver['card_number'] ?? '') ?>">
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label fw-600">Karta ważna do</label>
           <input type="date" name="card_valid_until" class="form-control"
                  value="<?= e($editDriver['card_valid_until'] ?? '') ?>">
+        </div>
+        <div class="col-md-1">
+          <label class="form-label fw-600">Kraj</label>
+          <input type="text" name="nationality" class="form-control" maxlength="3"
+                 value="<?= e($editDriver['nationality'] ?? '') ?>"
+                 placeholder="PL" title="Kod kraju (2-3 litery, np. PL, DE, FR)">
         </div>
         <div class="col-md-4">
           <label class="form-label fw-600">Nr prawa jazdy</label>
@@ -595,6 +603,9 @@ $totalM = $profileTotalDrive % 60;
         <div>
           <div class="tp-stat-label text-muted small">Nr karty kierowcy</div>
           <div class="tp-stat-value fw-bold" style="font-size:.9rem"><?= e($editDriver['card_number'] ?? '—') ?></div>
+          <?php if (!empty($editDriver['nationality'])): ?>
+          <small class="text-muted"><i class="bi bi-flag me-1"></i><?= e($editDriver['nationality']) ?></small>
+          <?php endif; ?>
         </div>
       </div>
     </div>

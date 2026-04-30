@@ -163,37 +163,93 @@ function dddReadStr(string $data, int $offset, int $len): string {
 }
 
 /**
- * Trim a raw DDD byte string to a clean UTF-8 label.
- * Printable ASCII passes through; Latin-1 supplement (0xa0–0xff) is
- * converted to UTF-8; control bytes are silently dropped.
+ * Trim a raw DDD name byte string to a clean UTF-8 label.
+ *
+ * EU tachograph NameCodeType values (Reg. 165/2014 Annex 1B/1C):
+ *   0x00/0x01 – ASCII only (no diacritics)
+ *   0x02      – Latin-1 / ISO-8859-1  (Western European: DE, FR, ES, IT, NL, …)
+ *   0x03      – Latin-2 / ISO-8859-2  (Central/Eastern European: PL, CZ, SK, HU, HR, …)
+ *   0x04      – Latin-4 / ISO-8859-4  (Baltic: LT, LV, EE)
+ *   0x05      – Cyrillic / ISO-8859-5 (RU, BG, UA, …)
+ *   0x06      – Arabic  / ISO-8859-6
+ *   0x07      – Greek   / ISO-8859-7  (GR, CY)
+ *   0x08      – Hebrew  / ISO-8859-8
+ *   0x09      – Latin-5 / ISO-8859-9  (Turkish)
+ *   0x20      – no character coding (binary) – treated as ASCII
+ *
+ * Printable ASCII (0x20–0x7E) always passes through unchanged.
+ * Non-ASCII bytes (0xA0–0xFF) are converted from the specified encoding to UTF-8.
+ * Control bytes are silently dropped.
+ *
+ * @param string $raw          Raw bytes from the DDD file field.
+ * @param int    $nameCodeType EU tachograph NameCodeType byte (default 0x02 = Latin-1).
  */
-function dddNameTrim(string $raw): string
+function dddNameTrim(string $raw, int $nameCodeType = 0x02): string
 {
+    static $encMap = [
+        0x00 => null,           // ASCII – no extra conversion needed
+        0x01 => null,           // not specified – treat as ASCII
+        0x02 => 'ISO-8859-1',   // Latin-1  (Western European)
+        0x03 => 'ISO-8859-2',   // Latin-2  (Central/Eastern European incl. Polish)
+        0x04 => 'ISO-8859-4',   // Latin-4  (Baltic)
+        0x05 => 'ISO-8859-5',   // Cyrillic
+        0x06 => 'ISO-8859-6',   // Arabic
+        0x07 => 'ISO-8859-7',   // Greek
+        0x08 => 'ISO-8859-8',   // Hebrew
+        0x09 => 'ISO-8859-9',   // Latin-5 / Turkish
+        0x0A => 'ISO-8859-10',  // Latin-6 / Nordic
+        0x20 => null,           // no coding – treat as ASCII
+    ];
+    // Unknown nameCodeType → fall back to Latin-1 (safe superset of ASCII)
+    $enc = array_key_exists($nameCodeType, $encMap)
+         ? $encMap[$nameCodeType]
+         : 'ISO-8859-1';
+
     $result = '';
     foreach (str_split($raw) as $ch) {
         $b = ord($ch);
         if ($b >= 0x20 && $b <= 0x7e) {
-            $result .= $ch;
-        } elseif ($b >= 0xa0) {
-            $result .= mb_convert_encoding($ch, 'UTF-8', 'ISO-8859-1');
+            $result .= $ch;                                         // printable ASCII
+        } elseif ($b >= 0xa0 && $enc !== null) {
+            $conv = @mb_convert_encoding($ch, 'UTF-8', $enc);      // non-ASCII diacritic
+            if ($conv !== false && $conv !== '') {
+                $result .= $conv;
+            }
         }
+        // control bytes (0x00–0x1F, 0x7F–0x9F) are silently dropped
     }
     return trim($result);
 }
 
 /**
- * Parse driver name, card number, and birth date from a driver-card DDD blob.
+ * Parse driver name, card number, birth date, card expiry date and nationality
+ * from a driver-card DDD binary blob.
  *
  * Strategy 1 – JSX tag 0x05 0x20: primary name detection.
- * Strategy 2 – EF_Identification tag 0x01 0x05: card number + fallback name + birth date.
+ *   Scans inside the block for an uppercase-letter byte that starts a name field.
+ *   Detects the EU-tachograph NameCodeType byte immediately before the name so
+ *   that diacritics encoded in Latin-2 (Polish/Czech/Slovak etc.) or other
+ *   ISO-8859-x encodings are decoded correctly.
  *
- * @return array{last_name:string, first_name:string, card_number:string, birth_date:?string, card_valid_until:?string}|null
+ * Strategy 2 – EF_Identification tag 0x01 0x05: card number + fallback name
+ *   + birth date + expiry date + nationality (NationAlpha).
+ *   Reads the NameCodeType bytes at fixed EF_Identification offsets (base+65 for
+ *   surname, base+101 for first names) and passes them to dddNameTrim(), so names
+ *   with non-ASCII diacritics are decoded with the correct encoding rather than
+ *   always assuming Latin-1.
+ *
+ * @return array{last_name:string, first_name:string, card_number:string,
+ *               birth_date:?string, card_valid_until:?string, nationality:?string}|null
  */
 function dddParseDriverInfo(string $data): ?array
 {
     $len = strlen($data);
 
     // ── Strategy 1: tag 0x05 0x20 ────────────────────────────────────────────
+    // Unicode-aware name pattern: allows any letter (including diacritics),
+    // spaces and hyphens.
+    $namePattern = '/^[\p{L}\s\-]+$/u';
+
     $driverName = null;
     for ($i = 0; $i < $len - 4; $i++) {
         if (ord($data[$i]) !== 0x05 || ord($data[$i + 1]) !== 0x20) {
@@ -203,15 +259,51 @@ function dddParseDriverInfo(string $data): ?array
         if ($bl < 40 || $bl > 3000 || $i + 4 + $bl > $len) {
             continue;
         }
-        for ($k = 0; $k < $bl - 72; $k++) {
+        for ($k = 0; $k < $bl - 71; $k++) {
             $b = ord($data[$i + 4 + $k]);
             if ($b < 65 || $b > 90) {
-                continue;
+                continue;   // not A-Z – not the start of a name field
             }
-            $sn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k, 36)));
-            $fn = trim(str_replace("\0", '', dddReadStr($data, $i + 4 + $k + 36, 36)));
-            if (strlen($sn) >= 3 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $sn)
-                && strlen($fn) >= 2 && preg_match('/^[A-Za-z][A-Za-z \-]*$/', $fn)) {
+
+            // Detect NameCodeType: per EU tachograph spec the name field is
+            // preceded by a 1-byte NameCodeType (values 0x00–0x20).  If the
+            // byte immediately before the uppercase letter is in that range,
+            // treat it as the NameCodeType for the surname.  When the byte
+            // cannot be determined (k=0 or preceding byte is > 0x20 / not a
+            // valid nameCodeType), default to Latin-1 (0x02) which handles
+            // both pure ASCII and Western-European diacritics correctly.
+            $snCodeType = 0x02;    // default: Latin-1
+            if ($k > 0) {
+                $prev = ord($data[$i + 4 + $k - 1]);
+                if ($prev <= 0x20) {
+                    $snCodeType = $prev;   // detected valid NameCodeType
+                }
+            }
+
+            // Read surname (35 bytes name + 1 trailing byte which is the
+            // NameCodeType for first names – it gets silently dropped by
+            // dddNameTrim because it is a control byte).
+            $snRaw = substr($data, $i + 4 + $k, 36);
+
+            // The byte at relative offset 35 inside snRaw is the NameCodeType
+            // for first names (if present and within valid range); default
+            // to Latin-1 (0x02) if it can't be determined.
+            $fnCodeType = 0x02;
+            if (isset($snRaw[35])) {
+                $fnByte = ord($snRaw[35]);
+                if ($fnByte <= 0x20) {
+                    $fnCodeType = $fnByte;
+                }
+            }
+
+            // Read first names (35 bytes, starting right after the NameCodeType byte).
+            $fnRaw = substr($data, $i + 4 + $k + 36, 35);
+
+            $sn = dddNameTrim($snRaw, $snCodeType);
+            $fn = dddNameTrim($fnRaw, $fnCodeType);
+
+            if (mb_strlen($sn) >= 3 && preg_match($namePattern, $sn)
+                && mb_strlen($fn) >= 2 && preg_match($namePattern, $fn)) {
                 $driverName = ['last_name' => $sn, 'first_name' => $fn];
                 break;
             }
@@ -222,9 +314,30 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     // ── Strategy 2: EF_Identification tag 0x01 0x05 ──────────────────────────
-    $cardNumber   = null;
-    $birthDate    = null;
+    // EF_Identification field layout (EU Reg. 165/2014 Annex 1B/1C):
+    //   base+0   cardIssuingMemberState (1 byte)
+    //   base+1   cardNumber             (16 bytes, IA5String)
+    //   base+17  cardIssuingAuthorityName (36 bytes)
+    //   base+53  cardIssueDate          (TimeReal 4 bytes)
+    //   base+57  cardValidityBegin      (TimeReal 4 bytes)
+    //   base+61  cardExpiryDate         (TimeReal 4 bytes)
+    //   base+65  holderSurname.nameCodeType  (1 byte)
+    //   base+66  holderSurname.name          (35 bytes)
+    //   base+101 holderFirstNames.nameCodeType (1 byte)
+    //   base+102 holderFirstNames.names        (35 bytes)
+    //   base+137 holderBirthDate        (TimeReal 4 bytes)
+    //   base+141 holderPreferredLanguage (2 bytes)
+    //   base+143 cardValidForType       (1 byte)
+    //   base+144 cardNetworkAddress     (1 byte)  [Gen2 only]
+    //   base+145 cardType               (EquipmentType 2 bytes)  [Gen2 only]
+    //   base+147 cardIssuingMemberState (NationAlpha 3 bytes)    [Gen2 only]
+    //            … or …
+    //   base+141 nationNumeric (1 byte) + nationAlpha (3 bytes)  [some variants]
+    $cardNumber     = null;
+    $birthDate      = null;
     $cardValidUntil = null;
+    $nationality    = null;
+
     for ($i = 0; $i < $len - 144; $i++) {
         if (ord($data[$i]) !== 0x01 || ord($data[$i + 1]) !== 0x05) {
             continue;
@@ -232,46 +345,92 @@ function dddParseDriverInfo(string $data): ?array
         if ($i + 6 >= $len) {
             continue;
         }
+        // 6-byte block header: tag(2) + reserved(2) + data-length(2, big-endian)
         $bl = (ord($data[$i + 4]) << 8) | ord($data[$i + 5]);
-        if ($bl < 130 || $bl > 500 || $i + 6 + $bl > $len) {
+        if ($bl < 130 || $bl > 600 || $i + 6 + $bl > $len) {
             continue;
         }
-        $base    = $i + 6;
+
+        $base = $i + 6;
+
+        // ── Card number: 16 bytes at base+1 (IA5String – alphanumeric ASCII) ─
         $cardRaw = substr($data, $base + 1, 16);
         $valid   = true;
         for ($k = 0; $k < 16; $k++) {
             $b = ord($cardRaw[$k]);
-            if (($b < 0x30 || $b > 0x39) && ($b < 0x41 || $b > 0x5a) && ($b < 0x61 || $b > 0x7a)) {
+            if (($b < 0x30 || $b > 0x39) &&
+                ($b < 0x41 || $b > 0x5a) &&
+                ($b < 0x61 || $b > 0x7a)) {
                 $valid = false;
                 break;
             }
         }
-        if ($valid) {
+        if ($valid && $cardNumber === null) {
             $cardNumber = rtrim($cardRaw);
         }
-        if (!$driverName) {
-            $sn = dddNameTrim(substr($data, $base + 66, 35));
-            $fn = dddNameTrim(substr($data, $base + 102, 35));
-            if (strlen($sn) >= 2 && strlen($fn) >= 1) {
+
+        // ── Fallback name: read NameCodeType bytes, then decode with proper encoding ──
+        if (!$driverName && $bl >= 137) {
+            $snCodeType = ord($data[$base + 65]);
+            $fnCodeType = ord($data[$base + 101]);
+            // Clamp to known range; anything > 0x20 is not a valid NameCodeType
+            if ($snCodeType > 0x20) $snCodeType = 0x02;  // fall back to Latin-1
+            if ($fnCodeType > 0x20) $fnCodeType = 0x02;
+
+            $sn = dddNameTrim(substr($data, $base + 66,  35), $snCodeType);
+            $fn = dddNameTrim(substr($data, $base + 102, 35), $fnCodeType);
+            if (mb_strlen($sn) >= 2 && mb_strlen($fn) >= 1) {
                 $driverName = ['last_name' => $sn, 'first_name' => $fn];
             }
         }
-        if ($bl >= 141 && $i + 6 + 141 <= $len) {
+
+        // ── Birth date: holderBirthDate (TimeReal 4 bytes) at base+137 ────────
+        if ($birthDate === null && $bl >= 141 && $i + 6 + 141 <= $len) {
             $birthTs   = unpack('N', substr($data, $base + 137, 4))[1];
             $birthYear = (int)gmdate('Y', $birthTs);
             if ($birthYear >= 1930 && $birthYear <= 2005) {
                 $birthDate = gmdate('Y-m-d', $birthTs);
             }
         }
-        // cardExpiryDate at base+61 (TimeReal = 4-byte big-endian Unix timestamp)
-        if ($bl >= 65 && $i + 6 + 65 <= $len) {
+
+        // ── Card expiry date: cardExpiryDate (TimeReal 4 bytes) at base+61 ───
+        if ($cardValidUntil === null && $bl >= 65 && $i + 6 + 65 <= $len) {
             $expiryTs   = unpack('N', substr($data, $base + 61, 4))[1];
             $expiryYear = (int)gmdate('Y', $expiryTs);
             if ($expiryYear >= 2000 && $expiryYear <= 2050) {
                 $cardValidUntil = gmdate('Y-m-d', $expiryTs);
             }
         }
-        if ($cardNumber !== null || $driverName !== null) {
+
+        // ── Nationality: NationAlpha (3 ASCII bytes) follows holderBirthDate ─
+        // In Gen2 layout the 2-byte holderPreferredLanguage is at base+141 and
+        // cardValidForType is at base+143.  However many real cards store a
+        // 1-byte nationNumeric + 3-byte nationAlpha right after birth date
+        // (base+141).  We try both positions and take the first that looks like
+        // a valid 2-3 letter country code.
+        // Minimum $bl to have at least 2 bytes at base+141 is 143.
+        if ($nationality === null && $bl >= 142) {
+            $natAvail = min(3, ($i + 6 + $bl) - ($base + 141), $len - ($base + 141));
+            if ($natAvail >= 2) {
+                // Try base+141 directly as NationAlpha
+                $nat3 = strtolower(trim(dddNameTrim(substr($data, $base + 141, $natAvail))));
+                if (preg_match('/^[a-z]{2,3}$/', $nat3)) {
+                    $nationality = strtoupper($nat3);
+                }
+                // Try base+142 (skip 1 nationNumeric byte before the alpha code)
+                if ($nationality === null && $natAvail >= 3) {
+                    $nat3b = strtolower(trim(dddNameTrim(substr($data, $base + 142, $natAvail - 1))));
+                    if (preg_match('/^[a-z]{2,3}$/', $nat3b)) {
+                        $nationality = strtoupper($nat3b);
+                    }
+                }
+            }
+        }
+
+        // Break only when both card number and name have been extracted from
+        // this EF_Identification block (both live in the same block, so if we
+        // have one we should have the other; but continue if name is still missing).
+        if ($cardNumber !== null && $driverName !== null) {
             break;
         }
     }
@@ -281,11 +440,12 @@ function dddParseDriverInfo(string $data): ?array
     }
 
     return [
-        'last_name'       => $driverName['last_name'],
-        'first_name'      => $driverName['first_name'],
-        'card_number'     => $cardNumber ?? '',
-        'birth_date'      => $birthDate,
+        'last_name'        => $driverName['last_name'],
+        'first_name'       => $driverName['first_name'],
+        'card_number'      => $cardNumber ?? '',
+        'birth_date'       => $birthDate,
         'card_valid_until' => $cardValidUntil,
+        'nationality'      => $nationality,
     ];
 }
 
