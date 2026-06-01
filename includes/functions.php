@@ -1946,6 +1946,97 @@ function mergeVehicleRecords(array $records): array
 }
 
 /**
+ * Merge consecutive EF_CardVehiclesUsed records into trip periods.
+ *
+ * The EU tachograph spec may store one record per day of vehicle use, resulting
+ * in many individual rows for a single multi-day trip.  This function groups
+ * consecutive records for the same registration into contiguous periods:
+ *   • Two records are considered part of the same trip when they share the same
+ *     registration AND the gap between date_to of the earlier and date_from of
+ *     the later is at most $maxGapDays calendar days (default 3 – covers same-day,
+ *     next-day, and a Mon→Fri + Mon→Fri week-pair with a 3-day weekend gap).
+ *   • Merged period: earliest date_from, latest date_to, summed distances.
+ *   • Odometer: first odo_begin and last odo_end; if both are positive the
+ *     total distance is recalculated as odo_end − odo_begin.
+ *
+ * The result is sorted by date_from DESC (most recent trip first).
+ *
+ * @param  array $records  Output of mergeVehicleRecords()
+ * @param  int   $maxGapDays  Maximum gap in days to bridge within a trip
+ * @return array Merged trip periods
+ */
+function groupVehicleTrips(array $records, int $maxGapDays = 3): array
+{
+    if (empty($records)) return [];
+
+    // Sort by registration ascending, then date_from ascending
+    usort($records, static function (array $a, array $b): int {
+        $rc = strcmp($a['reg'], $b['reg']);
+        return $rc !== 0 ? $rc : strcmp($a['date_from'], $b['date_from']);
+    });
+
+    $trips   = [];
+    $current = null;
+
+    foreach ($records as $rec) {
+        if ($current === null) {
+            $current = $rec;
+            $current['_sources'] = [($rec['source_file'] ?? '')];
+            unset($current['source_file']);
+            continue;
+        }
+
+        // Same vehicle and gap small enough → extend the current trip
+        if ($current['reg'] === $rec['reg']) {
+            $gapDays = (int)(
+                (strtotime($rec['date_from']) - strtotime($current['date_to'])) / 86400
+            );
+            if ($gapDays <= $maxGapDays) {
+                if ($rec['date_to'] > $current['date_to']) {
+                    $current['date_to'] = $rec['date_to'];
+                }
+                // Keep the higher odo_end across all merged records
+                if ($rec['odo_end'] > $current['odo_end']) {
+                    $current['odo_end'] = $rec['odo_end'];
+                }
+                // Accumulate distance; recalculate from odo when possible
+                $current['distance'] += $rec['distance'];
+                if ($current['odo_begin'] > 0 && $current['odo_end'] > $current['odo_begin']) {
+                    $current['distance'] = $current['odo_end'] - $current['odo_begin'];
+                }
+                // Accumulate source files (deduplicated)
+                $sf = $rec['source_file'] ?? '';
+                if ($sf !== '' && !in_array($sf, $current['_sources'], true)) {
+                    $current['_sources'][] = $sf;
+                }
+                continue;
+            }
+        }
+
+        // Finalise current trip
+        $current['source_file'] = implode(', ', array_filter($current['_sources']));
+        unset($current['_sources']);
+        $trips[] = $current;
+
+        // Start new trip
+        $current = $rec;
+        $current['_sources'] = [($rec['source_file'] ?? '')];
+        unset($current['source_file']);
+    }
+
+    // Flush last trip
+    if ($current !== null) {
+        $current['source_file'] = implode(', ', array_filter($current['_sources']));
+        unset($current['_sources']);
+        $trips[] = $current;
+    }
+
+    // Most recent trip first
+    usort($trips, static fn(array $a, array $b): int => strcmp($b['date_from'], $a['date_from']));
+    return $trips;
+}
+
+/**
  * Backfill driver_activity_calendar for a specific driver by copying data
  * from ddd_activity_days (joined with ddd_files).  Runs on every page load
  * so newly uploaded DDD files are automatically reflected in the calendar.
@@ -2022,44 +2113,51 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
     $countStmt->execute([$companyId, $driverId]);
     if ((int)$countStmt->fetchColumn() === 0) return 0;
 
-    // Run the backfill (identical to the INSERT in migrate_018, scoped to one driver)
+    // Run the backfill scoped to one driver.
+    // Wrapping the SELECT in a named derived table (AS nr) lets the ON DUPLICATE KEY UPDATE
+    // clause reference new-row values as nr.col, avoiding the deprecated VALUES() function
+    // that was removed in MySQL 9.0.  This mirrors the approach used in migrate_018.
     try {
         $db->prepare(
             "INSERT INTO driver_activity_calendar
                (company_id, driver_id, date, drive_min, work_min, avail_min, rest_min,
                 dist_km, violations, segments, border_crossings, source_file_id)
-             SELECT f.company_id, f.driver_id, d.date,
-                    d.drive_min, d.work_min, d.avail_min, d.rest_min,
-                    d.dist_km, d.violations, d.segments, d.border_crossings, d.file_id
-             FROM ddd_activity_days d
-             JOIN ddd_files f ON f.id = d.file_id
-             WHERE f.company_id=? AND f.driver_id=?
-               AND f.file_type='driver' AND f.is_deleted=0
-             ORDER BY (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC
+             SELECT company_id, driver_id, date, drive_min, work_min, avail_min, rest_min,
+                    dist_km, violations, segments, border_crossings, source_file_id
+             FROM (
+               SELECT f.company_id, f.driver_id, d.date,
+                      d.drive_min, d.work_min, d.avail_min, d.rest_min,
+                      d.dist_km, d.violations, d.segments, d.border_crossings, d.file_id AS source_file_id
+               FROM ddd_activity_days d
+               JOIN ddd_files f ON f.id = d.file_id
+               WHERE f.company_id=? AND f.driver_id=?
+                 AND f.file_type='driver' AND f.is_deleted=0
+               ORDER BY (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC
+             ) AS nr
              ON DUPLICATE KEY UPDATE
-               drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+               drive_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                      > drive_min+work_min+avail_min+rest_min,
-                                     VALUES(drive_min), drive_min),
-               work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                     nr.drive_min, drive_min),
+               work_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                      > drive_min+work_min+avail_min+rest_min,
-                                     VALUES(work_min), work_min),
-               avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                     nr.work_min, work_min),
+               avail_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                      > drive_min+work_min+avail_min+rest_min,
-                                     VALUES(avail_min), avail_min),
-               rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                     nr.avail_min, avail_min),
+               rest_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                      > drive_min+work_min+avail_min+rest_min,
-                                     VALUES(rest_min), rest_min),
-               dist_km          = GREATEST(dist_km, VALUES(dist_km)),
-               violations       = IF(VALUES(violations) IS NOT NULL AND VALUES(violations) != '[]',
-                                     VALUES(violations), violations),
-               segments         = IF(VALUES(segments)   IS NOT NULL AND VALUES(segments)   != '[]',
-                                     VALUES(segments),   segments),
-               border_crossings = IF(VALUES(border_crossings) IS NOT NULL
-                                     AND VALUES(border_crossings) NOT IN ('0','[]','null','false'),
-                                     VALUES(border_crossings), border_crossings),
-               source_file_id   = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                     nr.rest_min, rest_min),
+               dist_km          = GREATEST(dist_km, nr.dist_km),
+               violations       = IF(nr.violations IS NOT NULL AND nr.violations != '[]',
+                                     nr.violations, violations),
+               segments         = IF(nr.segments   IS NOT NULL AND nr.segments   != '[]',
+                                     nr.segments,   segments),
+               border_crossings = IF(nr.border_crossings IS NOT NULL
+                                     AND nr.border_crossings NOT IN ('0','[]','null','false'),
+                                     nr.border_crossings, border_crossings),
+               source_file_id   = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                      > drive_min+work_min+avail_min+rest_min,
-                                     VALUES(source_file_id), source_file_id)"
+                                     nr.source_file_id, source_file_id)"
         )->execute([$companyId, $driverId]);
     } catch (\Throwable $e) {
         error_log('backfillDriverActivityCalendar: INSERT error for driver ' . $driverId . ': ' . $e->getMessage());

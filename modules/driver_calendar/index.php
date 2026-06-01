@@ -253,6 +253,7 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
     // Merge records from multiple DDD files: prefer most recent date_to;
     // 'source_file' is carried through from the winning (most recent) record.
     $vehicleRecords = mergeVehicleRecords($vehicleRecords);
+    $vehicleRecords = groupVehicleTrips($vehicleRecords);
 }
 
 // ── The timeline always shows all available data (independent of calendar date filter) ──
@@ -898,8 +899,8 @@ include __DIR__ . '/../../templates/header.php';
         <?php else: ?>
         <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
           <i class="bi bi-info-circle text-muted"></i>
-          <small class="text-muted">Dane odczytane bezpośrednio z binarnych plików DDD karty kierowcy (EF_CardVehiclesUsed).</small>
-          <span class="badge bg-primary ms-auto"><?= count($vehicleRecords) ?> pojazd<?= count($vehicleRecords) === 1 ? '' : (count($vehicleRecords) < 5 ? 'y' : 'ów') ?></span>
+          <small class="text-muted">Dane odczytane z plików DDD karty kierowcy (EF_CardVehiclesUsed). Kolejne dni w tym samym pojeździe są scalane w okresy.</small>
+          <span class="badge bg-primary ms-auto"><?= count($vehicleRecords) ?> okres<?= count($vehicleRecords) === 1 ? '' : (count($vehicleRecords) < 5 ? 'y' : 'ów') ?></span>
         </div>
         <div class="table-responsive">
           <table class="tp-table">
@@ -907,16 +908,20 @@ include __DIR__ . '/../../templates/header.php';
               <tr>
                 <th>Rejestracja</th>
                 <th>Kraj</th>
-                <th>Od</th>
-                <th>Do</th>
-                <th class="text-end">Przebieg (pocz.)</th>
-                <th class="text-end">Przebieg (końc.)</th>
+                <th>Wyjazd</th>
+                <th>Powrót</th>
+                <th class="text-center">Dni</th>
+                <th class="text-end">Licznik (pocz.)</th>
+                <th class="text-end">Licznik (końc.)</th>
                 <th class="text-end">Dystans</th>
-                <th>Źródło</th>
               </tr>
             </thead>
             <tbody>
-              <?php foreach ($vehicleRecords as $vr): ?>
+              <?php foreach ($vehicleRecords as $vr):
+                  $dFrom = new DateTime($vr['date_from']);
+                  $dTo   = new DateTime($vr['date_to']);
+                  $days  = (int)$dFrom->diff($dTo)->days + 1;
+              ?>
               <tr>
                 <td>
                   <i class="bi bi-truck text-primary me-1"></i>
@@ -925,6 +930,9 @@ include __DIR__ . '/../../templates/header.php';
                 <td><?= e($vr['nation'] ?: '—') ?></td>
                 <td class="text-nowrap"><?= fmtDate($vr['date_from']) ?></td>
                 <td class="text-nowrap"><?= fmtDate($vr['date_to']) ?></td>
+                <td class="text-center">
+                  <span class="badge bg-secondary"><?= $days ?></span>
+                </td>
                 <td class="text-end text-nowrap"><?= $vr['odo_begin'] > 0 ? number_format($vr['odo_begin']) . ' km' : '—' ?></td>
                 <td class="text-end text-nowrap"><?= $vr['odo_end'] > 0 ? number_format($vr['odo_end']) . ' km' : '—' ?></td>
                 <td class="text-end text-nowrap">
@@ -934,17 +942,15 @@ include __DIR__ . '/../../templates/header.php';
                   <span class="text-muted">—</span>
                   <?php endif; ?>
                 </td>
-                <td class="text-muted small"><?= e($vr['source_file']) ?></td>
               </tr>
               <?php endforeach; ?>
             </tbody>
             <tfoot>
               <tr class="fw-600">
-                <td colspan="6" class="text-end">Łączny dystans:</td>
+                <td colspan="7" class="text-end">Łączny dystans:</td>
                 <td class="text-end text-primary">
                   <?= number_format(array_sum(array_column($vehicleRecords, 'distance'))) ?> km
                 </td>
-                <td></td>
               </tr>
             </tfoot>
           </table>

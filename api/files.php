@@ -660,38 +660,49 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         $calRows->execute([$newFileId]);
                         $calData = $calRows->fetchAll(\PDO::FETCH_ASSOC);
 
+                        // Derived-table approach: wrap the inserted values in a named subquery
+                        // so the new-row columns can be referenced as nr.col in the ON DUPLICATE
+                        // KEY UPDATE clause.  VALUES() was deprecated in MySQL 8.0.20 and removed
+                        // in MySQL 9.0; the nr.col syntax works on MySQL 5.7+ and 9.0+.
                         $upsertCal = $db->prepare(
                             'INSERT INTO driver_activity_calendar
                                (company_id, driver_id, date, drive_min, work_min, avail_min,
                                 rest_min, dist_km, violations, segments, border_crossings,
                                 source_file_id)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                             SELECT company_id, driver_id, `date`, drive_min, work_min, avail_min,
+                                    rest_min, dist_km, violations, segments, border_crossings,
+                                    source_file_id
+                             FROM (SELECT ? AS company_id, ? AS driver_id, ? AS `date`,
+                                          ? AS drive_min, ? AS work_min, ? AS avail_min,
+                                          ? AS rest_min, ? AS dist_km, ? AS violations,
+                                          ? AS segments, ? AS border_crossings,
+                                          ? AS source_file_id) AS nr
                              ON DUPLICATE KEY UPDATE
-                               drive_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                               drive_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     VALUES(drive_min), drive_min),
-                               work_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     nr.drive_min, drive_min),
+                               work_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     VALUES(work_min), work_min),
-                               avail_min        = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     nr.work_min, work_min),
+                               avail_min        = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     VALUES(avail_min), avail_min),
-                               rest_min         = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     nr.avail_min, avail_min),
+                               rest_min         = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     VALUES(rest_min), rest_min),
-                               dist_km          = GREATEST(dist_km, VALUES(dist_km)),
-                               violations       = IF(VALUES(violations) IS NOT NULL
-                                                     AND VALUES(violations) != \'[]\',
-                                                     VALUES(violations), violations),
-                               segments         = IF(VALUES(segments) IS NOT NULL
-                                                     AND VALUES(segments) != \'[]\',
-                                                     VALUES(segments), segments),
-                               border_crossings = IF(VALUES(border_crossings) IS NOT NULL
-                                                     AND VALUES(border_crossings) NOT IN (\'0\',\'[]\',\'null\',\'false\'),
-                                                     VALUES(border_crossings), border_crossings),
-                               source_file_id   = IF(VALUES(drive_min)+VALUES(work_min)+VALUES(avail_min)+VALUES(rest_min)
+                                                     nr.rest_min, rest_min),
+                               dist_km          = GREATEST(dist_km, nr.dist_km),
+                               violations       = IF(nr.violations IS NOT NULL
+                                                     AND nr.violations != \'[]\',
+                                                     nr.violations, violations),
+                               segments         = IF(nr.segments IS NOT NULL
+                                                     AND nr.segments != \'[]\',
+                                                     nr.segments, segments),
+                               border_crossings = IF(nr.border_crossings IS NOT NULL
+                                                     AND nr.border_crossings NOT IN (\'0\',\'[]\',\'null\',\'false\'),
+                                                     nr.border_crossings, border_crossings),
+                               source_file_id   = IF(nr.drive_min+nr.work_min+nr.avail_min+nr.rest_min
                                                      > drive_min+work_min+avail_min+rest_min,
-                                                     VALUES(source_file_id), source_file_id)'
+                                                     nr.source_file_id, source_file_id)'
                         );
 
                         foreach ($calData as $row) {

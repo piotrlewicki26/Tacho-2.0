@@ -1029,6 +1029,66 @@ ok('33b: distance > 0 for main block record',
     count(array_filter($t33out, fn($r) => $r['distance'] > 0)) >= 1);
 
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Tests 34–38: groupVehicleTrips()
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+// Helper: build a minimal vehicle record array
+function makeRec(string $reg, string $from, string $to, int $odoBegin = 0, int $odoEnd = 0, string $nation = 'PL', string $src = 'file.ddd'): array {
+    $dist = ($odoEnd > $odoBegin && $odoBegin > 0) ? ($odoEnd - $odoBegin) : 0;
+    return ['reg' => $reg, 'nation' => $nation, 'date_from' => $from, 'date_to' => $to,
+            'odo_begin' => $odoBegin, 'odo_end' => $odoEnd, 'distance' => $dist, 'source_file' => $src];
+}
+
+echo "\nTest 34: groupVehicleTrips – consecutive same-vehicle daily records merge into one period\n";
+$t34recs = [
+    makeRec('WA12345', '2025-06-02', '2025-06-02', 100000, 100300),
+    makeRec('WA12345', '2025-06-03', '2025-06-03', 100300, 100600),
+    makeRec('WA12345', '2025-06-04', '2025-06-04', 100600, 100900),
+];
+$t34trips = groupVehicleTrips($t34recs);
+ok('34a: three daily records merged to one trip', count($t34trips) === 1);
+ok('34b: merged trip date_from = 2025-06-02', $t34trips[0]['date_from'] === '2025-06-02');
+ok('34c: merged trip date_to   = 2025-06-04', $t34trips[0]['date_to']   === '2025-06-04');
+ok('34d: merged distance = odo_end − odo_begin = 900', $t34trips[0]['distance'] === 900);
+ok('34e: odo_begin from first record', $t34trips[0]['odo_begin'] === 100000);
+ok('34f: odo_end from last record',    $t34trips[0]['odo_end']   === 100900);
+
+echo "\nTest 35: groupVehicleTrips – gap > 2 days creates separate trips\n";
+$t35recs = [
+    makeRec('KR55AA1', '2025-05-01', '2025-05-05', 50000, 51000),
+    makeRec('KR55AA1', '2025-05-20', '2025-05-25', 51500, 53000),
+];
+$t35trips = groupVehicleTrips($t35recs);
+ok('35a: two trips (gap > 2 days)', count($t35trips) === 2);
+ok('35b: most recent trip first (date_from 2025-05-20)', $t35trips[0]['date_from'] === '2025-05-20');
+ok('35c: second trip is earlier (date_from 2025-05-01)',  $t35trips[1]['date_from'] === '2025-05-01');
+
+echo "\nTest 36: groupVehicleTrips – weekend gap (2 days) merges Mon→Fri + Mon→Fri\n";
+$t36recs = [
+    makeRec('GD77BX2', '2025-06-02', '2025-06-06'),   // Mon–Fri week 1
+    makeRec('GD77BX2', '2025-06-09', '2025-06-13'),   // Mon–Fri week 2 (gap = 2 days)
+];
+$t36trips = groupVehicleTrips($t36recs);
+ok('36a: two weeks with weekend gap merge to one period', count($t36trips) === 1);
+ok('36b: merged date_from = 2025-06-02', $t36trips[0]['date_from'] === '2025-06-02');
+ok('36c: merged date_to   = 2025-06-13', $t36trips[0]['date_to']   === '2025-06-13');
+
+echo "\nTest 37: groupVehicleTrips – two different vehicles stay separate\n";
+$t37recs = [
+    makeRec('WA11111', '2025-07-01', '2025-07-05'),
+    makeRec('WA22222', '2025-07-01', '2025-07-05'),
+];
+$t37trips = groupVehicleTrips($t37recs);
+ok('37a: two vehicles produce two trips', count($t37trips) === 2);
+ok('37b: each trip has its own reg',
+    $t37trips[0]['reg'] !== $t37trips[1]['reg']);
+
+echo "\nTest 38: groupVehicleTrips – empty input returns empty array\n";
+ok('38a: empty input → empty output', groupVehicleTrips([]) === []);
+
+
+
 
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";

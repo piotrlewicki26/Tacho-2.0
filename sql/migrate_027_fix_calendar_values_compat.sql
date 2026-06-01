@@ -1,0 +1,21 @@
+-- Migration 027: fix driver_activity_calendar rows missing due to VALUES() removal.
+--
+-- Background:
+--   Both api/files.php and backfillDriverActivityCalendar() used the VALUES()
+--   function in ON DUPLICATE KEY UPDATE clauses.  VALUES() was deprecated in
+--   MySQL 8.0.20 and *removed* in MySQL 9.0; on MySQL 9.0+ the entire INSERT
+--   threw an error that was silently caught, leaving driver_activity_calendar
+--   empty even when ddd_activity_days already had correct data.
+--
+--   The fix (applied to api/files.php and includes/functions.php) wraps the
+--   SELECT in a named derived table (AS nr) so ON DUPLICATE KEY UPDATE can
+--   reference new-row values as nr.col, which works on MySQL 5.7 through 9.0+.
+--   This is the same approach used in migrate_018.
+--
+-- Re-sync strategy:
+--   Truncate driver_activity_calendar so every row is freshly re-inserted on
+--   the next driver_calendar or driver_analysis page visit using the fixed
+--   backfillDriverActivityCalendar() logic.  ddd_activity_days is NOT touched
+--   (it is the source of truth and is unaffected by this bug).
+
+TRUNCATE TABLE `driver_activity_calendar`;
