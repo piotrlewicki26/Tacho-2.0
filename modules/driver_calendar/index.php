@@ -97,11 +97,11 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: last 12 months (12 months ago → today).
+        // Date range – default: last 28 days (today − 27 days → today).
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
-        $defaultFrom  = date('Y-m-d', strtotime('-12 months'));
+        $defaultFrom  = date('Y-m-d', strtotime('-27 days'));
         $defaultTo    = date('Y-m-d');
 
         $rawFrom = isset($_GET['from']) ? trim($_GET['from']) : '';
@@ -115,7 +115,7 @@ if ($driverId) {
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
             // First driver selection (no dates in URL).
-            // Default to the last 12 months (12 months ago → today).
+            // Default to the last 28 days (today − 27 days → today).
             $dateFrom = $defaultFrom;
             $dateTo   = $defaultTo;
         }
@@ -215,6 +215,43 @@ if ($driverId) {
                 // Collect all violations with date for violations tab
                 foreach ($viols as $v) {
                     $violations[] = array_merge($v, ['date' => $row['date']]);
+                }
+            }
+
+            // If no data found in the requested range but data exists elsewhere,
+            // automatically fall back to the full data range and re-query.
+            if (empty($calDays) && $dataDateMin && ($dateFrom > $dataDateMax || $dateTo < $dataDateMin)) {
+                $dateFrom = $dataDateMin;
+                $dateTo   = $dataDateMax;
+                $rows->execute([$driverId, $dateFrom, $dateTo]);
+                $rawRows2 = $rows->fetchAll();
+                foreach ($rawRows2 as $row) {
+                    $viols    = json_decode($row['violations']       ?? '[]', true) ?: [];
+                    $segs     = json_decode($row['segments']         ?? '[]', true) ?: [];
+                    $crossings= json_decode($row['border_crossings'] ?? '[]', true) ?: [];
+                    if (is_int($crossings)) $crossings = [];
+                    $calDays[$row['date']] = [
+                        'date'      => $row['date'],
+                        'drive'     => (int)$row['drive_min'],
+                        'work'      => (int)$row['work_min'],
+                        'avail'     => (int)$row['avail_min'],
+                        'rest'      => (int)$row['rest_min'],
+                        'dist'      => (int)$row['dist_km'],
+                        'segs'      => $segs,
+                        'crossings' => $crossings,
+                        'viol'      => $viols,
+                        'file_id'   => $row['source_file_id'],
+                    ];
+                    $summary['drive'] += (int)$row['drive_min'];
+                    $summary['work']  += (int)$row['work_min'];
+                    $summary['rest']  += (int)$row['rest_min'];
+                    $summary['avail'] += (int)$row['avail_min'];
+                    $summary['dist']  += (int)$row['dist_km'];
+                    $summary['violations'] += count($viols);
+                    $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => []];
+                    foreach ($viols as $v) {
+                        $violations[] = array_merge($v, ['date' => $row['date']]);
+                    }
                 }
             }
         } catch (Throwable $calErr) {
@@ -414,15 +451,17 @@ include __DIR__ . '/../../templates/header.php';
               $q3mTo     = date('Y-m-d');
               $isCur  = ($dateFrom === $qCurFrom  && $dateTo === $qCurTo);
               $is12m  = ($dateFrom === $q12mFrom  && $dateTo === $q12mTo);
+              $is28   = ($dateFrom === $q28From   && $dateTo === $q28To);
+              $is3m   = ($dateFrom === $q3mFrom   && $dateTo === $q3mTo);
             ?>
-            <a href="?driver_id=<?= $driverId ?>&from=<?= $q12mFrom ?>&to=<?= $q12mTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs <?= $is12m ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">12 mies.</a>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= $is28 ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">28 dni</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $qCurFrom ?>&to=<?= $qCurTo ?>&tab=<?= e($activeTab) ?>"
                class="btn btn-xs <?= $isCur ? 'btn-info' : 'btn-outline-info' ?> flex-fill">Bież. mies.</a>
-            <a href="?driver_id=<?= $driverId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs btn-outline-secondary flex-fill">28 dni</a>
             <a href="?driver_id=<?= $driverId ?>&from=<?= $q3mFrom ?>&to=<?= $q3mTo ?>&tab=<?= e($activeTab) ?>"
-               class="btn btn-xs btn-outline-success flex-fill">3 mies.</a>
+               class="btn btn-xs <?= $is3m ? 'btn-success' : 'btn-outline-success' ?> flex-fill">3 mies.</a>
+            <a href="?driver_id=<?= $driverId ?>&from=<?= $q12mFrom ?>&to=<?= $q12mTo ?>&tab=<?= e($activeTab) ?>"
+               class="btn btn-xs <?= $is12m ? 'btn-secondary' : 'btn-outline-secondary' ?> flex-fill">12 mies.</a>
           </div>
           <?php endif; ?>
           <div class="mb-2">

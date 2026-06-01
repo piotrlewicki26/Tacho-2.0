@@ -253,6 +253,49 @@ if ($action === 'profile' && $editDriver) {
         ];
     }
 
+    // Group profileWeeks into activity periods.
+    // A new period starts when a week with 0 driving minutes is encountered
+    // or when there is a gap of more than one ISO week between consecutive weeks.
+    $activityPeriods = [];
+    $currentPeriod   = [];
+    $prevIsoKey      = null;
+
+    foreach ($profileWeeks as $w) {
+        $isoKey = $w['year'] . '-' . str_pad($w['week'], 2, '0', STR_PAD_LEFT);
+
+        if ($w['total'] === 0) {
+            // Zero-total week closes the current period (if any) and is itself skipped.
+            if (!empty($currentPeriod)) {
+                $activityPeriods[] = $currentPeriod;
+                $currentPeriod = [];
+            }
+            $prevIsoKey = null;
+            continue;
+        }
+
+        if ($prevIsoKey !== null) {
+            // Check for gap: compute previous and current week start dates and
+            // compare the difference in days; gap > 7 days means non-consecutive.
+            [$py, $pw] = explode('-', $prevIsoKey);
+            $prevMon   = (new DateTime())->setISODate((int)$py, (int)$pw, 1);
+            $curMon    = (new DateTime())->setISODate((int)$w['year'], (int)$w['week'], 1);
+            $diff      = (int)$curMon->diff($prevMon)->days;
+            if ($diff > 7) {
+                // Gap – close the current period and start a new one.
+                if (!empty($currentPeriod)) {
+                    $activityPeriods[] = $currentPeriod;
+                }
+                $currentPeriod = [];
+            }
+        }
+
+        $currentPeriod[] = $w;
+        $prevIsoKey      = $isoKey;
+    }
+    if (!empty($currentPeriod)) {
+        $activityPeriods[] = $currentPeriod;
+    }
+
     // ── Vehicles tab data (parsed directly from driver DDD files) ────────────
     // Default to a 20-year lookback so that all vehicles stored on the card
     // (driver cards hold the last ~84 vehicles regardless of age) are shown.
@@ -772,7 +815,7 @@ $totalM = $profileTotalDrive % 60;
             <span class="tp-card-title">Tygodnie – czas jazdy</span>
           </div>
           <div class="tp-card-body p-0">
-            <?php if ($profileWeeks): ?>
+            <?php if ($activityPeriods): ?>
             <div class="table-responsive">
               <table class="tp-table table-sm">
                 <thead>
@@ -790,7 +833,30 @@ $totalM = $profileTotalDrive % 60;
                   </tr>
                 </thead>
                 <tbody>
-                  <?php foreach ($profileWeeks as $wk): ?>
+                  <?php foreach ($activityPeriods as $periodIdx => $period):
+                    // Compute period start (Mon of first week) and end (Sun of last week)
+                    $firstWk  = $period[0];
+                    $lastWk   = end($period);
+                    $periodStart = (new DateTime())->setISODate((int)$firstWk['year'], (int)$firstWk['week'], 1)->format('d.m.Y');
+                    $periodEnd   = (new DateTime())->setISODate((int)$lastWk['year'],  (int)$lastWk['week'],  7)->format('d.m.Y');
+                    $periodTotal = array_sum(array_column($period, 'total'));
+                    $activeDays  = 0;
+                    foreach ($period as $pw) {
+                        foreach ($pw['days'] as $dm) { if ($dm > 0) $activeDays++; }
+                    }
+                  ?>
+                  <!-- Period header row -->
+                  <tr class="table-light">
+                    <td colspan="9" class="fw-600 text-primary small py-1">
+                      <i class="bi bi-calendar2-week me-1"></i>
+                      Okres <?= $periodIdx + 1 ?>: <?= $periodStart ?> – <?= $periodEnd ?>
+                      &nbsp;<span class="badge bg-light text-muted border"><?= $activeDays ?> dni jazdy</span>
+                    </td>
+                    <td class="text-end fw-600 small text-primary py-1">
+                      <?= floor($periodTotal/60) ?>h <?= $periodTotal%60 ?>m
+                    </td>
+                  </tr>
+                  <?php foreach ($period as $wk): ?>
                   <tr>
                     <td><?= (int)$wk['year'] ?></td>
                     <td><?= (int)$wk['week'] ?></td>
@@ -805,10 +871,20 @@ $totalM = $profileTotalDrive % 60;
                     </td>
                   </tr>
                   <?php endforeach; ?>
+                  <!-- Period subtotal row -->
+                  <tr class="table-primary">
+                    <td colspan="9" class="fw-bold small">
+                      Suma okresu <?= $periodIdx + 1 ?> (<?= $activeDays ?> dni)
+                    </td>
+                    <td class="text-end fw-bold">
+                      <?= floor($periodTotal/60) ?>h <?= $periodTotal%60 ?>m
+                    </td>
+                  </tr>
+                  <?php endforeach; ?>
                 </tbody>
                 <tfoot>
                   <tr class="table-secondary fw-bold">
-                    <td colspan="9">Łącznie</td>
+                    <td colspan="9">Łącznie wszystkie okresy</td>
                     <td class="text-end"><?= $totalH ?>h <?= $totalM ?>m</td>
                   </tr>
                 </tfoot>

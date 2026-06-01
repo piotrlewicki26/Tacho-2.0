@@ -723,6 +723,63 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 }
+
+                // Persist per-day distance data for vehicle files
+                if ($fileType === 'vehicle' && $linkedVehicleId && !empty($actResult['days'])) {
+                    $insVehDay = $db->prepare(
+                        'INSERT IGNORE INTO ddd_activity_days (file_id, date, dist_km)
+                         VALUES (?,?,?)'
+                    );
+                    foreach ($actResult['days'] as $day) {
+                        if (empty($day['date'])) continue;
+                        $insVehDay->execute([
+                            $newFileId,
+                            $day['date'],
+                            (int)($day['km'] ?? 0),
+                        ]);
+                    }
+
+                    /* Upsert into vehicle_activity_calendar so the vehicle
+                     * timeline is updated immediately after every upload.
+                     * Table is created lazily here if it does not yet exist. */
+                    try {
+                        $db->exec(
+                            'CREATE TABLE IF NOT EXISTS vehicle_activity_calendar (
+                               id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                               company_id  INT UNSIGNED NOT NULL,
+                               vehicle_id  INT UNSIGNED NOT NULL,
+                               `date`      DATE NOT NULL,
+                               dist_km     INT UNSIGNED NOT NULL DEFAULT 0,
+                               source_file_id INT UNSIGNED DEFAULT NULL,
+                               UNIQUE KEY uq_vac (company_id, vehicle_id, `date`),
+                               KEY idx_vac_vid_date (vehicle_id, `date`)
+                             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+                        );
+
+                        $upsertVeh = $db->prepare(
+                            'INSERT INTO vehicle_activity_calendar
+                               (company_id, vehicle_id, `date`, dist_km, source_file_id)
+                             SELECT company_id, vehicle_id, `date`, dist_km, source_file_id
+                             FROM (SELECT ? AS company_id, ? AS vehicle_id, ? AS `date`,
+                                          ? AS dist_km, ? AS source_file_id) AS nr
+                             ON DUPLICATE KEY UPDATE
+                               dist_km        = GREATEST(dist_km, nr.dist_km),
+                               source_file_id = IF(nr.dist_km > dist_km, nr.source_file_id, source_file_id)'
+                        );
+                        foreach ($actResult['days'] as $day) {
+                            if (empty($day['date'])) continue;
+                            $upsertVeh->execute([
+                                $companyId,
+                                $linkedVehicleId,
+                                $day['date'],
+                                (int)($day['km'] ?? 0),
+                                $newFileId,
+                            ]);
+                        }
+                    } catch (Throwable $vehCalErr) {
+                        error_log('Vehicle calendar upsert error (file_id=' . $newFileId . '): ' . $vehCalErr->getMessage());
+                    }
+                }
             }
         } catch (Throwable $actErr) {
             // Non-fatal: activity parsing failed but the file itself was saved
