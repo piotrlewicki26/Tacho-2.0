@@ -17,5 +17,11 @@
 --   the next driver_calendar or driver_analysis page visit using the fixed
 --   backfillDriverActivityCalendar() logic.  ddd_activity_days is NOT touched
 --   (it is the source of truth and is unaffected by this bug).
+--
+-- Safety note:
+--   TRUNCATE cannot be rolled back in a transaction on InnoDB. Before running
+--   this migration verify that ddd_activity_days is populated for your drivers
+--   (SELECT COUNT(*) FROM ddd_activity_days) so the calendar can be rebuilt.
+--   If ddd_activity_days is also empty, re-upload the affected DDD files first.
 
 TRUNCATE TABLE `driver_activity_calendar`;
