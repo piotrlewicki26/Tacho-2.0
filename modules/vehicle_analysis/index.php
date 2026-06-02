@@ -15,6 +15,8 @@ $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 
 $vehicleId = isset($_GET['vehicle_id']) ? (int)$_GET['vehicle_id'] : 0;
+$rawFrom   = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
+$rawTo     = isset($_GET['to'])   ? trim((string)$_GET['to'])   : '';
 
 $stmt = $db->prepare('SELECT id, registration, make, model FROM vehicles WHERE company_id=? AND is_active=1 ORDER BY registration');
 $stmt->execute([$companyId]);
@@ -31,28 +33,60 @@ if ($vehicleId) {
     $vehicleFiles = $stmt->fetchAll();
 }
 
-$fileId = isset($_GET['file_id']) ? (int)$_GET['file_id'] : 0;
-$selectedFile = null;
-if ($fileId) {
-    $stmt = $db->prepare("SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0");
-    $stmt->execute([$fileId, $companyId]);
-    $selectedFile = $stmt->fetch();
-}
-
-
 $vehDays    = [];
 $vehSummary = [];
 $parseError = null;
+$dataDateMin = null;
+$dataDateMax = null;
+$dateFrom = date('Y-m-d', strtotime('-27 days'));
+$dateTo   = date('Y-m-d');
 
-if ($selectedFile) {
-    $filePath = dddPhysPath($selectedFile, $companyId);
-    if (is_file($filePath)) {
-        $result     = parseVehicleDdd($filePath);
-        $vehDays    = $result['days']    ?? [];
-        $vehSummary = $result['summary'] ?? [];
-        if (isset($result['error'])) $parseError = $result['error'];
-    } else {
-        $parseError = 'Plik fizyczny nie istnieje.';
+if ($vehicleId) {
+    try {
+        backfillVehicleActivityCalendar($db, $companyId, $vehicleId);
+
+        $rangeStmt = $db->prepare(
+            'SELECT MIN(`date`) AS dmin, MAX(`date`) AS dmax
+             FROM vehicle_activity_calendar
+             WHERE company_id=? AND vehicle_id=?'
+        );
+        $rangeStmt->execute([$companyId, $vehicleId]);
+        $range = $rangeStmt->fetch();
+        if ($range && $range['dmin']) {
+            $dataDateMin = $range['dmin'];
+            $dataDateMax = $range['dmax'];
+        }
+
+        if ($rawFrom !== '' || $rawTo !== '') {
+            $fallbackFrom = $dataDateMin ?? $dateFrom;
+            $fallbackTo   = $dataDateMax ?? $dateTo;
+            $dateFrom = $rawFrom !== '' ? $rawFrom : $fallbackFrom;
+            $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? date('Y-m-d', strtotime('-27 days'));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? date('Y-m-d');
+        if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+
+        $rows = $db->prepare(
+            'SELECT `date`, dist_km AS km
+             FROM vehicle_activity_calendar
+             WHERE company_id=? AND vehicle_id=? AND `date` BETWEEN ? AND ?
+             ORDER BY `date` ASC'
+        );
+        $rows->execute([$companyId, $vehicleId, $dateFrom, $dateTo]);
+        $vehDays = $rows->fetchAll();
+
+        $totalKm = 0;
+        $daysActive = 0;
+        foreach ($vehDays as $d) {
+            $km = (int)($d['km'] ?? 0);
+            $totalKm += $km;
+            if ($km > 0) $daysActive++;
+        }
+        $vehSummary = ['total_km' => $totalKm, 'days_active' => $daysActive];
+    } catch (Throwable $e) {
+        $parseError = 'Nie udało się załadować aktywności pojazdu.';
+        error_log('vehicle_analysis: load error for vehicle ' . $vehicleId . ': ' . $e->getMessage());
     }
 }
 
@@ -66,7 +100,7 @@ include __DIR__ . '/../../templates/header.php';
     <div class="tp-card">
       <div class="tp-card-header">
         <i class="bi bi-funnel text-success"></i>
-        <span class="tp-card-title">Wybierz pojazd i plik</span>
+        <span class="tp-card-title">Wybierz pojazd</span>
       </div>
       <div class="tp-card-body">
         <form method="GET" novalidate>
@@ -81,22 +115,49 @@ include __DIR__ . '/../../templates/header.php';
               <?php endforeach; ?>
             </select>
           </div>
-          <?php if ($vehicleId && $vehicleFiles): ?>
-          <div class="mb-3">
-            <label class="form-label fw-600">Plik DDD pojazdu</label>
-            <select name="file_id" class="form-select">
-              <option value="">— Wybierz plik —</option>
-              <?php foreach ($vehicleFiles as $f): ?>
-              <option value="<?= $f['id'] ?>"<?= $f['id']==$fileId?' selected':'' ?>>
-                <?= e($f['original_name']) ?> (<?= fmtDate($f['download_date']) ?>)
-              </option>
-              <?php endforeach; ?>
-            </select>
+
+          <?php if ($vehicleId): ?>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label mb-1 small text-muted">Od</label>
+              <input type="date" name="from" class="form-control form-control-sm" value="<?= e($dateFrom) ?>">
+            </div>
+            <div class="col-6">
+              <label class="form-label mb-1 small text-muted">Do</label>
+              <input type="date" name="to" class="form-control form-control-sm" value="<?= e($dateTo) ?>">
+            </div>
           </div>
+          <?php
+            $q28From = date('Y-m-d', strtotime('-27 days'));
+            $q28To   = date('Y-m-d');
+            $q3mFrom = date('Y-m-d', strtotime('-3 months'));
+            $q3mTo   = date('Y-m-d');
+            $is28    = ($dateFrom === $q28From && $dateTo === $q28To);
+            $is3m    = ($dateFrom === $q3mFrom && $dateTo === $q3mTo);
+            $isAll   = ($dataDateMin && $dataDateMax && $dateFrom === $dataDateMin && $dateTo === $dataDateMax);
+          ?>
+          <div class="d-flex gap-1 mb-3">
+            <a href="?vehicle_id=<?= $vehicleId ?>&from=<?= $q28From ?>&to=<?= $q28To ?>"
+               class="btn btn-xs <?= $is28 ? 'btn-primary' : 'btn-outline-primary' ?> flex-fill">28 dni</a>
+            <a href="?vehicle_id=<?= $vehicleId ?>&from=<?= $q3mFrom ?>&to=<?= $q3mTo ?>"
+               class="btn btn-xs <?= $is3m ? 'btn-success' : 'btn-outline-success' ?> flex-fill">3 mies.</a>
+            <?php if ($dataDateMin && $dataDateMax): ?>
+            <a href="?vehicle_id=<?= $vehicleId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>"
+               class="btn btn-xs <?= $isAll ? 'btn-secondary' : 'btn-outline-secondary' ?> flex-fill">Całość</a>
+            <?php endif; ?>
+          </div>
+
           <button type="submit" class="btn btn-success w-100">
-            <i class="bi bi-truck-front me-1"></i>Analizuj
+            <i class="bi bi-search me-1"></i>Filtruj
           </button>
-          <?php elseif ($vehicleId): ?>
+          <?php if ($dataDateMin): ?>
+          <div class="text-muted small mt-2">
+            Dane: <?= fmtDate($dataDateMin) ?> – <?= fmtDate($dataDateMax) ?><br>
+            Pliki DDD: <?= count($vehicleFiles) ?>
+          </div>
+          <?php endif; ?>
+          <?php endif; ?>
+          <?php if ($vehicleId && !$vehicleFiles): ?>
           <div class="alert alert-info py-2 small">Brak plików DDD dla tego pojazdu.</div>
           <?php endif; ?>
         </form>
@@ -105,11 +166,11 @@ include __DIR__ . '/../../templates/header.php';
   </div>
 
   <div class="col-md-8">
-    <?php if (!$selectedFile): ?>
+    <?php if (!$vehicleId): ?>
     <div class="tp-card h-100 d-flex align-items-center justify-content-center">
       <div class="tp-empty-state">
         <i class="bi bi-truck-front"></i>
-        <p>Wybierz pojazd i plik DDD, aby zobaczyć analizę.</p>
+        <p>Wybierz pojazd, aby zobaczyć kalendarz i oś czasu aktywności.</p>
       </div>
     </div>
     <?php elseif ($parseError): ?>
@@ -121,7 +182,7 @@ include __DIR__ . '/../../templates/header.php';
           <div class="tp-stat-icon success"><i class="bi bi-speedometer"></i></div>
           <div>
             <div class="tp-stat-value"><?= number_format($vehSummary['total_km'] ?? 0) ?></div>
-            <div class="tp-stat-label">Łącznie km (z danych)</div>
+            <div class="tp-stat-label">Łącznie km (zakres)</div>
           </div>
         </div>
       </div>
@@ -135,6 +196,19 @@ include __DIR__ . '/../../templates/header.php';
         </div>
       </div>
     </div>
+    <?php if (!$vehDays): ?>
+    <div class="tp-empty-state py-4">
+      <i class="bi bi-calendar-x"></i>
+      <p class="mt-2 mb-1 fw-600">Brak aktywności w wybranym zakresie</p>
+      <p class="text-muted small mb-0">
+        <?php if ($dataDateMin): ?>
+        Spróbuj zakresu <a href="?vehicle_id=<?= $vehicleId ?>&from=<?= $dataDateMin ?>&to=<?= $dataDateMax ?>">Całość</a>.
+        <?php else: ?>
+        Wgraj plik DDD pojazdu, aby zapełnić kalendarz.
+        <?php endif; ?>
+      </p>
+    </div>
+    <?php endif; ?>
     <?php endif; ?>
   </div>
 </div>
@@ -144,7 +218,7 @@ include __DIR__ . '/../../templates/header.php';
 <div class="tp-card mb-4">
   <div class="tp-card-header">
     <i class="bi bi-bar-chart text-success"></i>
-    <span class="tp-card-title">Przebieg dzienny (km z pliku DDD)</span>
+    <span class="tp-card-title">Oś czasu aktywności pojazdu (km dziennie)</span>
   </div>
   <div class="tp-card-body">
     <div class="tp-chart-wrap" style="height:300px">
@@ -157,7 +231,7 @@ include __DIR__ . '/../../templates/header.php';
 <div class="tp-card">
   <div class="tp-card-header">
     <i class="bi bi-table text-secondary"></i>
-    <span class="tp-card-title">Dane dzienne</span>
+    <span class="tp-card-title">Kalendarz aktywności pojazdu</span>
     <span class="badge bg-secondary ms-2"><?= count($vehDays) ?> rekordów</span>
   </div>
   <div class="tp-card-body p-0">

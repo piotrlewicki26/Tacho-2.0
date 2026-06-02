@@ -837,9 +837,12 @@ $totalM = $profileTotalDrive % 60;
                     // Compute period start (Mon of first week) and end (Sun of last week)
                     $firstWk  = $period[0];
                     $lastWk   = end($period);
-                    $periodStart = (new DateTime())->setISODate((int)$firstWk['year'], (int)$firstWk['week'], 1)->format('d.m.Y');
-                    $periodEnd   = (new DateTime())->setISODate((int)$lastWk['year'],  (int)$lastWk['week'],  7)->format('d.m.Y');
+                    $periodStartDt = (new DateTime())->setISODate((int)$firstWk['year'], (int)$firstWk['week'], 1);
+                    $periodEndDt   = (new DateTime())->setISODate((int)$lastWk['year'],  (int)$lastWk['week'],  7);
+                    $periodStart = $periodStartDt->format('d.m.Y');
+                    $periodEnd   = $periodEndDt->format('d.m.Y');
                     $periodTotal = array_sum(array_column($period, 'total'));
+                    $periodDays  = ((int)$periodStartDt->diff($periodEndDt)->format('%a')) + 1;
                     $activeDays  = 0;
                     foreach ($period as $pw) {
                         foreach ($pw['days'] as $dm) { if ($dm > 0) $activeDays++; }
@@ -850,6 +853,7 @@ $totalM = $profileTotalDrive % 60;
                     <td colspan="9" class="fw-600 text-primary small py-1">
                       <i class="bi bi-calendar2-week me-1"></i>
                       Okres <?= $periodIdx + 1 ?>: <?= $periodStart ?> – <?= $periodEnd ?>
+                      &nbsp;<span class="badge bg-light text-muted border"><?= $periodDays ?> dni okresu</span>
                       &nbsp;<span class="badge bg-light text-muted border"><?= $activeDays ?> dni jazdy</span>
                     </td>
                     <td class="text-end fw-600 small text-primary py-1">
@@ -882,12 +886,6 @@ $totalM = $profileTotalDrive % 60;
                   </tr>
                   <?php endforeach; ?>
                 </tbody>
-                <tfoot>
-                  <tr class="table-secondary fw-bold">
-                    <td colspan="9">Łącznie wszystkie okresy</td>
-                    <td class="text-end"><?= $totalH ?>h <?= $totalM ?>m</td>
-                  </tr>
-                </tfoot>
               </table>
             </div>
             <?php else: ?>

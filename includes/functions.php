@@ -2172,6 +2172,121 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
 }
 
 /**
+ * Backfill vehicle_activity_calendar for a specific vehicle by copying data
+ * from ddd_activity_days (joined with ddd_files). Runs on each vehicle-analysis
+ * page load so newly uploaded files are reflected immediately.
+ *
+ * @param  \PDO $db
+ * @param  int  $companyId
+ * @param  int  $vehicleId
+ * @return int  Number of rows now in the calendar for this vehicle
+ */
+function backfillVehicleActivityCalendar(\PDO $db, int $companyId, int $vehicleId): int
+{
+    if (!$vehicleId) return 0;
+
+    // Ensure table exists (safe no-op when migration already applied).
+    try {
+        $db->exec(
+            'CREATE TABLE IF NOT EXISTS vehicle_activity_calendar (
+               id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+               company_id     INT UNSIGNED NOT NULL,
+               vehicle_id     INT UNSIGNED NOT NULL,
+               `date`         DATE NOT NULL,
+               dist_km        INT UNSIGNED NOT NULL DEFAULT 0,
+               source_file_id INT UNSIGNED DEFAULT NULL,
+               UNIQUE KEY uq_vac (company_id, vehicle_id, `date`),
+               KEY idx_vac_vid_date (vehicle_id, `date`)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        );
+    } catch (\Throwable $e) {
+        error_log('backfillVehicleActivityCalendar: ensure table error for vehicle ' . $vehicleId . ': ' . $e->getMessage());
+    }
+
+    // Re-parse vehicle DDD files that still have no ddd_activity_days rows.
+    try {
+        $missingStmt = $db->prepare(
+            "SELECT f.* FROM ddd_files f
+             WHERE f.company_id=? AND f.vehicle_id=?
+               AND f.file_type='vehicle' AND f.is_deleted=0
+               AND NOT EXISTS (
+                   SELECT 1 FROM ddd_activity_days d WHERE d.file_id = f.id
+               )"
+        );
+        $missingStmt->execute([$companyId, $vehicleId]);
+        $missingFiles = $missingStmt->fetchAll();
+
+        if ($missingFiles) {
+            $insDay = $db->prepare(
+                'INSERT IGNORE INTO ddd_activity_days (file_id, date, dist_km)
+                 VALUES (?,?,?)'
+            );
+            foreach ($missingFiles as $fRow) {
+                $fp = dddPhysPath($fRow, $companyId);
+                if (!is_file($fp)) continue;
+                $parsed = parseVehicleDdd($fp);
+                $days   = $parsed['days'] ?? [];
+                if (empty($days)) continue;
+
+                foreach ($days as $day) {
+                    if (empty($day['date'])) continue;
+                    $insDay->execute([
+                        $fRow['id'],
+                        $day['date'],
+                        (int)($day['km'] ?? 0),
+                    ]);
+                }
+
+                $freshDates = array_column($days, 'date');
+                sort($freshDates);
+                $db->prepare('UPDATE ddd_files SET period_start=?, period_end=? WHERE id=?')
+                   ->execute([$freshDates[0], end($freshDates), $fRow['id']]);
+            }
+        }
+    } catch (\Throwable $e) {
+        error_log('backfillVehicleActivityCalendar: re-parse error for vehicle ' . $vehicleId . ': ' . $e->getMessage());
+    }
+
+    // Count available source rows.
+    $countStmt = $db->prepare(
+        "SELECT COUNT(*) FROM ddd_activity_days d
+         JOIN ddd_files f ON f.id = d.file_id
+         WHERE f.company_id=? AND f.vehicle_id=?
+           AND f.file_type='vehicle' AND f.is_deleted=0"
+    );
+    $countStmt->execute([$companyId, $vehicleId]);
+    if ((int)$countStmt->fetchColumn() === 0) return 0;
+
+    // Upsert rows into the continuous vehicle calendar.
+    try {
+        $db->prepare(
+            "INSERT INTO vehicle_activity_calendar
+               (company_id, vehicle_id, `date`, dist_km, source_file_id)
+             SELECT company_id, vehicle_id, `date`, dist_km, source_file_id
+             FROM (
+               SELECT f.company_id, f.vehicle_id, d.`date`,
+                      d.dist_km, d.file_id AS source_file_id
+               FROM ddd_activity_days d
+               JOIN ddd_files f ON f.id = d.file_id
+               WHERE f.company_id=? AND f.vehicle_id=?
+                 AND f.file_type='vehicle' AND f.is_deleted=0
+             ) AS nr
+             ON DUPLICATE KEY UPDATE
+               dist_km        = GREATEST(dist_km, nr.dist_km),
+               source_file_id = IF(nr.dist_km > dist_km, nr.source_file_id, source_file_id)"
+        )->execute([$companyId, $vehicleId]);
+    } catch (\Throwable $e) {
+        error_log('backfillVehicleActivityCalendar: INSERT error for vehicle ' . $vehicleId . ': ' . $e->getMessage());
+    }
+
+    $check = $db->prepare(
+        'SELECT COUNT(*) FROM vehicle_activity_calendar WHERE company_id=? AND vehicle_id=?'
+    );
+    $check->execute([$companyId, $vehicleId]);
+    return (int)$check->fetchColumn();
+}
+
+/**
  * Comprehensive driver-card DDD parser.
  *
  * Combines all per-record and structured parsers into one unified analysis
