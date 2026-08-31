@@ -65,6 +65,8 @@ $driverInfo = null;
 $driverFiles = [];
 $dataDateMin = null;
 $dataDateMax = null;
+$crossingsDetected = 0;
+$crossingsShown    = 0;
 $dateFrom    = date('Y-m-01');
 $dateTo      = date('Y-m-t');
 
@@ -394,6 +396,40 @@ if ($driverId && $driverInfo && $dataDateMin) {
 }
 $filteredChartDays = $chartDays; // used for violations/summary tabs (respects date filter)
 
+if ($driverId && $driverInfo) {
+    $crossingsShown = 0;
+    foreach ($calDays as $d) {
+        $crossings = $d['crossings'] ?? [];
+        if (is_array($crossings)) {
+            $crossingsShown += count($crossings);
+        }
+    }
+
+    try {
+        $detStmt = $db->prepare(
+            'SELECT d.date, d.border_crossings
+             FROM ddd_activity_days d
+             JOIN ddd_files f ON f.id=d.file_id
+             WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
+               AND d.date BETWEEN ? AND ?'
+        );
+        $detStmt->execute([$companyId, $driverId, $dateFrom, $dateTo]);
+        $detectedByDate = [];
+        foreach ($detStmt->fetchAll() as $dr) {
+            $parsed = json_decode((string)($dr['border_crossings'] ?? '[]'), true);
+            $cnt = is_array($parsed) ? count($parsed) : 0;
+            $dKey = (string)($dr['date'] ?? '');
+            if ($dKey === '') continue;
+            if (!isset($detectedByDate[$dKey]) || $cnt > $detectedByDate[$dKey]) {
+                $detectedByDate[$dKey] = $cnt;
+            }
+        }
+        $crossingsDetected = array_sum($detectedByDate);
+    } catch (Throwable $detErr) {
+        error_log('driver_calendar: crossings debug query error: ' . $detErr->getMessage());
+    }
+}
+
 // ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
 {
@@ -676,6 +712,13 @@ include __DIR__ . '/../../templates/header.php';
       </div>
 
       <div class="tp-card-body">
+        <?php if ($driverInfo): ?>
+        <div class="d-flex justify-content-end mb-2">
+          <span class="badge text-bg-light border">
+            crossings detected / shown: <?= (int)$crossingsDetected ?> / <?= (int)$crossingsShown ?>
+          </span>
+        </div>
+        <?php endif; ?>
 
         <?php if (empty($calDays) && !in_array($activeTab, ['files', 'pojazdy', 'timeline'], true)): ?>
         <!-- No data state -->
