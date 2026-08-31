@@ -67,6 +67,10 @@ $dataDateMin = null;
 $dataDateMax = null;
 $crossingsDetected = 0;
 $crossingsShown    = 0;
+$selectedCrossingsByDate = [];
+$timelineCrossingsByDate = [];
+$timelineDateFrom = null;
+$timelineDateTo   = null;
 $dateFrom    = date('Y-m-01');
 $dateTo      = date('Y-m-t');
 
@@ -81,6 +85,12 @@ if ($driverId) {
             backfillDriverActivityCalendar($db, $companyId, $driverId);
         } catch (Throwable $bfErr) {
             error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
+        }
+        try {
+            $forceCrossingsRebuild = isset($_GET['rebuild_crossings']) && $_GET['rebuild_crossings'] === '1';
+            rebuildDriverBorderCrossings($db, $companyId, $driverId, $forceCrossingsRebuild);
+        } catch (Throwable $bcErr) {
+            error_log('driver_calendar: crossings rebuild error for driver ' . $driverId . ': ' . $bcErr->getMessage());
         }
 
         // Detect actual data range for this driver
@@ -143,11 +153,11 @@ if ($driverId) {
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $defaultTo;
         if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 
-        // Re-parse border crossings for stale/null rows
+        // Load selected activity range for calendar/summary.
         try {
             $rows = $db->prepare(
                 'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km,
-                        violations, segments, border_crossings, source_file_id
+                        violations, segments, source_file_id
                  FROM driver_activity_calendar
                  WHERE driver_id=? AND date BETWEEN ? AND ?
                  ORDER BY date ASC'
@@ -155,63 +165,9 @@ if ($driverId) {
             $rows->execute([$driverId, $dateFrom, $dateTo]);
             $rawRows = $rows->fetchAll();
 
-            $needsReparse = [];
-            foreach ($rawRows as $r) {
-                $bc = $r['border_crossings'];
-                if ($bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false' || $bc === '0') {
-                    $fid = (int)($r['source_file_id'] ?? 0);
-                    if ($fid) $needsReparse[$fid][$r['date']] = true;
-                }
-            }
-
-            $reparsedByFile = [];
-            if ($needsReparse) {
-                $fileStmt = $db->prepare(
-                    "SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0"
-                );
-                foreach (array_keys($needsReparse) as $fid) {
-                    $fileStmt->execute([$fid, $companyId]);
-                    $fRow = $fileStmt->fetch();
-                    if (!$fRow) continue;
-                    $fp = dddPhysPath($fRow, $companyId);
-                    if (!is_file($fp)) continue;
-                    $rawData = file_get_contents($fp);
-                    if ($rawData === false) continue;
-                    $reparseDates = array_keys($needsReparse[$fid]);
-                    $reYears = array_filter(
-                        array_map(fn($d) => (int)substr($d, 0, 4), $reparseDates),
-                        fn($y) => $y >= 1990
-                    );
-                    if ($reYears) {
-                        $reYrMin = max(1990, max(min($reYears) - 1, max($reYears) - 2));
-                        $reYrMax = max($reYears) + 1;
-                    } else {
-                        $cy      = (int)gmdate('Y');
-                        $reYrMin = $cy - 5;
-                        $reYrMax = $cy + 1;
-                    }
-                    $crossingsForFile = parseBorderCrossings($rawData, $reYrMin, $reYrMax);
-                    $reparsedByFile[$fid] = $crossingsForFile;
-                    $updDays = $db->prepare('UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?');
-                    $updCal  = $db->prepare('UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?');
-                    foreach (array_keys($needsReparse[$fid]) as $d) {
-                        $crs     = $crossingsForFile[$d] ?? false;
-                        $newJson = $crs !== false ? json_encode($crs) : json_encode(0);
-                        $updDays->execute([$newJson, $fid, $d]);
-                        $updCal->execute([$crs !== false ? json_encode($crs) : null, $driverId, $d]);
-                    }
-                }
-            }
-
             foreach ($rawRows as $row) {
                 $viols    = json_decode($row['violations']       ?? '[]', true) ?: [];
                 $segs     = json_decode($row['segments']         ?? '[]', true) ?: [];
-                $crossings= json_decode($row['border_crossings'] ?? '[]', true) ?: [];
-                if (is_int($crossings)) $crossings = [];
-                $fid = (int)($row['source_file_id'] ?? 0);
-                if (empty($crossings) && $fid && isset($reparsedByFile[$fid][$row['date']])) {
-                    $crossings = $reparsedByFile[$fid][$row['date']];
-                }
                 $calDays[$row['date']] = [
                     'date'      => $row['date'],
                     'drive'     => (int)$row['drive_min'],
@@ -220,7 +176,7 @@ if ($driverId) {
                     'rest'      => (int)$row['rest_min'],
                     'dist'      => (int)$row['dist_km'],
                     'segs'      => $segs,
-                    'crossings' => $crossings,
+                    'crossings' => [],
                     'viol'      => $viols,
                     'file_id'   => $row['source_file_id'],
                 ];
@@ -230,7 +186,7 @@ if ($driverId) {
                 $summary['avail'] += (int)$row['avail_min'];
                 $summary['dist']  += (int)$row['dist_km'];
                 $summary['violations'] += count($viols);
-                $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => $crossings];
+                $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => []];
 
                 // Collect all violations with date for violations tab
                 foreach ($viols as $v) {
@@ -248,8 +204,6 @@ if ($driverId) {
                 foreach ($rawRows2 as $row) {
                     $viols    = json_decode($row['violations']       ?? '[]', true) ?: [];
                     $segs     = json_decode($row['segments']         ?? '[]', true) ?: [];
-                    $crossings= json_decode($row['border_crossings'] ?? '[]', true) ?: [];
-                    if (is_int($crossings)) $crossings = [];
                     $calDays[$row['date']] = [
                         'date'      => $row['date'],
                         'drive'     => (int)$row['drive_min'],
@@ -258,7 +212,7 @@ if ($driverId) {
                         'rest'      => (int)$row['rest_min'],
                         'dist'      => (int)$row['dist_km'],
                         'segs'      => $segs,
-                        'crossings' => $crossings,
+                        'crossings' => [],
                         'viol'      => $viols,
                         'file_id'   => $row['source_file_id'],
                     ];
@@ -284,7 +238,7 @@ if ($driverId) {
             try {
                 $rawStmt = $db->prepare(
                     'SELECT d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min,
-                            d.dist_km, d.violations, d.segments, d.border_crossings, d.file_id AS source_file_id
+                            d.dist_km, d.violations, d.segments, d.file_id AS source_file_id
                      FROM ddd_activity_days d
                      JOIN ddd_files f ON f.id=d.file_id
                      WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
@@ -295,8 +249,6 @@ if ($driverId) {
                 foreach ($rawStmt->fetchAll() as $row) {
                     $viols     = json_decode($row['violations']       ?? '[]', true) ?: [];
                     $segs      = json_decode($row['segments']         ?? '[]', true) ?: [];
-                    $crossings = json_decode($row['border_crossings'] ?? '[]', true) ?: [];
-                    if (is_int($crossings)) $crossings = [];
                     $calDays[$row['date']] = [
                         'date'      => $row['date'],
                         'drive'     => (int)$row['drive_min'],
@@ -305,7 +257,7 @@ if ($driverId) {
                         'rest'      => (int)$row['rest_min'],
                         'dist'      => (int)$row['dist_km'],
                         'segs'      => $segs,
-                        'crossings' => $crossings,
+                        'crossings' => [],
                         'viol'      => $viols,
                         'file_id'   => $row['source_file_id'],
                     ];
@@ -315,7 +267,7 @@ if ($driverId) {
                     $summary['avail'] += (int)$row['avail_min'];
                     $summary['dist']  += (int)$row['dist_km'];
                     $summary['violations'] += count($viols);
-                    $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => $crossings];
+                    $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => []];
                     foreach ($viols as $v) {
                         $violations[] = array_merge($v, ['date' => $row['date']]);
                     }
@@ -363,29 +315,29 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
 // ── The timeline always shows all available data (independent of calendar date filter) ──
 // Load chart days for the full available data range for timeline tab.
 $timelineChartDays = $chartDays; // fallback: same as calendar range
+$timelineDateFrom = $dateFrom;
+$timelineDateTo   = $dateTo;
 if ($driverId && $driverInfo && $dataDateMin) {
     try {
-        $tlDateFrom = $dataDateMin;
-        $tlDateTo   = $dataDateMax ?? date('Y-m-d');
+        $timelineDateFrom = $dataDateMin;
+        $timelineDateTo   = $dataDateMax ?? date('Y-m-d');
         // Only load separate timeline data if it differs from current calendar range
-        if ($tlDateFrom !== $dateFrom || $tlDateTo !== $dateTo) {
+        if ($timelineDateFrom !== $dateFrom || $timelineDateTo !== $dateTo) {
             $tlStmt = $db->prepare(
-                'SELECT date, segments, dist_km, border_crossings
+                'SELECT date, segments, dist_km
                  FROM driver_activity_calendar
                  WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
                  ORDER BY date ASC'
             );
-            $tlStmt->execute([$companyId, $driverId, $tlDateFrom, $tlDateTo]);
+            $tlStmt->execute([$companyId, $driverId, $timelineDateFrom, $timelineDateTo]);
             $timelineChartDays = [];
             foreach ($tlStmt->fetchAll() as $tlRow) {
-                $tlSegs     = json_decode($tlRow['segments']         ?? '[]', true) ?: [];
-                $tlCrossings= json_decode($tlRow['border_crossings'] ?? '[]', true) ?: [];
-                if (is_int($tlCrossings)) $tlCrossings = [];
+                $tlSegs = json_decode($tlRow['segments'] ?? '[]', true) ?: [];
                 $timelineChartDays[] = [
                     'date'      => $tlRow['date'],
                     'segs'      => $tlSegs,
                     'dist'      => (int)$tlRow['dist_km'],
-                    'crossings' => $tlCrossings,
+                    'crossings' => [],
                 ];
             }
         }
@@ -397,6 +349,43 @@ if ($driverId && $driverInfo && $dataDateMin) {
 $filteredChartDays = $chartDays; // used for violations/summary tabs (respects date filter)
 
 if ($driverId && $driverInfo) {
+    try {
+        $selectedCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $dateFrom, $dateTo);
+        $timelineCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $timelineDateFrom, $timelineDateTo);
+    } catch (Throwable $bcLoadErr) {
+        error_log('driver_calendar: crossings load error for driver ' . $driverId . ': ' . $bcLoadErr->getMessage());
+        $selectedCrossingsByDate = [];
+        $timelineCrossingsByDate = [];
+    }
+
+    foreach ($calDays as $dKey => $day) {
+        $calDays[$dKey]['crossings'] = $selectedCrossingsByDate[$dKey] ?? [];
+    }
+    foreach ($chartDays as $i => $day) {
+        $dKey = (string)($day['date'] ?? '');
+        $chartDays[$i]['crossings'] = $selectedCrossingsByDate[$dKey] ?? [];
+    }
+    $filteredChartDays = $chartDays;
+
+    foreach ($timelineChartDays as $i => $day) {
+        $dKey = (string)($day['date'] ?? '');
+        $timelineChartDays[$i]['crossings'] = $timelineCrossingsByDate[$dKey] ?? [];
+    }
+    $timelineDates = [];
+    foreach ($timelineChartDays as $day) {
+        if (!empty($day['date'])) $timelineDates[(string)$day['date']] = true;
+    }
+    foreach ($timelineCrossingsByDate as $dKey => $crosses) {
+        if (isset($timelineDates[$dKey])) continue;
+        $timelineChartDays[] = [
+            'date'      => $dKey,
+            'segs'      => [],
+            'dist'      => 0,
+            'crossings' => $crosses,
+        ];
+    }
+    usort($timelineChartDays, static fn($a, $b) => strcmp((string)$a['date'], (string)$b['date']));
+
     $crossingsShown = 0;
     foreach ($calDays as $d) {
         $crossings = $d['crossings'] ?? [];
@@ -407,24 +396,13 @@ if ($driverId && $driverInfo) {
 
     try {
         $detStmt = $db->prepare(
-            'SELECT d.date, d.border_crossings
-             FROM ddd_activity_days d
-             JOIN ddd_files f ON f.id=d.file_id
-             WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
-               AND d.date BETWEEN ? AND ?'
+            'SELECT COUNT(*)
+             FROM driver_border_crossings
+             WHERE company_id=? AND driver_id=?
+               AND crossing_date BETWEEN ? AND ?'
         );
         $detStmt->execute([$companyId, $driverId, $dateFrom, $dateTo]);
-        $detectedByDate = [];
-        foreach ($detStmt->fetchAll() as $dr) {
-            $parsed = json_decode((string)($dr['border_crossings'] ?? '[]'), true);
-            $cnt = is_array($parsed) ? count($parsed) : 0;
-            $dKey = (string)($dr['date'] ?? '');
-            if ($dKey === '') continue;
-            if (!isset($detectedByDate[$dKey]) || $cnt > $detectedByDate[$dKey]) {
-                $detectedByDate[$dKey] = $cnt;
-            }
-        }
-        $crossingsDetected = array_sum($detectedByDate);
+        $crossingsDetected = (int)$detStmt->fetchColumn();
     } catch (Throwable $detErr) {
         error_log('driver_calendar: crossings debug query error: ' . $detErr->getMessage());
     }
@@ -713,10 +691,14 @@ include __DIR__ . '/../../templates/header.php';
 
       <div class="tp-card-body">
         <?php if ($driverInfo): ?>
-        <div class="d-flex justify-content-end mb-2">
+        <div class="d-flex justify-content-end align-items-center gap-2 mb-2">
           <span class="badge text-bg-light border">
             crossings detected / shown: <?= (int)$crossingsDetected ?> / <?= (int)$crossingsShown ?>
           </span>
+          <a class="btn btn-sm btn-outline-secondary"
+             href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom) ?>&to=<?= e($dateTo) ?>&tab=<?= e($activeTab) ?>&rebuild_crossings=1">
+            Rebuild crossings
+          </a>
         </div>
         <?php endif; ?>
 

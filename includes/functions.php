@@ -2171,6 +2171,188 @@ function upsertDriverActivityCalendarDay(
 }
 
 /**
+ * Ensure dedicated driver border-crossings table exists.
+ */
+function ensureDriverBorderCrossingsTable(\PDO $db): void
+{
+    static $done = false;
+    if ($done) return;
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS `driver_border_crossings` (
+           `id`             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+           `company_id`     INT UNSIGNED NOT NULL,
+           `driver_id`      INT UNSIGNED NOT NULL,
+           `source_file_id` INT UNSIGNED NOT NULL,
+           `crossing_date`  DATE NOT NULL,
+           `crossing_tmin`  SMALLINT UNSIGNED NOT NULL,
+           `crossing_ts`    INT UNSIGNED DEFAULT NULL,
+           `crossing_type`  TINYINT UNSIGNED NOT NULL DEFAULT 2,
+           `country_code`   VARCHAR(8) NOT NULL,
+           `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           UNIQUE KEY `uq_driver_crossing`
+             (`company_id`,`driver_id`,`crossing_date`,`crossing_tmin`,`crossing_type`,`country_code`),
+           KEY `idx_driver_date` (`driver_id`,`crossing_date`),
+           KEY `idx_file` (`source_file_id`),
+           CONSTRAINT `fk_dbc_company` FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
+           CONSTRAINT `fk_dbc_driver`  FOREIGN KEY (`driver_id`) REFERENCES `drivers`(`id`) ON DELETE CASCADE,
+           CONSTRAINT `fk_dbc_file`    FOREIGN KEY (`source_file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $done = true;
+}
+
+/**
+ * Replace crossing events for one driver file in dedicated crossings table.
+ *
+ * @param array<string, array<int, array<string,mixed>>> $crossingsByDate
+ * @return int inserted row count
+ */
+function syncDriverBorderCrossingsForFile(
+    \PDO $db,
+    int $companyId,
+    int $driverId,
+    int $sourceFileId,
+    array $crossingsByDate
+): int {
+    if ($driverId <= 0 || $sourceFileId <= 0) return 0;
+    ensureDriverBorderCrossingsTable($db);
+
+    $db->prepare(
+        'DELETE FROM driver_border_crossings
+         WHERE company_id=? AND driver_id=? AND source_file_id=?'
+    )->execute([$companyId, $driverId, $sourceFileId]);
+
+    $ins = $db->prepare(
+        'INSERT IGNORE INTO driver_border_crossings
+           (company_id, driver_id, source_file_id, crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code)
+         VALUES (?,?,?,?,?,?,?,?)'
+    );
+
+    $inserted = 0;
+    foreach ($crossingsByDate as $date => $rows) {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$date) || !is_array($rows)) continue;
+        foreach ($rows as $cr) {
+            if (!is_array($cr)) continue;
+            $tmin = isset($cr['tmin']) ? (int)$cr['tmin'] : -1;
+            if ($tmin < 0 || $tmin > 1439) {
+                if (isset($cr['ts']) && is_numeric($cr['ts'])) {
+                    $tmin = (int)gmdate('H', (int)$cr['ts']) * 60 + (int)gmdate('i', (int)$cr['ts']);
+                }
+            }
+            if ($tmin < 0 || $tmin > 1439) continue;
+            $type = isset($cr['type']) ? (int)$cr['type'] : 2;
+            if ($type < 0 || $type > 2) $type = 2;
+            $country = strtoupper(trim((string)($cr['country'] ?? '')));
+            if ($country === '' || strlen($country) > 8) continue;
+            $ts = (isset($cr['ts']) && is_numeric($cr['ts'])) ? (int)$cr['ts'] : null;
+
+            $ins->execute([
+                $companyId,
+                $driverId,
+                $sourceFileId,
+                $date,
+                $tmin,
+                $ts,
+                $type,
+                $country,
+            ]);
+            $inserted += $ins->rowCount() > 0 ? 1 : 0;
+        }
+    }
+    return $inserted;
+}
+
+/**
+ * Rebuild dedicated crossing events store for one driver from uploaded files.
+ *
+ * @return int total rows now present for driver
+ */
+function rebuildDriverBorderCrossings(\PDO $db, int $companyId, int $driverId, bool $force = false): int
+{
+    if ($driverId <= 0) return 0;
+    ensureDriverBorderCrossingsTable($db);
+
+    $filesStmt = $db->prepare(
+        "SELECT f.id, f.stored_name, f.stored_subdir, f.period_start, f.period_end, f.download_date
+         FROM ddd_files f
+         WHERE f.company_id=? AND f.driver_id=? AND f.file_type='driver' AND f.is_deleted=0
+         ORDER BY f.download_date DESC, f.id DESC"
+    );
+    $filesStmt->execute([$companyId, $driverId]);
+    $files = $filesStmt->fetchAll(\PDO::FETCH_ASSOC);
+    if (!$files) return 0;
+
+    $hasRowsStmt = $db->prepare('SELECT 1 FROM driver_border_crossings WHERE source_file_id=? LIMIT 1');
+    foreach ($files as $fRow) {
+        $fileId = (int)($fRow['id'] ?? 0);
+        if ($fileId <= 0) continue;
+        if (!$force) {
+            $hasRowsStmt->execute([$fileId]);
+            if ($hasRowsStmt->fetchColumn()) continue;
+        }
+        $fp = dddPhysPath($fRow, $companyId);
+        if (!is_file($fp)) continue;
+        $raw = file_get_contents($fp);
+        if ($raw === false) continue;
+
+        $years = [];
+        foreach ([(string)($fRow['period_start'] ?? ''), (string)($fRow['period_end'] ?? ''), (string)($fRow['download_date'] ?? '')] as $d) {
+            if (preg_match('/^(\d{4})-\d{2}-\d{2}$/', $d, $m)) $years[] = (int)$m[1];
+        }
+        if ($years) {
+            $yearMin = max(1990, min($years) - 1);
+            $yearMax = max($years) + 1;
+        } else {
+            $cy = (int)gmdate('Y');
+            $yearMin = $cy - 5;
+            $yearMax = $cy + 1;
+        }
+        $crossings = parseBorderCrossings($raw, $yearMin, $yearMax);
+        syncDriverBorderCrossingsForFile($db, $companyId, $driverId, $fileId, $crossings);
+    }
+
+    $cnt = $db->prepare('SELECT COUNT(*) FROM driver_border_crossings WHERE company_id=? AND driver_id=?');
+    $cnt->execute([$companyId, $driverId]);
+    return (int)$cnt->fetchColumn();
+}
+
+/**
+ * Return crossings grouped by date for timeline rendering.
+ *
+ * @return array<string, array<int, array{ts:int|null,tmin:int,type:int,country:string}>>
+ */
+function getDriverBorderCrossingsByDateRange(
+    \PDO $db,
+    int $companyId,
+    int $driverId,
+    string $fromDate,
+    string $toDate
+): array {
+    if ($driverId <= 0) return [];
+    ensureDriverBorderCrossingsTable($db);
+
+    $stmt = $db->prepare(
+        "SELECT crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code
+         FROM driver_border_crossings
+         WHERE company_id=? AND driver_id=?
+           AND crossing_date BETWEEN ? AND ?
+         ORDER BY crossing_date ASC, crossing_tmin ASC, id ASC"
+    );
+    $stmt->execute([$companyId, $driverId, $fromDate, $toDate]);
+    $out = [];
+    foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+        $d = (string)$r['crossing_date'];
+        $out[$d][] = [
+            'ts'      => isset($r['crossing_ts']) ? (int)$r['crossing_ts'] : null,
+            'tmin'    => (int)$r['crossing_tmin'],
+            'type'    => (int)$r['crossing_type'],
+            'country' => (string)$r['country_code'],
+        ];
+    }
+    return $out;
+}
+
+/**
  * Backfill driver_activity_calendar for a specific driver by copying data
  * from ddd_activity_days (joined with ddd_files).  Runs on every page load
  * so newly uploaded DDD files are automatically reflected in the calendar.
@@ -2333,6 +2515,13 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
         } catch (\Throwable $e) {
             error_log('backfillDriverActivityCalendar: fallback row-upsert error for driver ' . $driverId . ': ' . $e->getMessage());
         }
+    }
+
+    // Ensure dedicated crossings store is gradually rebuilt for historical files.
+    try {
+        rebuildDriverBorderCrossings($db, $companyId, $driverId, false);
+    } catch (\Throwable $e) {
+        error_log('backfillDriverActivityCalendar: crossings rebuild error for driver ' . $driverId . ': ' . $e->getMessage());
     }
 
     // Return the number of rows now in the calendar for this driver

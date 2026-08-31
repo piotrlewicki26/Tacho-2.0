@@ -160,7 +160,7 @@ if ($action === 'profile' && $editDriver) {
         $chartTo       = $chartAnchor->format('Y-m-d');
 
         $chartStmt = $db->prepare(
-            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings, source_file_id
+            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
              FROM driver_activity_calendar
              WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
              ORDER BY date'
@@ -170,7 +170,7 @@ if ($action === 'profile' && $editDriver) {
         if (empty($chartRows)) {
             $chartStmtRaw = $db->prepare(
                 'SELECT d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min, d.dist_km,
-                        d.violations, d.segments, d.border_crossings, d.file_id AS source_file_id
+                        d.violations, d.segments
                  FROM ddd_activity_days d
                  JOIN ddd_files f ON f.id=d.file_id
                  WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
@@ -180,60 +180,18 @@ if ($action === 'profile' && $editDriver) {
             $chartStmtRaw->execute([$companyId, $driverId, $chartFrom, $chartTo]);
             $chartRows = $chartStmtRaw->fetchAll();
         }
-
-        // Re-parse border_crossings for stale/null rows (same logic as driver_calendar/index.php)
-        $needsReparse = [];
-        foreach ($chartRows as $cr) {
-            $bc = $cr['border_crossings'];
-            if ($bc === null || $bc === '[]' || $bc === 'null' || $bc === 'false' || $bc === '0') {
-                $fid = (int)($cr['source_file_id'] ?? 0);
-                if ($fid) $needsReparse[$fid][$cr['date']] = true;
-            }
-        }
-        $reparsedByFile = [];
-        if ($needsReparse) {
-            $fileStmt = $db->prepare("SELECT * FROM ddd_files WHERE id=? AND company_id=? AND is_deleted=0");
-            foreach (array_keys($needsReparse) as $fid) {
-                $fileStmt->execute([$fid, $companyId]);
-                $fRow = $fileStmt->fetch();
-                if (!$fRow) continue;
-                $fp = dddPhysPath($fRow, $companyId);
-                if (!is_file($fp)) continue;
-                $rawData = file_get_contents($fp);
-                if ($rawData === false) continue;
-                $reparseDates = array_keys($needsReparse[$fid]);
-                $reYears = array_filter(
-                    array_map(fn($d) => (int)substr($d, 0, 4), $reparseDates),
-                    fn($y) => $y >= 1990
-                );
-                if ($reYears) {
-                    $reYearMin = max(1990, max(min($reYears) - 1, max($reYears) - 2));
-                    $reYearMax = max($reYears) + 1;
-                } else {
-                    $curY = (int)gmdate('Y');
-                    $reYearMin = $curY - 5; $reYearMax = $curY + 1;
-                }
-                $crs = parseBorderCrossings($rawData, $reYearMin, $reYearMax);
-                $updDays = $db->prepare('UPDATE ddd_activity_days SET border_crossings=? WHERE file_id=? AND date=?');
-                $updCal  = $db->prepare('UPDATE driver_activity_calendar SET border_crossings=? WHERE driver_id=? AND date=?');
-                foreach ($reparseDates as $d) {
-                    $newJson = !empty($crs) ? json_encode($crs) : json_encode(0);
-                    $updDays->execute([$newJson, $fid, $d]);
-                    $updCal->execute([$newJson, $driverId, $d]);
-                    $reparsedByFile[$fid][$d] = $crs ?: [];
-                }
-            }
-        }
+        $profileCrossingsByDate = getDriverBorderCrossingsByDateRange(
+            $db,
+            $companyId,
+            $driverId,
+            $chartFrom,
+            $chartTo
+        );
 
         foreach ($chartRows as $cr) {
-            $crossings = json_decode($cr['border_crossings'] ?? '[]', true) ?: [];
-            if (is_int($crossings)) $crossings = [];
-            $fid = (int)($cr['source_file_id'] ?? 0);
-            if (empty($crossings) && $fid && isset($reparsedByFile[$fid][$cr['date']])) {
-                $crossings = $reparsedByFile[$fid][$cr['date']];
-            }
+            $dKey = (string)$cr['date'];
             $profileChartDays[] = [
-                'date'      => $cr['date'],
+                'date'      => $dKey,
                 'segs'      => json_decode($cr['segments']  ?? '[]', true) ?: [],
                 'drive'     => (int)$cr['drive_min'],
                 'work'      => (int)$cr['work_min'],
@@ -241,9 +199,28 @@ if ($action === 'profile' && $editDriver) {
                 'rest'      => (int)$cr['rest_min'],
                 'dist'      => (int)$cr['dist_km'],
                 'viol'      => json_decode($cr['violations'] ?? '[]', true) ?: [],
+                'crossings' => $profileCrossingsByDate[$dKey] ?? [],
+            ];
+        }
+        $profileDates = [];
+        foreach ($profileChartDays as $day) {
+            if (!empty($day['date'])) $profileDates[(string)$day['date']] = true;
+        }
+        foreach ($profileCrossingsByDate as $dKey => $crossings) {
+            if (isset($profileDates[$dKey])) continue;
+            $profileChartDays[] = [
+                'date'      => $dKey,
+                'segs'      => [],
+                'drive'     => 0,
+                'work'      => 0,
+                'avail'     => 0,
+                'rest'      => 0,
+                'dist'      => 0,
+                'viol'      => [],
                 'crossings' => $crossings,
             ];
         }
+        usort($profileChartDays, static fn($a, $b) => strcmp((string)$a['date'], (string)$b['date']));
     } catch (Throwable $chartErr) {
         error_log('drivers.php profile chart: ' . $chartErr->getMessage());
     }

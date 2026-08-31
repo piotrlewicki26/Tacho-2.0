@@ -617,6 +617,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                      * (WHERE border_crossings IS NULL filter).  Days with no
                      * crossings receive the '0' sentinel (confirmed empty by the
                      * current parser). */
+                    $uploadedBC = [];
                     $rawDataForBC = file_get_contents($destPath);
                     if ($rawDataForBC !== false) {
                         $bcYrs = array_filter(
@@ -624,21 +625,35 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             fn($y) => $y >= 1990
                         );
                         if ($bcYrs) {
-                            $bcMin      = max(1990, max(min($bcYrs) - 1, max($bcYrs) - 2));
-                            $bcMax      = max($bcYrs) + 1;
-                            $uploadedBC = parseBorderCrossings($rawDataForBC, $bcMin, $bcMax);
-                            $updBC      = $db->prepare(
-                                'UPDATE ddd_activity_days SET border_crossings=?
-                                  WHERE file_id=? AND date=? AND border_crossings IS NULL'
-                            );
-                            foreach ($actResult['days'] as $day) {
-                                $crs     = $uploadedBC[$day['date']] ?? false;
-                                $newJson = ($crs !== false && !empty($crs))
-                                           ? json_encode($crs)
-                                           : json_encode(0);
-                                $updBC->execute([$newJson, $newFileId, $day['date']]);
-                            }
+                            $bcMin = max(1990, max(min($bcYrs) - 1, max($bcYrs) - 2));
+                            $bcMax = max($bcYrs) + 1;
+                        } else {
+                            $baseY = (int)substr((string)($downloadDate ?: date('Y-m-d')), 0, 4);
+                            if ($baseY < 1990) $baseY = (int)date('Y');
+                            $bcMin = max(1990, $baseY - 5);
+                            $bcMax = $baseY + 1;
                         }
+                        $uploadedBC = parseBorderCrossings($rawDataForBC, $bcMin, $bcMax);
+                        $updBC      = $db->prepare(
+                            'UPDATE ddd_activity_days SET border_crossings=?
+                              WHERE file_id=? AND date=? AND border_crossings IS NULL'
+                        );
+                        foreach ($actResult['days'] as $day) {
+                            $crs     = $uploadedBC[$day['date']] ?? false;
+                            $newJson = ($crs !== false && !empty($crs))
+                                       ? json_encode($crs)
+                                       : json_encode(0);
+                            $updBC->execute([$newJson, $newFileId, $day['date']]);
+                        }
+                    }
+                    if ($linkedDriverId) {
+                        syncDriverBorderCrossingsForFile(
+                            $db,
+                            $companyId,
+                            (int)$linkedDriverId,
+                            $newFileId,
+                            $uploadedBC
+                        );
                     }
 
                     /* ── Upsert into driver_activity_calendar ──────────────────
