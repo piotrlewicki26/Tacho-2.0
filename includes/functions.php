@@ -986,7 +986,7 @@ function parseDddFile(string $path): array {
          * records from outlier years (e.g. 2024 in a 2026-era card) are present,
          * causing parseBorderCrossings to match stale timestamps in non-place data
          * blocks and return false-positive crossings or miss the real ones. */
-        $bcYrMin   = max(1990, max(min($actYears) - 1, max($actYears) - 2));
+        $bcYrMin   = max(1990, max(min($actYears) - 1, max($actYears) - 3));
         $bcYrMax   = max($actYears) + 1;
     } else {
         $bcYrMin = $yrMin;
@@ -1125,6 +1125,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
              * TLV body = noOfUsedPointerPlaces(1) + CardPointerPlaceRecord×N
              * Each CardPointerPlaceRecord = noOfUsedPlaceRecords(1) + PlaceRecord×10 */
             $m1found = false;
+            $m1best = [];
+            $m1bestScore = 0;
             foreach ($tryRecSizes as $recBytes) {
                 $ptrBytes = 1 + 10 * $recBytes;   /* CardPointerPlaceRecord size */
 
@@ -1222,22 +1224,27 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
 
                 if (!empty($found)) {
                     $score = array_sum(array_map('count', $found));
-                    if ($score > $bestScore) {
-                        $best      = $found;
-                        $bestScore = $score;
+                    if ($score > $m1bestScore) {
+                        $m1best = $found;
+                        $m1bestScore = $score;
                     }
                     $m1found = true;
-                    break; /* best recBytes found — skip remaining sizes */
                 }
             }
 
             if ($m1found) {
+                if ($m1bestScore > $bestScore) {
+                    $best      = $m1best;
+                    $bestScore = $m1bestScore;
+                }
                 continue; /* skip Method 2 for this block; move to next $i */
             }
 
             /* ── Method 2: linear fallback scan ────────────────────────────
              * Walk the TLV block stride-aligned looking for valid PlaceRecord
              * patterns when the structured parse found nothing. */
+            $m2best = [];
+            $m2bestScore = 0;
             foreach ($tryRecSizes as $recBytes) {
                 $found = [];
                 for ($rp = $base; $rp + $recBytes <= $base + $bl; $rp += $recBytes) {
@@ -1288,12 +1295,15 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
 
                 if (!empty($found)) {
                     $score = array_sum(array_map('count', $found));
-                    if ($score > $bestScore) {
-                        $best      = $found;
-                        $bestScore = $score;
+                    if ($score > $m2bestScore) {
+                        $m2best = $found;
+                        $m2bestScore = $score;
                     }
-                    break; /* best recBytes found — skip remaining sizes */
                 }
+            }
+            if ($m2bestScore > $bestScore) {
+                $best      = $m2best;
+                $bestScore = $m2bestScore;
             }
         }
     }

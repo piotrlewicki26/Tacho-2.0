@@ -628,7 +628,9 @@ include __DIR__ . '/../../templates/header.php';
 </div><!-- /.row summary -->
 
 <!-- ── Tabs (full-width) ───────────────────────────────────────── -->
-<div class="tp-card mb-3">
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="tp-card mb-0">
       <div class="tp-card-header p-0 border-bottom-0">
         <ul class="nav nav-tabs dc-tabs w-100 px-3 pt-2" role="tablist">
           <li class="nav-item" role="presentation">
@@ -1063,6 +1065,8 @@ include __DIR__ . '/../../templates/header.php';
 
       </div><!-- /.tp-card-body -->
     </div><!-- /.tp-card -->
+  </div>
+</div>
 <?php endif; // !$driverId / !$driverInfo / else ?>
 
 <style>
