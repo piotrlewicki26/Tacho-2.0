@@ -676,6 +676,27 @@ function parseDddFile(string $path): array {
             }
         }
     }
+    // Fallback for cards where EF_DriverActivityData sits in a non-standard 0x05xx TLV.
+    // If the known-tag block is missing or suspiciously small, pick the largest valid 0x05xx block.
+    if ($activityStart === null || $activityBestBl < 6000) {
+        $fbStart = $activityStart;
+        $fbEnd   = $activityEnd;
+        $fbBest  = $activityBestBl;
+        for ($i = 0; $i < $len - 4; $i++) {
+            if (ord($data[$i]) !== 0x05) continue;
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl >= 200 && $bl <= 300000 && $i + 4 + $bl <= $len && $bl > $fbBest) {
+                $fbBest  = $bl;
+                $fbStart = $i + 4;
+                $fbEnd   = $i + 4 + $bl;
+            }
+        }
+        if ($fbStart !== null && $fbBest > $activityBestBl) {
+            $activityBestBl = $fbBest;
+            $activityStart  = $fbStart;
+            $activityEnd    = $fbEnd;
+        }
+    }
 
     // ── Step 1: Collect candidate record headers ───────────────────────────────
     // Wide rolling window so older, valid card archives are still parsed.
@@ -2056,10 +2077,19 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
     try {
         $missingStmt = $db->prepare(
             "SELECT f.* FROM ddd_files f
+             LEFT JOIN (
+                 SELECT file_id, MAX(date) AS max_date
+                 FROM ddd_activity_days
+                 GROUP BY file_id
+             ) mx ON mx.file_id = f.id
              WHERE f.company_id=? AND f.driver_id=?
                AND f.file_type='driver' AND f.is_deleted=0
-               AND NOT EXISTS (
-                   SELECT 1 FROM ddd_activity_days d WHERE d.file_id = f.id
+               AND (
+                   mx.file_id IS NULL
+                   OR (
+                       f.download_date IS NOT NULL
+                       AND mx.max_date < DATE_SUB(f.download_date, INTERVAL 28 DAY)
+                   )
                )"
         );
         $missingStmt->execute([$companyId, $driverId]);
@@ -2078,6 +2108,7 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
                 $parseResult  = parseDddFile($fp);
                 $reparsedDays = $parseResult['days'] ?? [];
                 if (empty($reparsedDays)) continue;
+                $db->prepare('DELETE FROM ddd_activity_days WHERE file_id=?')->execute([$fRow['id']]);
                 foreach ($reparsedDays as $day) {
                     $insDay->execute([
                         $fRow['id'],
