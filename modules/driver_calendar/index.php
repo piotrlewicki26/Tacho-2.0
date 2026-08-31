@@ -702,10 +702,10 @@ include __DIR__ . '/../../templates/header.php';
 
         <!-- Legend -->
         <div class="d-flex flex-wrap gap-3 mb-3 small align-items-center">
-          <span><span class="dc-badge dc-drive"></span> Jazda</span>
-          <span><span class="dc-badge dc-work"></span> Praca</span>
-          <span><span class="dc-badge dc-avail"></span> Dyspozycyjność</span>
-          <span><span class="dc-badge dc-rest"></span> Odpoczynek</span>
+          <span><span class="dc-badge dc-drive"></span> 🛞 Jazda</span>
+          <span><span class="dc-badge dc-work"></span> ⚒ Praca</span>
+          <span><span class="dc-badge dc-avail"></span> □ Dyspozycyjność</span>
+          <span><span class="dc-badge dc-rest"></span> 🛏 Odpoczynek</span>
           <span><span class="dc-badge dc-viol"></span> Naruszenie</span>
           <span><span class="dc-badge dc-no-data"></span> Brak danych</span>
           <span class="ms-auto text-muted"><?= $workDays ?> dni aktywności · <?= count($calDays) ?> dni z danymi</span>
@@ -788,16 +788,16 @@ include __DIR__ . '/../../templates/header.php';
               <?php if ($day): ?>
               <div class="dc-sum">
                 <?php if ($day['drive'] > 0): $h=floor($day['drive']/60);$m=$day['drive']%60; ?>
-                <div class="dc-si"><span class="dc-si-dot dc-si-drive"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <div class="dc-si"><span class="dc-si-ico" title="Jazda">🛞</span><span class="dc-si-dot dc-si-drive"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
                 <?php endif; ?>
                 <?php if ($day['work'] > 0): $h=floor($day['work']/60);$m=$day['work']%60; ?>
-                <div class="dc-si"><span class="dc-si-dot dc-si-work"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <div class="dc-si"><span class="dc-si-ico" title="Praca">⚒</span><span class="dc-si-dot dc-si-work"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
                 <?php endif; ?>
                 <?php if ($day['rest'] > 0): $h=floor($day['rest']/60);$m=$day['rest']%60; ?>
-                <div class="dc-si"><span class="dc-si-dot dc-si-rest"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <div class="dc-si"><span class="dc-si-ico" title="Odpoczynek">🛏</span><span class="dc-si-dot dc-si-rest"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
                 <?php endif; ?>
                 <?php if ($day['avail'] > 0): $h=floor($day['avail']/60);$m=$day['avail']%60; ?>
-                <div class="dc-si"><span class="dc-si-dot dc-si-avail"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
+                <div class="dc-si"><span class="dc-si-ico" title="Dyspozycyjność">□</span><span class="dc-si-dot dc-si-avail"></span><?= $h ?>h<?= $m>0?' '.$m.'m':'' ?></div>
                 <?php endif; ?>
                 <?php if ($day['dist'] > 0): ?>
                 <div class="dc-si dc-si-km"><?= $day['dist'] ?>&nbsp;km</div>
@@ -1191,6 +1191,16 @@ include __DIR__ . '/../../templates/header.php';
   color: #374151;
   line-height: 1.35;
   white-space: nowrap;
+}
+.dc-si-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11px;
+  min-width: 11px;
+  font-size: 10px;
+  line-height: 1;
+  color: #334155;
 }
 .dc-si-dot {
   display: inline-block;

@@ -2033,6 +2033,49 @@
     legend.appendChild(stLg);
     container.appendChild(legend);
 
+    /* Detailed legend in the style of the reference image */
+    var details = document.createElement('div');
+    details.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px;padding:8px 10px;border:1px solid #E6EAF0;border-radius:6px;background:#fff;margin:0 0 8px;';
+    function lgSection(title, items) {
+      var col = document.createElement('div');
+      var h = document.createElement('div');
+      h.textContent = title;
+      h.style.cssText = 'font-size:12px;font-weight:700;color:#5A6070;margin:0 0 5px;';
+      col.appendChild(h);
+      items.forEach(function (it) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:#667085;line-height:1.35;margin:2px 0;';
+        row.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;min-width:14px;color:' + (it.color || '#475467') + ';font-weight:700;">' + it.icon + '</span><span>' + it.label + '</span>';
+        col.appendChild(row);
+      });
+      return col;
+    }
+    details.appendChild(lgSection('Aktywności', [
+      { icon: ACT_ICONS[0], label: 'Odpoczynek', color: ACT_STROKE[0] },
+      { icon: ACT_ICONS[3], label: 'Prowadzenie pojazdu', color: ACT_STROKE[3] },
+      { icon: ACT_ICONS[2], label: 'Praca', color: ACT_STROKE[2] },
+      { icon: ACT_ICONS[1], label: 'Dyspozycyjność', color: ACT_STROKE[1] },
+      { icon: '?', label: 'Nieznane okresy', color: '#6B7280' }
+    ]));
+    details.appendChild(lgSection('Zdarzenia', [
+      { icon: '+', label: 'Włożenie karty kierowcy', color: '#0369A1' },
+      { icon: '−', label: 'Wycofanie karty kierowcy', color: '#0369A1' },
+      { icon: '↔', label: 'Przekroczenie granicy', color: '#0F766E' },
+      { icon: '⛴', label: 'Przeprawa promowa/kolejowa', color: '#0F766E' }
+    ]));
+    details.appendChild(lgSection('Przekroczenia', [
+      { icon: '•', label: 'Drobne naruszenia', color: '#43A047' },
+      { icon: '▲', label: 'Poważne naruszenia', color: '#FF9800' },
+      { icon: '■', label: 'Bardzo poważne naruszenia', color: '#E53935' },
+      { icon: '✖', label: 'Najpoważniejsze naruszenia', color: '#B91C1C' }
+    ]));
+    details.appendChild(lgSection('Okresy odpoczynku', [
+      { icon: ACT_ICONS[0], label: 'Dzienny okres odpoczynku', color: '#0288D1' },
+      { icon: '◉', label: 'Tygodniowy odpoczynek', color: '#00838F' },
+      { icon: '⟳', label: 'Rekompensata', color: '#4A148C' }
+    ]));
+    container.appendChild(details);
+
     /* Chart header */
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
