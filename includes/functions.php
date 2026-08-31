@@ -660,45 +660,6 @@ function parseDddFile(string $path): array {
     $empty = ['days' => [], 'summary' => ['drive'=>0,'work'=>0,'rest'=>0,'avail'=>0,'violations'=>[]]];
 
     // ── Step 0: TLV-bounded scan for EF_DriverActivityData ───────────────────
-    // Search known EF_DriverActivityData TLV tags; take the largest valid block
-    // to use as the scan region for activity record headers (Step 1).
-    $activityStart = null;
-    $activityEnd   = null;
-    $activityBestBl = 0;
-    foreach ([[0x05, 0x05], [0x05, 0x03], [0x05, 0x0D]] as [$t0, $t1]) {
-        for ($i = 0; $i < $len - 4; $i++) {
-            if (ord($data[$i]) !== $t0 || ord($data[$i + 1]) !== $t1) continue;
-            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            if ($bl >= 200 && $bl <= 300000 && $i + 4 + $bl <= $len && $bl > $activityBestBl) {
-                $activityBestBl = $bl;
-                $activityStart  = $i + 4;
-                $activityEnd    = $i + 4 + $bl;
-            }
-        }
-    }
-    // Fallback for cards where EF_DriverActivityData sits in a non-standard 0x05xx TLV.
-    // If the known-tag block is missing or suspiciously small, pick the largest valid 0x05xx block.
-    if ($activityStart === null || $activityBestBl < 6000) {
-        $fbStart = $activityStart;
-        $fbEnd   = $activityEnd;
-        $fbBest  = $activityBestBl;
-        for ($i = 0; $i < $len - 4; $i++) {
-            if (ord($data[$i]) !== 0x05) continue;
-            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
-            if ($bl >= 200 && $bl <= 300000 && $i + 4 + $bl <= $len && $bl > $fbBest) {
-                $fbBest  = $bl;
-                $fbStart = $i + 4;
-                $fbEnd   = $i + 4 + $bl;
-            }
-        }
-        if ($fbStart !== null && $fbBest > $activityBestBl) {
-            $activityBestBl = $fbBest;
-            $activityStart  = $fbStart;
-            $activityEnd    = $fbEnd;
-        }
-    }
-
-    // ── Step 1: Collect candidate record headers ───────────────────────────────
     // Wide rolling window so older, valid card archives are still parsed.
     // tsMax caps candidates at 90 days into the future to prevent coincidental
     // binary patterns with far-future timestamps from being treated as real records.
@@ -706,6 +667,65 @@ function parseDddFile(string $path): array {
     $yrMin   = $curYear - 20;
     $yrMax   = $curYear + 2;
     $tsMax   = time() + 90 * 86400;   // at most 90 days ahead of today
+    // Search known EF_DriverActivityData TLV tags first; score blocks by number
+    // of plausible daily headers (unique dates), not only by byte length.
+    // This avoids selecting an oversized but sparse/non-activity block.
+    $scoreBlock = function (int $from, int $to) use ($data, $yrMin, $yrMax, $tsMax): array {
+        $candCount = 0;
+        $datesMap  = [];
+        for ($i = $from; $i < $to - 8; $i += 2) {
+            $ts = unpack('N', substr($data, $i, 4))[1];
+            $yr = (int)gmdate('Y', $ts);
+            if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
+            $pres = unpack('n', substr($data, $i + 4, 2))[1];
+            $dist = unpack('n', substr($data, $i + 6, 2))[1];
+            if ($pres < 1 || $pres > 16000 || $dist > 1100) continue;
+            $candCount++;
+            $datesMap[gmdate('Y-m-d', $ts)] = true;
+        }
+        return ['cand' => $candCount, 'dates' => count($datesMap)];
+    };
+    $bestKnown = ['start' => null, 'end' => null, 'bl' => 0, 'dates' => 0, 'cand' => 0];
+    foreach ([[0x05, 0x05], [0x05, 0x03], [0x05, 0x0D]] as [$t0, $t1]) {
+        for ($i = 0; $i < $len - 4; $i++) {
+            if (ord($data[$i]) !== $t0 || ord($data[$i + 1]) !== $t1) continue;
+            $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+            if ($bl < 200 || $bl > 300000 || $i + 4 + $bl > $len) continue;
+            $score = $scoreBlock($i + 8, $i + 4 + $bl);
+            if (
+                $score['dates'] > $bestKnown['dates']
+                || ($score['dates'] === $bestKnown['dates'] && $score['cand'] > $bestKnown['cand'])
+                || ($score['dates'] === $bestKnown['dates'] && $score['cand'] === $bestKnown['cand'] && $bl > $bestKnown['bl'])
+            ) {
+                $bestKnown = ['start' => $i + 4, 'end' => $i + 4 + $bl, 'bl' => $bl, 'dates' => $score['dates'], 'cand' => $score['cand']];
+            }
+        }
+    }
+    // Evaluate all 0x05xx blocks as a fallback for vendor-specific layouts.
+    $bestAny = ['start' => null, 'end' => null, 'bl' => 0, 'dates' => 0, 'cand' => 0];
+    for ($i = 0; $i < $len - 4; $i++) {
+        if (ord($data[$i]) !== 0x05) continue;
+        $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
+        if ($bl < 200 || $bl > 300000 || $i + 4 + $bl > $len) continue;
+        $score = $scoreBlock($i + 8, $i + 4 + $bl);
+        if (
+            $score['dates'] > $bestAny['dates']
+            || ($score['dates'] === $bestAny['dates'] && $score['cand'] > $bestAny['cand'])
+            || ($score['dates'] === $bestAny['dates'] && $score['cand'] === $bestAny['cand'] && $bl > $bestAny['bl'])
+        ) {
+            $bestAny = ['start' => $i + 4, 'end' => $i + 4 + $bl, 'bl' => $bl, 'dates' => $score['dates'], 'cand' => $score['cand']];
+        }
+    }
+    $useAny = $bestAny['start'] !== null && (
+        $bestKnown['start'] === null
+        || $bestAny['dates'] >= ($bestKnown['dates'] + 20)
+    );
+    $selected = $useAny ? $bestAny : $bestKnown;
+    $activityStart = $selected['start'];
+    $activityEnd   = $selected['end'];
+    $activityBestBl = $selected['bl'];
+
+    // ── Step 1: Collect candidate record headers ───────────────────────────────
     $collectCandidates = function (int $from, int $to) use ($data, $yrMin, $yrMax, $tsMax): array {
         $out = [];
         for ($i = $from; $i < $to - 8; $i += 2) {

@@ -20,8 +20,9 @@
   var ACT_STROKE = ['#0288D1','#388E3C','#F57C00','#D32F2F'];
   var ACT_TEXT   = ['#01579B','#1B5E20','#fff','#fff'];
   var ACT_NAME   = ['Odpoczynek','Dyspozycyjno\u015b\u0107','Praca','Jazda'];
-  /* Activity icons: — rest, ◇ available, ⚙ work, ▶ drive */
-  var ACT_ICONS  = ['\u2014','\u25C7','\u2699','\u25B6'];
+  /* Activity icons aligned with tachograph semantics:
+   * rest=bed, availability=square, work=tools, drive=wheel */
+  var ACT_ICONS  = ['\u{1F6CF}','\u25A1','\u2692','\u{1F6DE}'];
   /* Bar heights as fraction of track height, bottom-aligned (rest thin → drive full) */
   var ACT_HEIGHT_FRAC = [0.22, 0.44, 0.72, 1.0];
 
@@ -2012,11 +2013,12 @@
     /* Legend */
     var legend = document.createElement('div');
     legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
-    [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek'},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda'},
-     {fill:'#FF9800',bd:'#F57C00',lbl:'Praca'},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107'},
+    [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek',ico:ACT_ICONS[0]},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda',ico:ACT_ICONS[3]},
+     {fill:'#FF9800',bd:'#F57C00',lbl:'Praca',ico:ACT_ICONS[2]},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107',ico:ACT_ICONS[1]},
      {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'},{fill:'#4A148C',bd:'#38006b',lbl:'Rekompensata'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
-      d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
+      var iconHtml = it.ico ? '<span style="font-size:12px;line-height:1;color:'+it.bd+';min-width:14px;text-align:center;">'+it.ico+'</span>' : '';
+      d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div>'+iconHtml+'<span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
     });
     /* Vehicle legend item */
