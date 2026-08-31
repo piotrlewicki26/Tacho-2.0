@@ -678,12 +678,12 @@ function parseDddFile(string $path): array {
     }
 
     // ── Step 1: Collect candidate record headers ───────────────────────────────
-    // Dynamic 5-year window so the parser keeps working for future card downloads.
+    // Wide rolling window so older, valid card archives are still parsed.
     // tsMax caps candidates at 90 days into the future to prevent coincidental
     // binary patterns with far-future timestamps from being treated as real records.
     $curYear = (int)gmdate('Y');
-    $yrMin   = $curYear - 3;
-    $yrMax   = $curYear + 1;
+    $yrMin   = $curYear - 20;
+    $yrMax   = $curYear + 2;
     $tsMax   = time() + 90 * 86400;   // at most 90 days ahead of today
     $cands   = [];
     // Use TLV-bounded region if found; skip first 4 management bytes (pointers/length).
