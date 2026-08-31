@@ -134,12 +134,20 @@ if ($action === 'profile' && $editDriver) {
     $stmt->execute([$driverId]);
     $profileLastDownload = $stmt->fetchColumn() ?: null;
 
-    // Activity timeline data for last 90 days (for TachoChart)
-    $chartFrom = (new DateTime('today'))->modify('-90 days')->format('Y-m-d');
-    $chartTo   = (new DateTime('today'))->format('Y-m-d');
     try {
         // Auto-backfill calendar from ddd_activity_days when calendar is empty
         backfillDriverActivityCalendar($db, $companyId, $driverId);
+
+        // Activity timeline window is anchored to the latest available activity date
+        // (not always to "today"), so older files still render timeline data.
+        $latestActStmt = $db->prepare(
+            'SELECT MAX(date) FROM driver_activity_calendar WHERE company_id=? AND driver_id=?'
+        );
+        $latestActStmt->execute([$companyId, $driverId]);
+        $latestActDate = $latestActStmt->fetchColumn() ?: null;
+        $chartAnchor   = $latestActDate ? new DateTime($latestActDate) : new DateTime('today');
+        $chartFrom     = (clone $chartAnchor)->modify('-90 days')->format('Y-m-d');
+        $chartTo       = $chartAnchor->format('Y-m-d');
 
         $chartStmt = $db->prepare(
             'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings, source_file_id

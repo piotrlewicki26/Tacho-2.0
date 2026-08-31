@@ -294,12 +294,11 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
 }
 
 // ── The timeline always shows all available data (independent of calendar date filter) ──
-// Load chart days for the full data range (or last 180 days) for timeline tab
+// Load chart days for the full available data range for timeline tab.
 $timelineChartDays = $chartDays; // fallback: same as calendar range
 if ($driverId && $driverInfo && $dataDateMin) {
     try {
-        $tlFrom180 = (new DateTime('today'))->modify('-180 days')->format('Y-m-d');
-        $tlDateFrom = max($tlFrom180, $dataDateMin);
+        $tlDateFrom = $dataDateMin;
         $tlDateTo   = $dataDateMax ?? date('Y-m-d');
         // Only load separate timeline data if it differs from current calendar range
         if ($tlDateFrom !== $dateFrom || $tlDateTo !== $dateTo) {
@@ -611,7 +610,7 @@ include __DIR__ . '/../../templates/header.php';
 
       <div class="tp-card-body">
 
-        <?php if (empty($calDays) && $activeTab !== 'files' && $activeTab !== 'pojazdy'): ?>
+        <?php if (empty($calDays) && !in_array($activeTab, ['files', 'pojazdy', 'timeline'], true)): ?>
         <!-- No data state -->
         <div class="tp-empty-state py-5">
           <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#94a3b8"></i>
