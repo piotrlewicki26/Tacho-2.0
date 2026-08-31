@@ -27,13 +27,13 @@
   var ACT_HEIGHT_FRAC = [0.22, 0.44, 0.72, 1.0];
 
   /* Layout */
-  var LW  = 110;
-  var T1Y = 46;
-  var T1H = 130;
-  var T2Y = 190;
-  var T2H = 110;
-  var AXY = 320;
-  var RH  = 355;
+  var LW  = 116;
+  var T1Y = 40;
+  var T1H = 114;
+  var T2Y = 167;
+  var T2H = 94;
+  var AXY = 282;
+  var RH  = 308;
   var TOTAL_MIN = 7 * 1440;
 
   /* EU 561/2006 limits (minutes) */
@@ -345,7 +345,7 @@
         var st = d ? dayStatus(d.segs) : null; if (!st) return;
         var col = st==='error' ? '#E53935' : st==='warn' ? '#FF9800' : '#43A047';
         var xc = px(di*1440+720);
-        if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:16, r:5, fill:col, opacity:0.85}));
+        if (xc>=4 && xc<=cw-4) svgEl.appendChild(mkSVG('circle', {cx:xc, cy:14, r:4, fill:col, opacity:0.86}));
       });
     }
 
@@ -405,17 +405,17 @@
         var textCol = ACT_TEXT[s.act];
         var g = mkSVG('g');
         g.setAttribute('style', 'cursor:pointer;');
-        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:segFill, rx:2}));
+        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:segFill, rx:1.8}));
         /* Subtle border on all bars */
-        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':1, rx:2, 'pointer-events':'none'}));
+        g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':0.8, rx:1.8, 'pointer-events':'none'}));
         if (bw > 28 && bh > 16) {
-          var fsz = bw > 80 ? 14 : bw > 45 ? 12 : 10;
+          var fsz = bw > 80 ? 13 : bw > 45 ? 11 : 9;
           /* Duration label – upper portion */
-          var txt = mkSVG('text', {x:x1+bw/2, y:by+Math.max(12,bh*0.44), 'text-anchor':'middle', fill:textCol, 'font-size':fsz, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
+          var txt = mkSVG('text', {x:x1+bw/2, y:by+Math.max(11,bh*0.42), 'text-anchor':'middle', fill:textCol, 'font-size':fsz, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
           txt.textContent = hhmm(s.dur); g.appendChild(txt);
           /* Activity icon – lower portion (only if bar is tall enough) */
           if (bh > 28) {
-            var ico = mkSVG('text', {x:x1+bw/2, y:by+bh-6, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(9, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+            var ico = mkSVG('text', {x:x1+bw/2, y:by+bh-5, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(8, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
             ico.textContent = ACT_ICONS[s.act]; g.appendChild(ico);
           }
         }
@@ -444,9 +444,9 @@
         var col = hasErr ? '#E53935' : '#FF9800';
         var sx1 = clampX(di*1440), sx2 = clampX((di+1)*1440), sw = sx2-sx1;
         if (sw < 1) return;
-        svgEl.appendChild(mkSVG('rect', {x:sx1+1, y:T1Y, width:Math.max(0,sw-2), height:5, fill:col, opacity:0.8, rx:1}));
+        svgEl.appendChild(mkSVG('rect', {x:sx1+1, y:T1Y, width:Math.max(0,sw-2), height:4, fill:col, opacity:0.82, rx:1}));
         if (sw > 16) {
-          var ic = mkSVG('text', {x:sx1+sw/2, y:T1Y-2, 'text-anchor':'middle', 'font-size':14, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+          var ic = mkSVG('text', {x:sx1+sw/2, y:T1Y-1, 'text-anchor':'middle', 'font-size':12, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
           ic.textContent = hasErr ? '\u26D4' : '\u26A0\uFE0F';
           svgEl.appendChild(ic);
         }
@@ -474,13 +474,13 @@
       /* Vivid: cyan for daily rest, vivid blue shades for weekly rest */
       var restFill = isWeekly ? '#1565C0' : isReducedWeekly ? '#1E88E5' : '#00BCD4';
       var g = mkSVG('g');
-      g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:restFill, rx:2}));
+      g.appendChild(mkSVG('rect', {x:x1, y:T2Y+1, width:bw, height:T2H-2, fill:restFill, rx:1.8}));
       if (bw > 22) {
-        var ico = mkSVG('text', {x:x1+bw/2, y:T2Y+14, 'text-anchor':'middle', fill:'#fff', 'font-size':11, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+        var ico = mkSVG('text', {x:x1+bw/2, y:T2Y+13, 'text-anchor':'middle', fill:'#fff', 'font-size':10, 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
         ico.textContent = '\u22A2'; g.appendChild(ico);
       }
       if (bw > 35) {
-        var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+5, 'text-anchor':'middle', fill:'#fff', 'font-size':15, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
+        var t = mkSVG('text', {x:x1+bw/2, y:T2Y+T2H/2+4, 'text-anchor':'middle', fill:'#fff', 'font-size':13, 'font-family':'Inter,sans-serif', 'font-weight':700, 'pointer-events':'none'});
         t.textContent = hhmm(rs.dur); g.appendChild(t);
       }
       /* Clickable tooltip for rest span */
@@ -1992,17 +1992,17 @@
 
     /* Toolbar */
     var toolbar = document.createElement('div');
-    toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0;';
+    toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0 5px;';
 
     function mkBtn(lbl, extra) {
       var b=document.createElement('button'); b.type='button'; b.textContent=lbl;
-      b.style.cssText='background:#FFF;border:1px solid #DDE1E6;border-radius:4px;padding:4px 10px;font-size:14px;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;'+(extra||'');
+      b.style.cssText='background:#FFF;border:1px solid #DDE1E6;border-radius:4px;padding:3px 9px;font-size:12px;line-height:1.2;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;font-weight:600;'+(extra||'');
       return b;
     }
     var prevBtn  = mkBtn('\u25C4 Poprzedni');
     var nextBtn  = mkBtn('Nast\u0119pny \u25BA');
     var dateRange = document.createElement('span');
-    dateRange.style.cssText = 'font-size:13px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;';
+    dateRange.style.cssText = 'font-size:12px;color:#5A6070;margin-left:auto;font-family:Inter,sans-serif;font-weight:600;';
 
     prevBtn.addEventListener('click',  function(){ startWk=addD(startWk,-7); renderWeeks(); });
     nextBtn.addEventListener('click',  function(){ startWk=addD(startWk, 7); renderWeeks(); });
@@ -2012,40 +2012,40 @@
 
     /* Legend */
     var legend = document.createElement('div');
-    legend.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0 6px;';
+    legend.style.cssText = 'display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:2px 0 5px;';
     [{fill:'#29B6F6',bd:'#0288D1',lbl:'Odpoczynek',ico:ACT_ICONS[0]},{fill:'#F44336',bd:'#D32F2F',lbl:'Jazda',ico:ACT_ICONS[3]},
      {fill:'#FF9800',bd:'#F57C00',lbl:'Praca',ico:ACT_ICONS[2]},{fill:'#4CAF50',bd:'#388E3C',lbl:'Dyspozycyjno\u015b\u0107',ico:ACT_ICONS[1]},
      {fill:'#00BCD4',bd:'#00838F',lbl:'Odpocz. \u22659h'},{fill:'#4A148C',bd:'#38006b',lbl:'Rekompensata'}].forEach(function(it) {
       var d=document.createElement('div'); d.style.cssText='display:flex;align-items:center;gap:4px;';
-      var iconHtml = it.ico ? '<span style="font-size:12px;line-height:1;color:'+it.bd+';min-width:14px;text-align:center;">'+it.ico+'</span>' : '';
-      d.innerHTML='<div style="width:18px;height:11px;background:'+it.fill+';border:1px solid '+it.bd+'80;border-radius:2px;flex-shrink:0;"></div>'+iconHtml+'<span style="font-size:12px;color:#5A6070;">'+it.lbl+'</span>';
+      var iconHtml = it.ico ? '<span style="font-size:11px;line-height:1;color:'+it.bd+';min-width:13px;text-align:center;">'+it.ico+'</span>' : '';
+      d.innerHTML='<div style="width:16px;height:10px;background:'+it.fill+';border:1px solid '+it.bd+'99;border-radius:2px;flex-shrink:0;"></div>'+iconHtml+'<span style="font-size:11px;font-weight:500;color:#5A6070;">'+it.lbl+'</span>';
       legend.appendChild(d);
     });
     /* Vehicle legend item */
     if (vehicleData && vehicleData.length) {
       var vLg = document.createElement('div'); vLg.style.cssText='display:flex;align-items:center;gap:4px;';
-      vLg.innerHTML='<div style="width:18px;height:11px;background:#7E57C2;border:1px solid #5E35B180;border-radius:2px;flex-shrink:0;"></div><span style="font-size:12px;color:#5A6070;">Pojazd</span>';
+      vLg.innerHTML='<div style="width:16px;height:10px;background:#7E57C2;border:1px solid #5E35B199;border-radius:2px;flex-shrink:0;"></div><span style="font-size:11px;font-weight:500;color:#5A6070;">Pojazd</span>';
       legend.appendChild(vLg);
     }
     var stLg = document.createElement('div');
-    stLg.style.cssText = 'margin-left:auto;font-size:12px;color:#9AA0AA;white-space:nowrap;';
+    stLg.style.cssText = 'margin-left:auto;font-size:11px;color:#9AA0AA;white-space:nowrap;';
     stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie (inline) | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107/pojazd \u2192 opis</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
     /* Detailed legend in the style of the reference image */
     var details = document.createElement('div');
-    details.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px;padding:8px 10px;border:1px solid #E6EAF0;border-radius:6px;background:#fff;margin:0 0 8px;';
+    details.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px 16px;padding:7px 9px;border:1px solid #E6EAF0;border-radius:6px;background:#fff;margin:0 0 7px;';
     function lgSection(title, items) {
       var col = document.createElement('div');
       var h = document.createElement('div');
       h.textContent = title;
-      h.style.cssText = 'font-size:12px;font-weight:700;color:#5A6070;margin:0 0 5px;';
+      h.style.cssText = 'font-size:11px;font-weight:700;color:#5A6070;margin:0 0 4px;letter-spacing:.2px;';
       col.appendChild(h);
       items.forEach(function (it) {
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:#667085;line-height:1.35;margin:2px 0;';
-        row.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;min-width:14px;color:' + (it.color || '#475467') + ';font-weight:700;">' + it.icon + '</span><span>' + it.label + '</span>';
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#667085;line-height:1.3;margin:1px 0;';
+        row.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;min-width:13px;font-size:11px;color:' + (it.color || '#475467') + ';font-weight:700;">' + it.icon + '</span><span>' + it.label + '</span>';
         col.appendChild(row);
       });
       return col;
@@ -2079,8 +2079,8 @@
     /* Chart header */
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;background:#F0F4F8;border:1px solid #E0E2E8;border-radius:4px 4px 0 0;';
-    hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:5px 8px;font-size:12px;font-weight:700;color:#9AA0AA;letter-spacing:1px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
-      '<div style="flex:1;padding:5px 12px;font-size:11px;font-weight:700;color:#9AA0AA;letter-spacing:1px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment (inline) | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
+    hdr.innerHTML = '<div style="width:'+LW+'px;flex-shrink:0;padding:4px 8px;font-size:11px;font-weight:700;color:#9AA0AA;letter-spacing:.9px;border-right:1px solid #E2E4EA;font-family:Inter,sans-serif;">TYDZIEN</div>' +
+      '<div style="flex:1;padding:4px 11px;font-size:10px;font-weight:700;color:#9AA0AA;letter-spacing:.8px;font-family:Inter,sans-serif;">O\u015a CZASU (7 DNI) &#x2014; przeci\u0105gnij by powi\u0119kszy\u0107 fragment (inline) | kliknij dat\u0119 by zobaczy\u0107 dzie\u0144 | kliknij aktywno\u015b\u0107 by zobaczy\u0107 szczeg\u00f3\u0142y</div>';
     container.appendChild(hdr);
 
     /* Chart area */
