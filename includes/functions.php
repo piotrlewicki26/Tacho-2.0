@@ -706,23 +706,34 @@ function parseDddFile(string $path): array {
     $yrMin   = $curYear - 20;
     $yrMax   = $curYear + 2;
     $tsMax   = time() + 90 * 86400;   // at most 90 days ahead of today
-    $cands   = [];
+    $collectCandidates = function (int $from, int $to) use ($data, $yrMin, $yrMax, $tsMax): array {
+        $out = [];
+        for ($i = $from; $i < $to - 8; $i += 2) {
+            $ts   = unpack('N', substr($data, $i, 4))[1];
+            $yr   = (int)gmdate('Y', $ts);
+            if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
+
+            $pres = unpack('n', substr($data, $i+4, 2))[1];
+            $dist = unpack('n', substr($data, $i+6, 2))[1];
+            // Lower bound lowered from 500→1: cards with no garbage (new cards whose
+            // circular buffer has not yet wrapped) can have presenceCounter < 500.
+            // The IQR filter in Step 4 removes stale records from old use-periods.
+            if ($pres < 1 || $pres > 16000 || $dist > 1100) continue;
+
+            $out[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist, 'tmin' => (int)(($ts % 86400) / 60)];
+        }
+        return $out;
+    };
     // Use TLV-bounded region if found; skip first 4 management bytes (pointers/length).
     $scanStart = ($activityStart !== null) ? $activityStart + 4 : 0;
     $scanEnd   = $activityEnd ?? $len;
-    for ($i = $scanStart; $i < $scanEnd - 8; $i += 2) {
-        $ts   = unpack('N', substr($data, $i, 4))[1];
-        $yr   = (int)gmdate('Y', $ts);
-        if ($yr < $yrMin || $yr > $yrMax || $ts > $tsMax) continue;
-
-        $pres = unpack('n', substr($data, $i+4, 2))[1];
-        $dist = unpack('n', substr($data, $i+6, 2))[1];
-        // Lower bound lowered from 500→1: cards with no garbage (new cards whose
-        // circular buffer has not yet wrapped) can have presenceCounter < 500.
-        // The IQR filter in Step 4 removes stale records from old use-periods.
-        if ($pres < 1 || $pres > 16000 || $dist > 1100) continue;
-
-        $cands[] = ['off' => $i, 'ts' => $ts, 'pres' => $pres, 'dist' => $dist, 'tmin' => (int)(($ts % 86400) / 60)];
+    $cands     = $collectCandidates($scanStart, $scanEnd);
+    // Fallback: if bounded scan yields too few candidates, retry on full file.
+    if (count($cands) < 8 && ($scanStart > 0 || $scanEnd < $len)) {
+        $fullCands = $collectCandidates(0, $len);
+        if (count($fullCands) > count($cands)) {
+            $cands = $fullCands;
+        }
     }
     if (!$cands) return $empty;
 
@@ -2058,6 +2069,78 @@ function groupVehicleTrips(array $records, int $maxGapDays = 3): array
 }
 
 /**
+ * Portable per-row upsert into driver_activity_calendar.
+ *
+ * Keeps compatibility across MySQL/MariaDB variants where complex
+ * INSERT..SELECT..ON DUPLICATE syntax may differ.
+ */
+function upsertDriverActivityCalendarDay(
+    \PDO $db,
+    int $companyId,
+    int $driverId,
+    array $row,
+    int $sourceFileId
+): void {
+    $date       = (string)($row['date'] ?? '');
+    if ($date === '') return;
+    $driveMin   = (int)($row['drive_min'] ?? 0);
+    $workMin    = (int)($row['work_min'] ?? 0);
+    $availMin   = (int)($row['avail_min'] ?? 0);
+    $restMin    = (int)($row['rest_min'] ?? 0);
+    $distKm     = (int)($row['dist_km'] ?? 0);
+    $violations = $row['violations'] ?? json_encode([]);
+    $segments   = $row['segments'] ?? json_encode([]);
+    $crossings  = $row['border_crossings'] ?? null;
+
+    $sel = $db->prepare(
+        'SELECT id, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings, source_file_id
+         FROM driver_activity_calendar
+         WHERE company_id=? AND driver_id=? AND date=?
+         LIMIT 1'
+    );
+    $sel->execute([$companyId, $driverId, $date]);
+    $cur = $sel->fetch(\PDO::FETCH_ASSOC);
+
+    if (!$cur) {
+        $db->prepare(
+            'INSERT INTO driver_activity_calendar
+             (company_id, driver_id, date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, border_crossings, source_file_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+        )->execute([
+            $companyId, $driverId, $date, $driveMin, $workMin, $availMin, $restMin,
+            $distKm, $violations, $segments, $crossings, $sourceFileId
+        ]);
+        return;
+    }
+
+    $newTotal = $driveMin + $workMin + $availMin + $restMin;
+    $curTotal = (int)$cur['drive_min'] + (int)$cur['work_min'] + (int)$cur['avail_min'] + (int)$cur['rest_min'];
+    $takeNew  = $newTotal > $curTotal;
+
+    $nextDrive = $takeNew ? $driveMin : (int)$cur['drive_min'];
+    $nextWork  = $takeNew ? $workMin  : (int)$cur['work_min'];
+    $nextAvail = $takeNew ? $availMin : (int)$cur['avail_min'];
+    $nextRest  = $takeNew ? $restMin  : (int)$cur['rest_min'];
+    $nextDist  = max((int)$cur['dist_km'], $distKm);
+
+    $nextViol  = ($violations !== null && $violations !== '[]') ? $violations : $cur['violations'];
+    $nextSegs  = ($segments   !== null && $segments   !== '[]') ? $segments   : $cur['segments'];
+    $nextCross = ($crossings !== null && !in_array((string)$crossings, ['0', '[]', 'null', 'false'], true))
+               ? $crossings : $cur['border_crossings'];
+    $nextSrc   = $takeNew ? $sourceFileId : (int)($cur['source_file_id'] ?? 0);
+
+    $db->prepare(
+        'UPDATE driver_activity_calendar
+         SET drive_min=?, work_min=?, avail_min=?, rest_min=?, dist_km=?,
+             violations=?, segments=?, border_crossings=?, source_file_id=?
+         WHERE id=?'
+    )->execute([
+        $nextDrive, $nextWork, $nextAvail, $nextRest, $nextDist,
+        $nextViol, $nextSegs, $nextCross, $nextSrc, (int)$cur['id']
+    ]);
+}
+
+/**
  * Backfill driver_activity_calendar for a specific driver by copying data
  * from ddd_activity_days (joined with ddd_files).  Runs on every page load
  * so newly uploaded DDD files are automatically reflected in the calendar.
@@ -2142,7 +2225,8 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
            AND f.file_type='driver' AND f.is_deleted=0"
     );
     $countStmt->execute([$companyId, $driverId]);
-    if ((int)$countStmt->fetchColumn() === 0) return 0;
+    $sourceRowsCount = (int)$countStmt->fetchColumn();
+    if ($sourceRowsCount === 0) return 0;
 
     // Run the backfill scoped to one driver.
     // Wrapping the SELECT in a named derived table (AS nr) lets the ON DUPLICATE KEY UPDATE
@@ -2194,10 +2278,34 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
         error_log('backfillDriverActivityCalendar: INSERT error for driver ' . $driverId . ': ' . $e->getMessage());
     }
 
-    // Return the number of rows now in the calendar for this driver
+    // Safety fallback: if bulk upsert produced no calendar rows, perform portable row-wise upsert.
     $check = $db->prepare(
         'SELECT COUNT(*) FROM driver_activity_calendar WHERE driver_id=?'
     );
+    $check->execute([$driverId]);
+    $calendarRowsCount = (int)$check->fetchColumn();
+    if ($calendarRowsCount === 0 && $sourceRowsCount > 0) {
+        try {
+            $src = $db->prepare(
+                "SELECT d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min,
+                        d.dist_km, d.violations, d.segments, d.border_crossings,
+                        d.file_id AS source_file_id
+                 FROM ddd_activity_days d
+                 JOIN ddd_files f ON f.id = d.file_id
+                 WHERE f.company_id=? AND f.driver_id=?
+                   AND f.file_type='driver' AND f.is_deleted=0
+                 ORDER BY d.date ASC"
+            );
+            $src->execute([$companyId, $driverId]);
+            foreach ($src->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                upsertDriverActivityCalendarDay($db, $companyId, $driverId, $row, (int)($row['source_file_id'] ?? 0));
+            }
+        } catch (\Throwable $e) {
+            error_log('backfillDriverActivityCalendar: fallback row-upsert error for driver ' . $driverId . ': ' . $e->getMessage());
+        }
+    }
+
+    // Return the number of rows now in the calendar for this driver
     $check->execute([$driverId]);
     return (int)$check->fetchColumn();
 }

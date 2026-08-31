@@ -96,6 +96,24 @@ if ($driverId) {
         } catch (Throwable $e) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
+        if (!$dataDateMin) {
+            try {
+                $rangeRawStmt = $db->prepare(
+                    'SELECT MIN(d.date) AS dmin, MAX(d.date) AS dmax
+                     FROM ddd_activity_days d
+                     JOIN ddd_files f ON f.id=d.file_id
+                     WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0'
+                );
+                $rangeRawStmt->execute([$companyId, $driverId]);
+                $rangeRaw = $rangeRawStmt->fetch();
+                if ($rangeRaw && $rangeRaw['dmin']) {
+                    $dataDateMin = $rangeRaw['dmin'];
+                    $dataDateMax = $rangeRaw['dmax'];
+                }
+            } catch (Throwable $e) {
+                error_log('driver_calendar: raw range query error: ' . $e->getMessage());
+            }
+        }
 
         // Date range – default: last 28 days (today − 27 days → today).
         $today        = new DateTime();
@@ -256,6 +274,53 @@ if ($driverId) {
             }
         } catch (Throwable $calErr) {
             error_log('driver_calendar: query error for driver ' . $driverId . ': ' . $calErr->getMessage());
+        }
+
+        // Fallback: when driver_activity_calendar is empty/broken, render directly
+        // from ddd_activity_days joined with driver files for the selected range.
+        if (empty($calDays)) {
+            try {
+                $rawStmt = $db->prepare(
+                    'SELECT d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min,
+                            d.dist_km, d.violations, d.segments, d.border_crossings, d.file_id AS source_file_id
+                     FROM ddd_activity_days d
+                     JOIN ddd_files f ON f.id=d.file_id
+                     WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
+                       AND d.date BETWEEN ? AND ?
+                     ORDER BY d.date ASC'
+                );
+                $rawStmt->execute([$companyId, $driverId, $dateFrom, $dateTo]);
+                foreach ($rawStmt->fetchAll() as $row) {
+                    $viols     = json_decode($row['violations']       ?? '[]', true) ?: [];
+                    $segs      = json_decode($row['segments']         ?? '[]', true) ?: [];
+                    $crossings = json_decode($row['border_crossings'] ?? '[]', true) ?: [];
+                    if (is_int($crossings)) $crossings = [];
+                    $calDays[$row['date']] = [
+                        'date'      => $row['date'],
+                        'drive'     => (int)$row['drive_min'],
+                        'work'      => (int)$row['work_min'],
+                        'avail'     => (int)$row['avail_min'],
+                        'rest'      => (int)$row['rest_min'],
+                        'dist'      => (int)$row['dist_km'],
+                        'segs'      => $segs,
+                        'crossings' => $crossings,
+                        'viol'      => $viols,
+                        'file_id'   => $row['source_file_id'],
+                    ];
+                    $summary['drive'] += (int)$row['drive_min'];
+                    $summary['work']  += (int)$row['work_min'];
+                    $summary['rest']  += (int)$row['rest_min'];
+                    $summary['avail'] += (int)$row['avail_min'];
+                    $summary['dist']  += (int)$row['dist_km'];
+                    $summary['violations'] += count($viols);
+                    $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => $crossings];
+                    foreach ($viols as $v) {
+                        $violations[] = array_merge($v, ['date' => $row['date']]);
+                    }
+                }
+            } catch (Throwable $rawErr) {
+                error_log('driver_calendar: fallback ddd_activity_days query error for driver ' . $driverId . ': ' . $rawErr->getMessage());
+            }
         }
 
         // Load DDD files for this driver

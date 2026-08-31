@@ -145,6 +145,16 @@ if ($action === 'profile' && $editDriver) {
         );
         $latestActStmt->execute([$companyId, $driverId]);
         $latestActDate = $latestActStmt->fetchColumn() ?: null;
+        if (!$latestActDate) {
+            $latestRawStmt = $db->prepare(
+                'SELECT MAX(d.date)
+                 FROM ddd_activity_days d
+                 JOIN ddd_files f ON f.id=d.file_id
+                 WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0'
+            );
+            $latestRawStmt->execute([$companyId, $driverId]);
+            $latestActDate = $latestRawStmt->fetchColumn() ?: null;
+        }
         $chartAnchor   = $latestActDate ? new DateTime($latestActDate) : new DateTime('today');
         $chartFrom     = (clone $chartAnchor)->modify('-90 days')->format('Y-m-d');
         $chartTo       = $chartAnchor->format('Y-m-d');
@@ -157,6 +167,19 @@ if ($action === 'profile' && $editDriver) {
         );
         $chartStmt->execute([$companyId, $driverId, $chartFrom, $chartTo]);
         $chartRows = $chartStmt->fetchAll();
+        if (empty($chartRows)) {
+            $chartStmtRaw = $db->prepare(
+                'SELECT d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min, d.dist_km,
+                        d.violations, d.segments, d.border_crossings, d.file_id AS source_file_id
+                 FROM ddd_activity_days d
+                 JOIN ddd_files f ON f.id=d.file_id
+                 WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0
+                   AND d.date BETWEEN ? AND ?
+                 ORDER BY d.date'
+            );
+            $chartStmtRaw->execute([$companyId, $driverId, $chartFrom, $chartTo]);
+            $chartRows = $chartStmtRaw->fetchAll();
+        }
 
         // Re-parse border_crossings for stale/null rows (same logic as driver_calendar/index.php)
         $needsReparse = [];
