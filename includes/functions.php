@@ -1096,16 +1096,50 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
      * records are packed at 10-byte boundaries. */
     $tryRecSizes = [10, 12, 13];
 
-    $crossings = [];
+    $mergeAndDedup = static function (array $datasets): array {
+        $merged = [];
+        foreach ($datasets as $ds) {
+            foreach ($ds as $date => $recs) {
+                if (!is_array($recs)) continue;
+                foreach ($recs as $rec) {
+                    if (!is_array($rec)) continue;
+                    $merged[$date][] = $rec;
+                }
+            }
+        }
+        $deduped = [];
+        foreach ($merged as $date => $recs) {
+            $seen = [];
+            foreach ($recs as $rec) {
+                $tmin = isset($rec['tmin']) ? (int)$rec['tmin'] : -1;
+                $type = isset($rec['type']) ? (int)$rec['type'] : 2;
+                $ctry = strtoupper(trim((string)($rec['country'] ?? '')));
+                if ($tmin < 0 || $tmin > 1439 || $ctry === '') continue;
+                $k = $tmin . '|' . $ctry . '|' . $type;
+                if (isset($seen[$k])) continue;
+                $seen[$k] = true;
+                $deduped[$date][] = [
+                    'ts'      => isset($rec['ts']) && is_numeric($rec['ts']) ? (int)$rec['ts'] : null,
+                    'tmin'    => $tmin,
+                    'type'    => $type,
+                    'country' => $ctry,
+                ];
+            }
+            if (!empty($deduped[$date])) {
+                usort($deduped[$date], static fn(array $a, array $b): int =>
+                    (($a['tmin'] <=> $b['tmin']) ?: strcmp((string)$a['country'], (string)$b['country']))
+                );
+            } else {
+                unset($deduped[$date]);
+            }
+        }
+        ksort($deduped);
+        return $deduped;
+    };
 
-    /* Track the best result (most crossing records) found across all tags and
-     * blocks.  Some DDD files contain spurious TLV blocks that coincidentally
-     * match an early tag and return only 1–2 fake crossings before the real
-     * data block (typically tagged 0x050B and several kilobytes long) is ever
-     * reached.  By accumulating the richest result instead of returning on the
-     * first hit, we always surface the most complete crossing set. */
-    $best      = [];
+    $candidates = [];
     $bestScore = 0;
+    $bestDataset = [];
 
     foreach ($tryTags as [$tb0, $tb1]) {
         for ($i = 0; $i < $len - 6; $i++) {
@@ -1233,9 +1267,12 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             }
 
             if ($m1found) {
-                if ($m1bestScore > $bestScore) {
-                    $best      = $m1best;
-                    $bestScore = $m1bestScore;
+                if ($m1bestScore > 0) {
+                    $candidates[] = ['score' => $m1bestScore, 'days' => count($m1best), 'data' => $m1best];
+                    if ($m1bestScore > $bestScore) {
+                        $bestDataset = $m1best;
+                        $bestScore = $m1bestScore;
+                    }
                 }
                 continue; /* skip Method 2 for this block; move to next $i */
             }
@@ -1301,15 +1338,33 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                     }
                 }
             }
-            if ($m2bestScore > $bestScore) {
-                $best      = $m2best;
-                $bestScore = $m2bestScore;
+            if ($m2bestScore > 0) {
+                $candidates[] = ['score' => $m2bestScore, 'days' => count($m2best), 'data' => $m2best];
+                if ($m2bestScore > $bestScore) {
+                    $bestDataset = $m2best;
+                    $bestScore = $m2bestScore;
+                }
             }
         }
     }
 
-    if (!empty($best)) {
-        return $best;
+    if (!empty($candidates)) {
+        $mergeThreshold = max(2, (int)floor($bestScore * 0.4));
+        $toMerge = [];
+        foreach ($candidates as $cand) {
+            $score = (int)($cand['score'] ?? 0);
+            $days  = (int)($cand['days'] ?? 0);
+            if ($score >= $mergeThreshold || ($score === $bestScore && $days >= 1)) {
+                $toMerge[] = $cand['data'];
+            }
+        }
+        $merged = $mergeAndDedup($toMerge);
+        if (!empty($merged)) {
+            return $merged;
+        }
+        if (!empty($bestDataset)) {
+            return $mergeAndDedup([$bestDataset]);
+        }
     }
 
     /* ── Method 3: whole-file unaligned scan (last resort) ─────────────────────
@@ -1317,6 +1372,9 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
      * walk the entire binary byte-by-byte looking for valid PlaceRecord
      * sequences: timestamp in range + type(0-2) + known nationNumeric or Alpha.
      * Require ≥2 hits to avoid spurious single-byte coincidences. */
+    $m3cands = [];
+    $m3bestScore = 0;
+    $m3best = [];
     for ($trySize = 10; $trySize <= 13; $trySize++) {
         $hits = [];
         for ($p = 0; $p + $trySize <= $len; $p++) {
@@ -1360,25 +1418,28 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
          * spurious repeated hits at the same (date, tmin, country). */
         $totalHits = array_sum(array_map('count', $hits));
         if ($totalHits >= 1) {
-            /* Deduplicate: keep unique (date, tmin, country) triples per day */
-            $deduped = [];
-            foreach ($hits as $date => $recs) {
-                $seen = [];
-                foreach ($recs as $rec) {
-                    $key = $rec['tmin'] . '|' . $rec['country'] . '|' . $rec['type'];
-                    if (!isset($seen[$key])) {
-                        $seen[$key] = true;
-                        $deduped[$date][] = $rec;
-                    }
-                }
-            }
-            if (!empty($deduped)) {
-                return $deduped;
+            $m3cands[] = ['score' => $totalHits, 'data' => $hits];
+            if ($totalHits > $m3bestScore) {
+                $m3bestScore = $totalHits;
+                $m3best = $hits;
             }
         }
     }
+    if (!empty($m3cands)) {
+        $m3Threshold = max(2, (int)floor($m3bestScore * 0.4));
+        $m3merge = [];
+        foreach ($m3cands as $cand) {
+            $score = (int)($cand['score'] ?? 0);
+            if ($score >= $m3Threshold || $score === $m3bestScore) {
+                $m3merge[] = $cand['data'];
+            }
+        }
+        $m3res = $mergeAndDedup($m3merge);
+        if (!empty($m3res)) return $m3res;
+        if (!empty($m3best)) return $mergeAndDedup([$m3best]);
+    }
 
-    return $crossings;
+    return [];
 }
 
 /**
