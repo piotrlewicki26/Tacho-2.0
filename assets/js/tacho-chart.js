@@ -22,7 +22,7 @@
   var ACT_NAME   = ['Odpoczynek','Dyspozycyjno\u015b\u0107','Praca','Jazda'];
   /* Activity icons aligned with tachograph semantics:
    * rest=bed, availability=square, work=tools, drive=wheel */
-  var ACT_ICONS  = ['\u{1F6CF}','\u25A1','\u2692','\u{1F6DE}'];
+  var ACT_ICONS  = ['\u{1F6CF}','\u25A1','\u2692','\u{1F6DE}\uFE0F'];
   /* Bar heights as fraction of track height, bottom-aligned (rest thin → drive full) */
   var ACT_HEIGHT_FRAC = [0.22, 0.44, 0.72, 1.0];
 
@@ -409,13 +409,13 @@
         /* Subtle border on all bars */
         g.appendChild(mkSVG('rect', {x:x1, y:by, width:bw, height:bh, fill:'none', stroke:ACT_STROKE[s.act], 'stroke-width':0.8, rx:1.8, 'pointer-events':'none'}));
         if (bw > 28 && bh > 16) {
-          var fsz = bw > 80 ? 13 : bw > 45 ? 11 : 9;
+          var fsz = bw > 80 ? 15 : bw > 45 ? 13 : 11;
           /* Duration label – upper portion */
           var txt = mkSVG('text', {x:x1+bw/2, y:by+Math.max(11,bh*0.42), 'text-anchor':'middle', fill:textCol, 'font-size':fsz, 'font-family':'Inter,sans-serif', 'font-weight':600, 'pointer-events':'none'});
           txt.textContent = hhmm(s.dur); g.appendChild(txt);
           /* Activity icon – lower portion (only if bar is tall enough) */
           if (bh > 28) {
-            var ico = mkSVG('text', {x:x1+bw/2, y:by+bh-5, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(8, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
+            var ico = mkSVG('text', {x:x1+bw/2, y:by+bh-5, 'text-anchor':'middle', fill:textCol, 'font-size':Math.max(10, fsz-2), 'font-family':'Inter,sans-serif', 'pointer-events':'none'});
             ico.textContent = ACT_ICONS[s.act]; g.appendChild(ico);
           }
         }
@@ -594,8 +594,10 @@
           fill: '#1565C0', stroke: '#E3F2FD', 'stroke-width': 1.5
         }));
 
-        /* Country code pill/badge above the activity band */
-        var pillW = Math.max(22, cr.country.length * 9 + 8);
+        /* Country code pill/badge above the activity band, with event symbol */
+        var evSymbol = (cr.type === 0) ? '+' : (cr.type === 1 ? '−' : '↔');
+        var markerLabel = evSymbol + ' ' + cr.country;
+        var pillW = Math.max(34, markerLabel.length * 8 + 8);
         svgEl.appendChild(mkSVG('rect', {
           x: x - pillW/2, y: T1Y - 30, width: pillW, height: 17,
           fill: '#1565C0', rx: 3, 'pointer-events': 'none'
@@ -603,10 +605,10 @@
         var lbl = mkSVG('text', {
           x: x, y: T1Y - 16,
           'text-anchor': 'middle', fill: '#FFFFFF',
-          'font-size': 11, 'font-family': 'Inter,sans-serif',
+          'font-size': 12, 'font-family': 'Inter,sans-serif',
           'font-weight': 700, 'pointer-events': 'none'
         });
-        lbl.textContent = cr.country;
+        lbl.textContent = markerLabel;
         svgEl.appendChild(lbl);
 
         /* Invisible hit-area for tooltip */
@@ -628,7 +630,7 @@
               (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
               '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(crossing.tmin) + '</div>' +
               '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
-                (crossing.type === 0 ? 'Wjazd' : crossing.type === 1 ? 'Wyjazd' : 'Przejazd') +
+                (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy') +
               '</div>';
             tip.style.display = 'block';
             var vx = Math.min(ev.clientX + 15, window.innerWidth - 220);
@@ -672,8 +674,8 @@
           var isDay = (absMin % 1440 === 0);
           var tg = mkSVG('g');
           tg.setAttribute('style', 'cursor:pointer;');
-          tg.appendChild(mkSVG('rect', {x:xPos-18, y:AXY+2, width:36, height:20, fill:'transparent', rx:3}));
-          var tl = mkSVG('text', {x:xPos, y:AXY+17, 'text-anchor':'middle', fill:isDay?'#1565C0':'#546E7A', 'font-size':isDay?13:12, 'font-family':'Inter,sans-serif', 'font-weight':isDay?700:400});
+          tg.appendChild(mkSVG('rect', {x:xPos-22, y:AXY, width:44, height:24, fill:'transparent', rx:3}));
+          var tl = mkSVG('text', {x:xPos, y:AXY+18, 'text-anchor':'middle', fill:isDay?'#1565C0':'#546E7A', 'font-size':isDay?16:14, 'font-family':'Inter,sans-serif', 'font-weight':isDay?700:500});
           tl.textContent = isDay ? fmtDate(addD(weekStart, dIdx)) : timeStr;
           tg.appendChild(tl);
           tg.addEventListener('click', function(ev) {
@@ -724,8 +726,8 @@
             stroke:'#B0BEC5', 'stroke-width':1
           }));
           /* Hour label (e.g. "6:00", "12:00", "18:00") */
-          var hl = mkSVG('text', {x:xh, y:AXY+1, 'text-anchor':'middle',
-            fill:'#78909C', 'font-size':10, 'font-family':'Inter,sans-serif'});
+          var hl = mkSVG('text', {x:xh, y:AXY+2, 'text-anchor':'middle',
+            fill:'#78909C', 'font-size':12, 'font-family':'Inter,sans-serif', 'font-weight':600});
           hl.textContent = hr + ':00';
           svgEl.appendChild(hl);
         });
@@ -741,7 +743,7 @@
           dg.setAttribute('style', 'cursor:pointer;');
           var hitW = Math.min(px(1440) - 4, 90);
           dg.appendChild(mkSVG('rect', {x:xm - hitW/2, y:AXY+2, width:hitW, height:20, fill:'transparent', rx:2}));
-          var tl2 = mkSVG('text', {x:xm, y:AXY+18, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':15, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600, 'text-decoration':'underline'});
+          var tl2 = mkSVG('text', {x:xm, y:AXY+18, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':16, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?500:700, 'text-decoration':'underline'});
           tl2.textContent = fmtDate(dLbl);
           dg.appendChild(tl2);
           (function(dayIdx) {
@@ -752,7 +754,7 @@
           })(di3);
           svgEl.appendChild(dg);
         } else {
-          var tl2b = mkSVG('text', {x:xm, y:AXY+18, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':15, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?400:600});
+          var tl2b = mkSVG('text', {x:xm, y:AXY+18, 'text-anchor':'middle', fill:di3>=5?'#9AA0AA':'#1565C0', 'font-size':16, 'font-family':'Inter,sans-serif', 'font-weight':di3>=5?500:700});
           tl2b.textContent = fmtDate(dLbl); svgEl.appendChild(tl2b);
         }
       }
@@ -1584,11 +1586,11 @@
     /* Backdrop */
     var backdrop = document.createElement('div');
     backdrop.id = 'tacho-range-modal';
-    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding-top:40px;font-family:Inter,sans-serif;';
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding-top:30px;font-family:Inter,sans-serif;';
 
     /* Panel */
     var panel = document.createElement('div');
-    panel.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,0.4);width:95%;max-width:960px;overflow:hidden;display:flex;flex-direction:column;';
+    panel.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,0.4);width:96%;max-width:1120px;overflow:hidden;display:flex;flex-direction:column;';
 
     /* Header */
     var hdr = document.createElement('div');
@@ -1717,7 +1719,7 @@
 
       /* Button styles */
       var btnCss = function(en) {
-        return 'background:rgba(255,255,255,'+(en?'0.2':'0.06')+');border:1px solid rgba(255,255,255,'+(en?'0.55':'0.2')+');border-radius:4px;padding:4px 12px;font-size:13px;color:'+(en?'#fff':'rgba(255,255,255,0.3)')+';cursor:'+(en?'pointer':'default')+';font-family:Inter,sans-serif;font-weight:700;white-space:nowrap;';
+        return 'background:rgba(255,255,255,'+(en?'0.2':'0.06')+');border:1px solid rgba(255,255,255,'+(en?'0.55':'0.2')+');border-radius:4px;padding:5px 14px;font-size:14px;color:'+(en?'#fff':'rgba(255,255,255,0.3)')+';cursor:'+(en?'pointer':'default')+';font-family:Inter,sans-serif;font-weight:700;white-space:nowrap;';
       };
       prevBtn.style.cssText = btnCss(hasPrev); prevBtn.disabled = !hasPrev;
       nextBtn.style.cssText = btnCss(hasNext); nextBtn.disabled = !hasNext;
@@ -1746,11 +1748,11 @@
         [3,2,1,0].forEach(function(k) {
           var val = totals[k]||0;
           var card = document.createElement('div');
-          card.style.cssText = 'display:flex;align-items:center;gap:6px;border:1px solid #BBDEFB;border-radius:5px;padding:6px 12px;background:#F8FBFF;';
+          card.style.cssText = 'display:flex;align-items:center;gap:7px;border:1px solid #BBDEFB;border-radius:5px;padding:7px 13px;background:#F8FBFF;';
           card.innerHTML =
             '<div style="width:10px;height:10px;border-radius:3px;background:'+ACT_SOLID[k]+';flex-shrink:0;"></div>' +
-            '<span style="font-size:13px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+
-            '&nbsp;<span style="color:#9AA0AA;font-size:12px;">('+pct(val, totalSpan)+'%)</span></span>';
+            '<span style="font-size:14px;color:#1A2030;"><strong style="color:'+ACT_SOLID[k]+';">'+ACT_NAME[k]+'</strong>: '+hm(val)+
+            '&nbsp;<span style="color:#9AA0AA;font-size:13px;">('+pct(val, totalSpan)+'%)</span></span>';
           breakdownDiv.appendChild(card);
         });
       }
@@ -1759,11 +1761,11 @@
       var overviewRow = document.createElement('div');
       overviewRow.style.cssText = 'display:flex;align-items:stretch;';
       var svgSb = document.createElement('div');
-      svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:6px 8px;display:flex;flex-direction:column;justify-content:center;gap:2px;';
+      svgSb.style.cssText = 'width:'+LW+'px;flex-shrink:0;background:#F0F8FF;border-right:1px solid #BBDEFB;padding:7px 9px;display:flex;flex-direction:column;justify-content:center;gap:3px;';
       svgSb.innerHTML =
-        '<div style="font-size:12px;color:#1565C0;font-weight:700;margin-bottom:2px;">DZIE\u0143</div>' +
-        '<div style="font-size:12px;color:#5A6070;">'+fmtDate(dayDate)+'</div>' +
-        '<div style="font-size:11px;color:#9AA0AA;margin-top:4px;">przeciągnij \u2192 zoom</div>';
+        '<div style="font-size:13px;color:#1565C0;font-weight:700;margin-bottom:2px;">DZIE\u0143</div>' +
+        '<div style="font-size:13px;color:#5A6070;">'+fmtDate(dayDate)+'</div>' +
+        '<div style="font-size:12px;color:#9AA0AA;margin-top:4px;">przeciągnij \u2192 zoom</div>';
       var overviewSvg = mkSVG('svg', {width:cw, height:RH,
         style:'display:block;flex-shrink:0;overflow:visible;cursor:crosshair;-webkit-user-select:none;user-select:none;'});
       fillChartSVG(overviewSvg, ws, weekDays, cw, dayStartMin, dayStartMin+1440, null, dayViols);
@@ -1790,7 +1792,7 @@
 
       /* == Info bar (shown when a range is selected) == */
       var infoBar = document.createElement('div');
-      infoBar.style.cssText = 'display:none;align-items:center;gap:8px;padding:5px 12px;background:#E3F2FD;border-bottom:1px solid #BBDEFB;flex-wrap:wrap;font-family:Inter,sans-serif;';
+      infoBar.style.cssText = 'display:none;align-items:center;gap:8px;padding:6px 12px;background:#E3F2FD;border-bottom:1px solid #BBDEFB;flex-wrap:wrap;font-family:Inter,sans-serif;';
       chartDiv.appendChild(infoBar);
 
       /* == Zoom row (shown when a range is selected) == */
@@ -1807,9 +1809,9 @@
         /* Info bar */
         infoBar.style.display = 'flex';
         infoBar.innerHTML =
-          '<span style="font-size:13px;color:#1565C0;font-weight:700;">\u25BC Powi\u0119kszenie:</span>' +
-          '<span style="font-size:13px;color:#1A2030;">'+timeFrom+' \u2013 '+timeTo+'</span>' +
-          '<span style="font-size:13px;color:#9AA0AA;">('+hm(durMin)+')</span>';
+          '<span style="font-size:14px;color:#1565C0;font-weight:700;">\u25BC Powi\u0119kszenie:</span>' +
+          '<span style="font-size:14px;color:#1A2030;">'+timeFrom+' \u2013 '+timeTo+'</span>' +
+          '<span style="font-size:14px;color:#9AA0AA;">('+hm(durMin)+')</span>';
         var resetBtn2 = document.createElement('button');
         resetBtn2.type = 'button'; resetBtn2.textContent = '\u00D7 Resetuj';
         resetBtn2.style.cssText = 'background:#1E88E5;border:none;border-radius:3px;padding:2px 8px;font-size:13px;color:#fff;cursor:pointer;font-family:Inter,sans-serif;margin-left:auto;';
@@ -1903,7 +1905,7 @@
     nextBtn.type = 'button'; nextBtn.innerHTML = 'Nast\u0119pny \u25BA';
     prevBtn.addEventListener('click', function() { if (curIdx > 0) go(curIdx - 1); });
     nextBtn.addEventListener('click', function() { if (curIdx < sorted.length-1) go(curIdx + 1); });
-    titleSpan.style.cssText = 'flex:1;text-align:center;font-size:15px;font-weight:700;color:#fff;';
+    titleSpan.style.cssText = 'flex:1;text-align:center;font-size:17px;font-weight:700;color:#fff;';
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button'; closeBtn.textContent = '\u2715';
     closeBtn.title = 'Zamknij';
@@ -1915,10 +1917,10 @@
     chartDiv.style.cssText = 'overflow-x:auto;background:#FFF;border-bottom:1px solid #BBDEFB;flex-shrink:0;';
     panel.appendChild(chartDiv);
 
-    breakdownDiv.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;background:#fff;flex-shrink:0;';
+    breakdownDiv.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;padding:11px 13px;background:#fff;flex-shrink:0;';
     panel.appendChild(breakdownDiv);
 
-    counterDiv.style.cssText = 'text-align:center;padding:5px;font-size:13px;color:#9AA0AA;background:#F8FBFF;border-top:1px solid #E0E4E8;flex-shrink:0;';
+    counterDiv.style.cssText = 'text-align:center;padding:6px;font-size:14px;color:#9AA0AA;background:#F8FBFF;border-top:1px solid #E0E4E8;flex-shrink:0;';
     panel.appendChild(counterDiv);
 
     /* Populate */
