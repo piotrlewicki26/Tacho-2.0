@@ -1140,6 +1140,62 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
     $candidates = [];
     $bestScore = 0;
     $bestDataset = [];
+    $unknownCountryByDate = [];
+
+    $collectUnknown = static function (array &$bucket, string $date, int $ts, int $tmin, int $type): void {
+        if ($date === '' || $type < 0 || $type > 2 || $tmin < 0 || $tmin > 1439) {
+            return;
+        }
+        $bucket[$date][] = ['ts' => $ts, 'tmin' => $tmin, 'type' => $type];
+    };
+
+    $applyMissingCountryFallback = static function (array $knownByDate, array $unknownByDate) use ($mergeAndDedup): array {
+        if (empty($knownByDate) || empty($unknownByDate)) {
+            return $knownByDate;
+        }
+        foreach ($unknownByDate as $date => $unknownRows) {
+            if (empty($knownByDate[$date]) || !is_array($knownByDate[$date]) || !is_array($unknownRows)) {
+                continue;
+            }
+            $countries = [];
+            $hasType01 = [0 => false, 1 => false];
+            foreach ($knownByDate[$date] as $row) {
+                if (!is_array($row)) continue;
+                $ctry = strtoupper(trim((string)($row['country'] ?? '')));
+                if ($ctry !== '') $countries[$ctry] = true;
+                $tp = isset($row['type']) ? (int)$row['type'] : -1;
+                if ($tp === 0 || $tp === 1) $hasType01[$tp] = true;
+            }
+            if (count($countries) !== 1) {
+                continue;
+            }
+            $country = array_key_first($countries);
+            foreach ([0, 1] as $wantedType) {
+                if ($hasType01[$wantedType]) continue;
+                $matches = [];
+                foreach ($unknownRows as $u) {
+                    if (!is_array($u)) continue;
+                    $tp = isset($u['type']) ? (int)$u['type'] : -1;
+                    $tm = isset($u['tmin']) ? (int)$u['tmin'] : -1;
+                    if ($tp === $wantedType && $tm >= 0 && $tm <= 1439) {
+                        $matches[] = $u;
+                    }
+                }
+                if (empty($matches)) continue;
+                usort($matches, static fn(array $a, array $b): int =>
+                    ((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1))
+                );
+                $pick = ($wantedType === 0) ? $matches[0] : $matches[count($matches) - 1];
+                $knownByDate[$date][] = [
+                    'ts'      => isset($pick['ts']) && is_numeric($pick['ts']) ? (int)$pick['ts'] : null,
+                    'tmin'    => (int)$pick['tmin'],
+                    'type'    => $wantedType,
+                    'country' => $country,
+                ];
+            }
+        }
+        return $mergeAndDedup([$knownByDate]);
+    };
 
     foreach ($tryTags as [$tb0, $tb1]) {
         for ($i = 0; $i < $len - 6; $i++) {
@@ -1240,6 +1296,11 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                         } elseif (isset($nationCodes[$nationNumeric])) {
                             $country = $nationCodes[$nationNumeric];
                         } else {
+                            if ($type <= 2) {
+                                $date = gmdate('Y-m-d', $ts);
+                                $tmin = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+                                $collectUnknown($unknownCountryByDate, $date, (int)$ts, $tmin, (int)$type);
+                            }
                             continue;
                         }
 
@@ -1317,6 +1378,11 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                     } elseif (isset($nationCodes[$nationNumeric])) {
                         $country = $nationCodes[$nationNumeric];
                     } else {
+                        if ($type <= 2) {
+                            $date = gmdate('Y-m-d', $ts);
+                            $tmin = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+                            $collectUnknown($unknownCountryByDate, $date, (int)$ts, $tmin, (int)$type);
+                        }
                         continue;
                     }
 
@@ -1360,10 +1426,12 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
         }
         $merged = $mergeAndDedup($toMerge);
         if (!empty($merged)) {
+            $merged = $applyMissingCountryFallback($merged, $unknownCountryByDate);
             return $merged;
         }
         if (!empty($bestDataset)) {
-            return $mergeAndDedup([$bestDataset]);
+            $best = $mergeAndDedup([$bestDataset]);
+            return $applyMissingCountryFallback($best, $unknownCountryByDate);
         }
     }
 
@@ -1405,6 +1473,9 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             } elseif (isset($nationCodes[$nationNumeric]) && $nationNumeric >= 1) {
                 $country = $nationCodes[$nationNumeric];
             } else {
+                $date = gmdate('Y-m-d', $ts);
+                $tmin = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
+                $collectUnknown($unknownCountryByDate, $date, (int)$ts, $tmin, (int)$type);
                 continue;
             }
 
@@ -1435,8 +1506,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
             }
         }
         $m3res = $mergeAndDedup($m3merge);
-        if (!empty($m3res)) return $m3res;
-        if (!empty($m3best)) return $mergeAndDedup([$m3best]);
+        if (!empty($m3res)) return $applyMissingCountryFallback($m3res, $unknownCountryByDate);
+        if (!empty($m3best)) return $applyMissingCountryFallback($mergeAndDedup([$m3best]), $unknownCountryByDate);
     }
 
     return [];
