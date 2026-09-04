@@ -577,69 +577,91 @@
     weekDays.forEach(function(day, di) {
       var crs = day && day.crossings;
       if (!crs || !crs.length) return;
+
+      /* Group by minute and spread markers to prevent overlap
+       * (e.g. +PL and −PL at the same timestamp). */
+      var grouped = {};
       crs.forEach(function(cr) {
-        var absMin = di * 1440 + cr.tmin;
+        var tmin = Number(cr && cr.tmin);
+        if (!Number.isFinite(tmin)) return;
+        if (!grouped[tmin]) grouped[tmin] = [];
+        grouped[tmin].push(cr);
+      });
+
+      Object.keys(grouped).forEach(function(k) {
+        var tmin = Number(k);
+        var absMin = di * 1440 + tmin;
         if (absMin < rangeMin || absMin > rangeMax) return;
-        var x = px(absMin);
-
-        /* Solid vertical line from top of activity band through rest band */
-        svgEl.appendChild(mkSVG('line', {
-          x1: x, y1: T1Y - 16, x2: x, y2: T2Y + T2H,
-          stroke: '#1565C0', 'stroke-width': 2, opacity: 0.85
-        }));
-
-        /* Filled circle pin at the very top of the activity band */
-        svgEl.appendChild(mkSVG('circle', {
-          cx: x, cy: T1Y, r: 5,
-          fill: '#1565C0', stroke: '#E3F2FD', 'stroke-width': 1.5
-        }));
-
-        /* Country code pill/badge above the activity band, with event symbol */
-        var evSymbol = (cr.type === 0) ? '+' : (cr.type === 1 ? '−' : '↔');
-        var markerLabel = evSymbol + ' ' + cr.country;
-        var pillW = Math.max(34, markerLabel.length * 8 + 8);
-        svgEl.appendChild(mkSVG('rect', {
-          x: x - pillW/2, y: T1Y - 30, width: pillW, height: 17,
-          fill: '#1565C0', rx: 3, 'pointer-events': 'none'
-        }));
-        var lbl = mkSVG('text', {
-          x: x, y: T1Y - 16,
-          'text-anchor': 'middle', fill: '#FFFFFF',
-          'font-size': 12, 'font-family': 'Inter,sans-serif',
-          'font-weight': 700, 'pointer-events': 'none'
+        var baseX = px(absMin);
+        var bucket = grouped[k];
+        bucket.sort(function(a, b) {
+          var at = (a && Number.isFinite(Number(a.type))) ? Number(a.type) : 2;
+          var bt = (b && Number.isFinite(Number(b.type))) ? Number(b.type) : 2;
+          if (at !== bt) return at - bt; /* +, -, ↔ ordering */
+          return String((a && a.country) || '').localeCompare(String((b && b.country) || ''));
         });
-        lbl.textContent = markerLabel;
-        svgEl.appendChild(lbl);
 
-        /* Invisible hit-area for tooltip */
-        (function(crossing, dayObj) {
-          var hit = mkSVG('rect', {
-            x: x - 12, y: T1Y - 32, width: 24, height: T2Y + T2H - T1Y + 32,
-            fill: 'transparent', cursor: 'pointer'
+        var spread = bucket.length > 1 ? Math.min(16, Math.max(10, Math.round(40 / bucket.length))) : 0;
+        bucket.forEach(function(cr, idx) {
+          var offsetX = bucket.length > 1 ? (idx - (bucket.length - 1) / 2) * spread : 0;
+          var x = baseX + offsetX;
+          var stackY = Math.min(20, idx * 4);
+
+          svgEl.appendChild(mkSVG('line', {
+            x1: x, y1: T1Y - 16 - stackY, x2: x, y2: T2Y + T2H,
+            stroke: '#1565C0', 'stroke-width': 2, opacity: 0.85
+          }));
+
+          svgEl.appendChild(mkSVG('circle', {
+            cx: x, cy: T1Y - stackY, r: 5,
+            fill: '#1565C0', stroke: '#E3F2FD', 'stroke-width': 1.5
+          }));
+
+          var evSymbol = (cr.type === 0) ? '+' : (cr.type === 1 ? '−' : '↔');
+          var markerLabel = evSymbol + ' ' + cr.country;
+          var pillW = Math.max(34, markerLabel.length * 8 + 8);
+          svgEl.appendChild(mkSVG('rect', {
+            x: x - pillW/2, y: T1Y - 30 - stackY, width: pillW, height: 17,
+            fill: '#1565C0', rx: 3, 'pointer-events': 'none'
+          }));
+          var lbl = mkSVG('text', {
+            x: x, y: T1Y - 16 - stackY,
+            'text-anchor': 'middle', fill: '#FFFFFF',
+            'font-size': 12, 'font-family': 'Inter,sans-serif',
+            'font-weight': 700, 'pointer-events': 'none'
           });
-          hit.addEventListener('click', function(ev) {
-            ev.stopPropagation();
-            ev._tachoSeg = true;
-            var tip = getTip();
-            var crossDate = dayObj ? new Date(dayObj.date) : null;
-            tip.innerHTML =
-              '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;">' +
-                '<div style="width:11px;height:11px;border-radius:3px;background:#1565C0;flex-shrink:0;"></div>' +
-                '<strong style="font-size:15px;color:#ECEFF1;">' + crossing.country + '</strong>' +
-              '</div>' +
-              (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
-              '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(crossing.tmin) + '</div>' +
-              '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
-                (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy') +
-              '</div>';
-            tip.style.display = 'block';
-            var vx = Math.min(ev.clientX + 15, window.innerWidth - 220);
-            var vy = Math.min(ev.clientY + 15, window.innerHeight - 120);
-            tip.style.left = vx + 'px';
-            tip.style.top  = vy + 'px';
-          });
-          svgEl.appendChild(hit);
-        })(cr, day);
+          lbl.textContent = markerLabel;
+          svgEl.appendChild(lbl);
+
+          (function(crossing, dayObj, hitX, yTop) {
+            var hit = mkSVG('rect', {
+              x: hitX - 12, y: yTop, width: 24, height: T2Y + T2H - yTop,
+              fill: 'transparent', cursor: 'pointer'
+            });
+            hit.addEventListener('click', function(ev) {
+              ev.stopPropagation();
+              ev._tachoSeg = true;
+              var tip = getTip();
+              var crossDate = dayObj ? new Date(dayObj.date) : null;
+              tip.innerHTML =
+                '<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;">' +
+                  '<div style="width:11px;height:11px;border-radius:3px;background:#1565C0;flex-shrink:0;"></div>' +
+                  '<strong style="font-size:15px;color:#ECEFF1;">' + crossing.country + '</strong>' +
+                '</div>' +
+                (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
+                '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(crossing.tmin) + '</div>' +
+                '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
+                  (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy') +
+                '</div>';
+              tip.style.display = 'block';
+              var vx = Math.min(ev.clientX + 15, window.innerWidth - 220);
+              var vy = Math.min(ev.clientY + 15, window.innerHeight - 120);
+              tip.style.left = vx + 'px';
+              tip.style.top  = vy + 'px';
+            });
+            svgEl.appendChild(hit);
+          })(cr, day, x, T1Y - 32 - stackY);
+        });
       });
     });
 

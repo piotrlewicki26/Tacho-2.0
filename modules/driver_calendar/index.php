@@ -87,8 +87,7 @@ if ($driverId) {
             error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
         }
         try {
-            $forceCrossingsRebuild = isset($_GET['rebuild_crossings']) && $_GET['rebuild_crossings'] === '1';
-            rebuildDriverBorderCrossings($db, $companyId, $driverId, $forceCrossingsRebuild);
+            rebuildDriverBorderCrossings($db, $companyId, $driverId, true);
         } catch (Throwable $bcErr) {
             error_log('driver_calendar: crossings rebuild error for driver ' . $driverId . ': ' . $bcErr->getMessage());
         }
