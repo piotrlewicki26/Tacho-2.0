@@ -271,13 +271,41 @@ CREATE TABLE IF NOT EXISTS `driver_border_crossings` (
     COMMENT '0=entry, 1=exit, 2=passage/other',
   `country_code`   VARCHAR(8) NOT NULL
     COMMENT 'Country code rendered on timeline marker',
+  `quality`        ENUM('raw','inferred','validated') NOT NULL DEFAULT 'raw'
+    COMMENT 'Quality classification of extracted crossing',
+  `confidence`     TINYINT UNSIGNED NOT NULL DEFAULT 70
+    COMMENT 'Confidence score (0..100) for UI/filters',
   `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `uq_driver_crossing`
     (`company_id`,`driver_id`,`crossing_date`,`crossing_tmin`,`crossing_type`,`country_code`),
   KEY `idx_dbc_driver_date` (`driver_id`,`crossing_date`),
+  KEY `idx_dbc_quality_date` (`company_id`,`driver_id`,`quality`,`crossing_date`),
   KEY `idx_dbc_file` (`source_file_id`),
   FOREIGN KEY (`company_id`)     REFERENCES `companies`(`id`) ON DELETE CASCADE,
   FOREIGN KEY (`driver_id`)      REFERENCES `drivers`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`source_file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─────────────────────────────────────────────
+-- Driver Activity Segments (normalized event-level segments)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS `driver_activity_segments` (
+  `id`             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `company_id`     INT UNSIGNED NOT NULL,
+  `driver_id`      INT UNSIGNED NOT NULL,
+  `source_file_id` INT UNSIGNED NOT NULL,
+  `activity_date`  DATE NOT NULL,
+  `start_min`      SMALLINT UNSIGNED NOT NULL COMMENT 'Start minute in day (0..1440)',
+  `end_min`        SMALLINT UNSIGNED NOT NULL COMMENT 'End minute in day (0..1440)',
+  `duration_min`   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `activity_type`  TINYINT UNSIGNED NOT NULL COMMENT '0=rest,1=availability,2=work,3=drive',
+  `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uq_driver_activity_segment`
+    (`company_id`,`driver_id`,`source_file_id`,`activity_date`,`start_min`,`end_min`,`activity_type`),
+  KEY `idx_das_driver_date` (`company_id`,`driver_id`,`activity_date`),
+  KEY `idx_das_file` (`source_file_id`),
+  FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`driver_id`) REFERENCES `drivers`(`id`) ON DELETE CASCADE,
   FOREIGN KEY (`source_file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

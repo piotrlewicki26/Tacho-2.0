@@ -47,6 +47,8 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
+$crossingQuality = in_array($_GET['crossing_quality'] ?? 'all', ['all', 'validated', 'raw', 'inferred'], true)
+    ? (string)($_GET['crossing_quality'] ?? 'all') : 'all';
 $activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy'])
     ? $_GET['tab'] : 'calendar';
 
@@ -87,7 +89,7 @@ if ($driverId) {
             error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
         }
         try {
-            rebuildDriverBorderCrossings($db, $companyId, $driverId, true);
+            rebuildDriverBorderCrossings($db, $companyId, $driverId, false);
         } catch (Throwable $bcErr) {
             error_log('driver_calendar: crossings rebuild error for driver ' . $driverId . ': ' . $bcErr->getMessage());
         }
@@ -349,8 +351,8 @@ $filteredChartDays = $chartDays; // used for violations/summary tabs (respects d
 
 if ($driverId && $driverInfo) {
     try {
-        $selectedCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $dateFrom, $dateTo);
-        $timelineCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $timelineDateFrom, $timelineDateTo);
+        $selectedCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $dateFrom, $dateTo, $crossingQuality);
+        $timelineCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $timelineDateFrom, $timelineDateTo, $crossingQuality);
     } catch (Throwable $bcLoadErr) {
         error_log('driver_calendar: crossings load error for driver ' . $driverId . ': ' . $bcLoadErr->getMessage());
         $selectedCrossingsByDate = [];

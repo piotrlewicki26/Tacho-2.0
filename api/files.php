@@ -678,6 +678,7 @@ if ($action === 'upload' && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         foreach ($calData as $row) {
                             upsertDriverActivityCalendarDay($db, $companyId, $linkedDriverId, $row, $newFileId);
                         }
+                        syncDriverActivitySegmentsForFile($db, $companyId, (int)$linkedDriverId, $newFileId, $actResult['days'] ?? []);
                     }
                 }
 

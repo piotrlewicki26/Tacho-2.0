@@ -1123,6 +1123,10 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                     'tmin'    => $tmin,
                     'type'    => $type,
                     'country' => $ctry,
+                    'quality' => in_array((string)($rec['quality'] ?? ''), ['raw', 'inferred', 'validated'], true)
+                        ? (string)$rec['quality'] : 'raw',
+                    'confidence' => isset($rec['confidence']) && is_numeric($rec['confidence'])
+                        ? max(0, min(100, (int)$rec['confidence'])) : 70,
                 ];
             }
             if (!empty($deduped[$date])) {
@@ -1191,6 +1195,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                     'tmin'    => (int)$pick['tmin'],
                     'type'    => $wantedType,
                     'country' => $country,
+                    'quality' => 'inferred',
+                    'confidence' => 60,
                 ];
             }
         }
@@ -1312,6 +1318,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                                 'tmin'    => $tmin,
                                 'type'    => $type,
                                 'country' => $country,
+                                'quality' => 'raw',
+                                'confidence' => 85,
                             ];
                         }
                     }
@@ -1393,6 +1401,8 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
                         'tmin'    => $tmin,
                         'type'    => $type,
                         'country' => $country,
+                        'quality' => 'raw',
+                        'confidence' => 80,
                     ];
                 }
 
@@ -1481,7 +1491,14 @@ function parseBorderCrossings(string $data, int $yearMin, int $yearMax): array
 
             $date = gmdate('Y-m-d', $ts);
             $tmin = (int)gmdate('H', $ts) * 60 + (int)gmdate('i', $ts);
-            $hits[$date][] = ['ts' => $ts, 'tmin' => $tmin, 'type' => $type, 'country' => $country];
+            $hits[$date][] = [
+                'ts' => $ts,
+                'tmin' => $tmin,
+                'type' => $type,
+                'country' => $country,
+                'quality' => 'raw',
+                'confidence' => 70,
+            ];
         }
 
         /* Allow a single crossing record – a driver may cross only one border
@@ -2320,16 +2337,44 @@ function ensureDriverBorderCrossingsTable(\PDO $db): void
            `crossing_ts`    INT UNSIGNED DEFAULT NULL,
            `crossing_type`  TINYINT UNSIGNED NOT NULL DEFAULT 2,
            `country_code`   VARCHAR(8) NOT NULL,
-           `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `quality`        ENUM('raw','inferred','validated') NOT NULL DEFAULT 'raw',
+          `confidence`     TINYINT UNSIGNED NOT NULL DEFAULT 70,
+          `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
            UNIQUE KEY `uq_driver_crossing`
              (`company_id`,`driver_id`,`crossing_date`,`crossing_tmin`,`crossing_type`,`country_code`),
            KEY `idx_driver_date` (`driver_id`,`crossing_date`),
+           KEY `idx_quality_date` (`company_id`,`driver_id`,`quality`,`crossing_date`),
            KEY `idx_file` (`source_file_id`),
            CONSTRAINT `fk_dbc_company` FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
            CONSTRAINT `fk_dbc_driver`  FOREIGN KEY (`driver_id`) REFERENCES `drivers`(`id`) ON DELETE CASCADE,
            CONSTRAINT `fk_dbc_file`    FOREIGN KEY (`source_file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    try {
+        $dbName = (string)$db->query('SELECT DATABASE()')->fetchColumn();
+        if ($dbName !== '') {
+           $hasCol = $db->prepare(
+               "SELECT 1
+                  FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA=? AND TABLE_NAME='driver_border_crossings' AND COLUMN_NAME=?
+                 LIMIT 1"
+           );
+           $hasCol->execute([$dbName, 'quality']);
+           if (!$hasCol->fetchColumn()) {
+               $db->exec("ALTER TABLE `driver_border_crossings`
+                          ADD COLUMN `quality` ENUM('raw','inferred','validated') NOT NULL DEFAULT 'raw'
+                          AFTER `country_code`");
+           }
+           $hasCol->execute([$dbName, 'confidence']);
+           if (!$hasCol->fetchColumn()) {
+               $db->exec("ALTER TABLE `driver_border_crossings`
+                          ADD COLUMN `confidence` TINYINT UNSIGNED NOT NULL DEFAULT 70
+                          AFTER `quality`");
+           }
+        }
+    } catch (\Throwable $e) {
+        error_log('ensureDriverBorderCrossingsTable: optional schema extension failed: ' . $e->getMessage());
+    }
     $done = true;
 }
 
@@ -2356,8 +2401,8 @@ function syncDriverBorderCrossingsForFile(
 
     $ins = $db->prepare(
         'INSERT IGNORE INTO driver_border_crossings
-           (company_id, driver_id, source_file_id, crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code)
-         VALUES (?,?,?,?,?,?,?,?)'
+           (company_id, driver_id, source_file_id, crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code, quality, confidence)
+         VALUES (?,?,?,?,?,?,?,?,?,?)'
     );
 
     $inserted = 0;
@@ -2377,6 +2422,13 @@ function syncDriverBorderCrossingsForFile(
             $country = strtoupper(trim((string)($cr['country'] ?? '')));
             if ($country === '' || strlen($country) > 8) continue;
             $ts = (isset($cr['ts']) && is_numeric($cr['ts'])) ? (int)$cr['ts'] : null;
+            $quality = (string)($cr['quality'] ?? 'raw');
+            if (!in_array($quality, ['raw', 'inferred', 'validated'], true)) {
+                $quality = 'raw';
+            }
+            $confidence = isset($cr['confidence']) && is_numeric($cr['confidence'])
+                ? (int)$cr['confidence'] : ($quality === 'inferred' ? 60 : 80);
+            $confidence = max(0, min(100, $confidence));
 
             $ins->execute([
                 $companyId,
@@ -2387,6 +2439,8 @@ function syncDriverBorderCrossingsForFile(
                 $ts,
                 $type,
                 $country,
+                $quality,
+                $confidence,
             ]);
             $inserted += $ins->rowCount() > 0 ? 1 : 0;
         }
@@ -2451,37 +2505,211 @@ function rebuildDriverBorderCrossings(\PDO $db, int $companyId, int $driverId, b
 /**
  * Return crossings grouped by date for timeline rendering.
  *
- * @return array<string, array<int, array{ts:int|null,tmin:int,type:int,country:string}>>
+ * @return array<string, array<int, array{ts:int|null,tmin:int,type:int,country:string,quality:string,confidence:int}>>
  */
+function validateCrossingSequenceByDay(array $byDate): array
+{
+    foreach ($byDate as $date => $rows) {
+        if (!is_array($rows) || empty($rows)) continue;
+        usort($rows, static fn(array $a, array $b): int =>
+           (((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1)))
+        );
+        $idxStart = null;
+        $idxEnd = null;
+        foreach ($rows as $i => $r) {
+           $tp = (int)($r['type'] ?? 2);
+           if ($tp === 0 && $idxStart === null) $idxStart = $i;
+           if ($tp === 1) $idxEnd = $i;
+        }
+        if ($idxStart !== null && $idxEnd !== null && $idxStart < $idxEnd) {
+           $startCountry = (string)($rows[$idxStart]['country'] ?? '');
+           $endCountry = (string)($rows[$idxEnd]['country'] ?? '');
+           if ($startCountry !== '' && $endCountry !== '') {
+               foreach ([$idxStart, $idxEnd] as $vi) {
+                   $rows[$vi]['quality'] = 'validated';
+                   $rows[$vi]['confidence'] = max((int)($rows[$vi]['confidence'] ?? 0), 95);
+               }
+               for ($i = $idxStart + 1; $i < $idxEnd; $i++) {
+                   if ((int)($rows[$i]['type'] ?? 2) === 2) {
+                       $rows[$i]['quality'] = 'validated';
+                       $rows[$i]['confidence'] = max((int)($rows[$i]['confidence'] ?? 0), 90);
+                   }
+               }
+           }
+        }
+        $byDate[$date] = $rows;
+    }
+    return $byDate;
+}
+
 function getDriverBorderCrossingsByDateRange(
     \PDO $db,
     int $companyId,
     int $driverId,
     string $fromDate,
-    string $toDate
+    string $toDate,
+    string $qualityFilter = 'all'
 ): array {
     if ($driverId <= 0) return [];
     ensureDriverBorderCrossingsTable($db);
 
-    $stmt = $db->prepare(
-        "SELECT crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code
+    $qualityFilter = strtolower(trim($qualityFilter));
+    $allowed = ['all', 'validated', 'raw', 'inferred'];
+    if (!in_array($qualityFilter, $allowed, true)) {
+        $qualityFilter = 'all';
+    }
+
+    $sql = "SELECT crossing_date, crossing_tmin, crossing_ts, crossing_type, country_code, quality, confidence
          FROM driver_border_crossings
          WHERE company_id=? AND driver_id=?
-           AND crossing_date BETWEEN ? AND ?
-         ORDER BY crossing_date ASC, crossing_tmin ASC, id ASC"
-    );
-    $stmt->execute([$companyId, $driverId, $fromDate, $toDate]);
+           AND crossing_date BETWEEN ? AND ?";
+    $params = [$companyId, $driverId, $fromDate, $toDate];
+    if ($qualityFilter !== 'all') {
+        $sql .= " AND quality = ?";
+        $params[] = $qualityFilter;
+    }
+    $sql .= " ORDER BY crossing_date ASC, crossing_tmin ASC, id ASC";
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
     $out = [];
     foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
         $d = (string)$r['crossing_date'];
         $out[$d][] = [
-            'ts'      => isset($r['crossing_ts']) ? (int)$r['crossing_ts'] : null,
-            'tmin'    => (int)$r['crossing_tmin'],
-            'type'    => (int)$r['crossing_type'],
-            'country' => (string)$r['country_code'],
+           'ts'      => isset($r['crossing_ts']) ? (int)$r['crossing_ts'] : null,
+           'tmin'    => (int)$r['crossing_tmin'],
+           'type'    => (int)$r['crossing_type'],
+           'country' => (string)$r['country_code'],
+           'quality' => in_array((string)($r['quality'] ?? ''), ['raw', 'inferred', 'validated'], true) ? (string)$r['quality'] : 'raw',
+           'confidence' => isset($r['confidence']) && is_numeric($r['confidence']) ? (int)$r['confidence'] : 70,
         ];
     }
+    $out = validateCrossingSequenceByDay($out);
+    if ($qualityFilter === 'validated') {
+        foreach ($out as $d => $rows) {
+           $rows = array_values(array_filter($rows, static fn(array $r): bool => (string)($r['quality'] ?? '') === 'validated'));
+           if ($rows) $out[$d] = $rows; else unset($out[$d]);
+        }
+    }
     return $out;
+}
+
+/**
+ * Ensure normalized activity segments table exists.
+ */
+function ensureDriverActivitySegmentsTable(\PDO $db): void
+{
+    static $done = false;
+    if ($done) return;
+    $db->exec(
+        "CREATE TABLE IF NOT EXISTS `driver_activity_segments` (
+           `id`             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+           `company_id`     INT UNSIGNED NOT NULL,
+           `driver_id`      INT UNSIGNED NOT NULL,
+           `source_file_id` INT UNSIGNED NOT NULL,
+           `activity_date`  DATE NOT NULL,
+           `start_min`      SMALLINT UNSIGNED NOT NULL,
+           `end_min`        SMALLINT UNSIGNED NOT NULL,
+           `duration_min`   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+           `activity_type`  TINYINT UNSIGNED NOT NULL,
+           `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           UNIQUE KEY `uq_driver_activity_segment`
+             (`company_id`,`driver_id`,`source_file_id`,`activity_date`,`start_min`,`end_min`,`activity_type`),
+           KEY `idx_das_driver_date` (`company_id`,`driver_id`,`activity_date`),
+           KEY `idx_das_file` (`source_file_id`),
+           CONSTRAINT `fk_das_company` FOREIGN KEY (`company_id`) REFERENCES `companies`(`id`) ON DELETE CASCADE,
+           CONSTRAINT `fk_das_driver`  FOREIGN KEY (`driver_id`) REFERENCES `drivers`(`id`) ON DELETE CASCADE,
+           CONSTRAINT `fk_das_file`    FOREIGN KEY (`source_file_id`) REFERENCES `ddd_files`(`id`) ON DELETE CASCADE
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $done = true;
+}
+
+/**
+ * Replace normalized activity segments for one file.
+ *
+ * @param array<int,array<string,mixed>> $days
+ */
+function syncDriverActivitySegmentsForFile(
+    \PDO $db,
+    int $companyId,
+    int $driverId,
+    int $sourceFileId,
+    array $days
+): int {
+    if ($driverId <= 0 || $sourceFileId <= 0 || empty($days)) return 0;
+    ensureDriverActivitySegmentsTable($db);
+    $db->prepare(
+        'DELETE FROM driver_activity_segments WHERE company_id=? AND driver_id=? AND source_file_id=?'
+    )->execute([$companyId, $driverId, $sourceFileId]);
+
+    $ins = $db->prepare(
+        'INSERT IGNORE INTO driver_activity_segments
+           (company_id, driver_id, source_file_id, activity_date, start_min, end_min, duration_min, activity_type)
+         VALUES (?,?,?,?,?,?,?,?)'
+    );
+
+    $inserted = 0;
+    foreach ($days as $day) {
+        if (!is_array($day)) continue;
+        $date = (string)($day['date'] ?? '');
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+        $segs = $day['segs'] ?? $day['segments'] ?? [];
+        if (is_string($segs)) {
+            $segs = json_decode($segs, true) ?: [];
+        }
+        if (!is_array($segs)) continue;
+        foreach ($segs as $seg) {
+            if (!is_array($seg)) continue;
+            $start = isset($seg['start']) ? (int)$seg['start'] : -1;
+            $end = isset($seg['end']) ? (int)$seg['end'] : -1;
+            $dur = isset($seg['dur']) ? (int)$seg['dur'] : max(0, $end - $start);
+            $act = isset($seg['act']) ? (int)$seg['act'] : -1;
+            if ($start < 0 || $start > 1440 || $end < 0 || $end > 1440 || $end < $start) continue;
+            if ($act < 0 || $act > 3) continue;
+            $ins->execute([$companyId, $driverId, $sourceFileId, $date, $start, $end, max(0, $dur), $act]);
+            $inserted += $ins->rowCount() > 0 ? 1 : 0;
+        }
+    }
+    return $inserted;
+}
+
+/**
+ * Rebuild normalized activity segments store for one driver from uploaded files.
+ */
+function rebuildDriverActivitySegments(\PDO $db, int $companyId, int $driverId, bool $force = false): int
+{
+    if ($driverId <= 0) return 0;
+    ensureDriverActivitySegmentsTable($db);
+
+    $filesStmt = $db->prepare(
+        "SELECT f.id, f.stored_name, f.stored_subdir
+           FROM ddd_files f
+          WHERE f.company_id=? AND f.driver_id=? AND f.file_type='driver' AND f.is_deleted=0
+          ORDER BY f.download_date DESC, f.id DESC"
+    );
+    $filesStmt->execute([$companyId, $driverId]);
+    $files = $filesStmt->fetchAll(\PDO::FETCH_ASSOC);
+    if (!$files) return 0;
+
+    $hasRowsStmt = $db->prepare('SELECT 1 FROM driver_activity_segments WHERE source_file_id=? LIMIT 1');
+    foreach ($files as $fRow) {
+        $fileId = (int)($fRow['id'] ?? 0);
+        if ($fileId <= 0) continue;
+        if (!$force) {
+            $hasRowsStmt->execute([$fileId]);
+            if ($hasRowsStmt->fetchColumn()) continue;
+        }
+        $fp = dddPhysPath($fRow, $companyId);
+        if (!is_file($fp)) continue;
+        $parsed = parseDddFile($fp);
+        $days = $parsed['days'] ?? [];
+        if (!$days) continue;
+        syncDriverActivitySegmentsForFile($db, $companyId, $driverId, $fileId, $days);
+    }
+
+    $cnt = $db->prepare('SELECT COUNT(*) FROM driver_activity_segments WHERE company_id=? AND driver_id=?');
+    $cnt->execute([$companyId, $driverId]);
+    return (int)$cnt->fetchColumn();
 }
 
 /**
@@ -2654,6 +2882,11 @@ function backfillDriverActivityCalendar(\PDO $db, int $companyId, int $driverId)
         rebuildDriverBorderCrossings($db, $companyId, $driverId, false);
     } catch (\Throwable $e) {
         error_log('backfillDriverActivityCalendar: crossings rebuild error for driver ' . $driverId . ': ' . $e->getMessage());
+    }
+    try {
+        rebuildDriverActivitySegments($db, $companyId, $driverId, false);
+    } catch (\Throwable $e) {
+        error_log('backfillDriverActivityCalendar: activity segments rebuild error for driver ' . $driverId . ': ' . $e->getMessage());
     }
 
     // Return the number of rows now in the calendar for this driver
