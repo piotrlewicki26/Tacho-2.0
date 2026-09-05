@@ -2542,6 +2542,115 @@ function validateCrossingSequenceByDay(array $byDate): array
     return $byDate;
 }
 
+function alignCardPlacementCrossingsToActivityDays(
+    \PDO $db,
+    int $companyId,
+    int $driverId,
+    string $fromDate,
+    string $toDate,
+    array $byDate
+): array {
+    if (empty($byDate)) return $byDate;
+
+    $fromExt = (new \DateTimeImmutable($fromDate . ' 00:00:00', new \DateTimeZone('UTC')))->modify('-1 day')->format('Y-m-d');
+    $toExt   = (new \DateTimeImmutable($toDate   . ' 00:00:00', new \DateTimeZone('UTC')))->modify('+1 day')->format('Y-m-d');
+
+    $aStmt = $db->prepare(
+        "SELECT `date`, drive_min, work_min, avail_min, segments
+           FROM driver_activity_calendar
+          WHERE company_id=? AND driver_id=? AND `date` BETWEEN ? AND ?"
+    );
+    $aStmt->execute([$companyId, $driverId, $fromExt, $toExt]);
+    $activity = [];
+    foreach ($aStmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+        $date = (string)($r['date'] ?? '');
+        if ($date === '') continue;
+        $activeTotal = (int)($r['drive_min'] ?? 0) + (int)($r['work_min'] ?? 0) + (int)($r['avail_min'] ?? 0);
+        $firstAct = null;
+        $lastAct = null;
+        $segs = json_decode((string)($r['segments'] ?? '[]'), true);
+        if (is_array($segs)) {
+            foreach ($segs as $s) {
+                if (!is_array($s)) continue;
+                $act = isset($s['act']) ? (int)$s['act'] : -1;
+                $st  = isset($s['start']) ? (int)$s['start'] : -1;
+                $en  = isset($s['end']) ? (int)$s['end'] : -1;
+                if ($act <= 0 || $st < 0 || $en < 0 || $en < $st) continue;
+                if ($firstAct === null || $st < $firstAct) $firstAct = $st;
+                if ($lastAct === null || $en > $lastAct) $lastAct = $en;
+            }
+        }
+        $activity[$date] = [
+            'active' => $activeTotal > 0,
+            'first'  => $firstAct,
+            'last'   => $lastAct,
+        ];
+    }
+
+    $dayIndex = static function (string $d): int {
+        return (int)floor(strtotime($d . ' 00:00:00 UTC') / 86400);
+    };
+
+    $aligned = [];
+    foreach ($byDate as $date => $rows) {
+        if (!is_array($rows)) continue;
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $type = isset($row['type']) ? (int)$row['type'] : 2;
+            $tmin = isset($row['tmin']) ? (int)$row['tmin'] : -1;
+            $targetDate = (string)$date;
+            if (($type === 0 || $type === 1) && $tmin >= 0 && $tmin <= 1439) {
+                $curActive = !empty($activity[$date]['active']);
+                if (!$curActive) {
+                    $dObj = new \DateTimeImmutable($date . ' 00:00:00', new \DateTimeZone('UTC'));
+                    $prevDate = $dObj->modify('-1 day')->format('Y-m-d');
+                    $nextDate = $dObj->modify('+1 day')->format('Y-m-d');
+                    $prevActive = !empty($activity[$prevDate]['active']);
+                    $nextActive = !empty($activity[$nextDate]['active']);
+                    $absNow = $dayIndex($date) * 1440 + $tmin;
+
+                    if ($type === 0) {
+                        if ($nextActive && isset($activity[$nextDate]['first']) && $activity[$nextDate]['first'] !== null) {
+                            $nextFirstAbs = $dayIndex($nextDate) * 1440 + (int)$activity[$nextDate]['first'];
+                            $delta = $nextFirstAbs - $absNow;
+                            if ($delta >= 0 && $delta <= 720) $targetDate = $nextDate;
+                        }
+                        if ($targetDate === $date && $nextActive && $tmin >= 1080) {
+                            $targetDate = $nextDate;
+                        }
+                    } else { /* type 1 = card removal */
+                        if ($prevActive && isset($activity[$prevDate]['last']) && $activity[$prevDate]['last'] !== null) {
+                            $prevLastAbs = $dayIndex($prevDate) * 1440 + (int)$activity[$prevDate]['last'];
+                            $delta = $absNow - $prevLastAbs;
+                            if ($delta >= 0 && $delta <= 720) $targetDate = $prevDate;
+                        }
+                        if ($targetDate === $date && $prevActive && $tmin <= 360) {
+                            $targetDate = $prevDate;
+                        }
+                    }
+                }
+            }
+            $aligned[$targetDate][] = $row;
+        }
+    }
+
+    foreach ($aligned as $d => $rows) {
+        $seen = [];
+        $ded = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) continue;
+            $k = ((int)($r['tmin'] ?? -1)) . '|' . ((int)($r['type'] ?? 2)) . '|' . strtoupper((string)($r['country'] ?? ''));
+            if (isset($seen[$k])) continue;
+            $seen[$k] = true;
+            $ded[] = $r;
+        }
+        usort($ded, static fn(array $a, array $b): int => ((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1)));
+        $aligned[$d] = $ded;
+    }
+    ksort($aligned);
+    return $aligned;
+}
+
 function getDriverBorderCrossingsByDateRange(
     \PDO $db,
     int $companyId,
@@ -2584,6 +2693,7 @@ function getDriverBorderCrossingsByDateRange(
         ];
     }
     $out = validateCrossingSequenceByDay($out);
+    $out = alignCardPlacementCrossingsToActivityDays($db, $companyId, $driverId, $fromDate, $toDate, $out);
     if ($qualityFilter === 'validated') {
         foreach ($out as $d => $rows) {
            $rows = array_values(array_filter($rows, static fn(array $r): bool => (string)($r['quality'] ?? '') === 'validated'));
