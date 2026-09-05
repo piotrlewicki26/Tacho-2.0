@@ -49,7 +49,7 @@ try {
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
 $crossingQuality = in_array($_GET['crossing_quality'] ?? 'all', ['all', 'validated', 'raw', 'inferred'], true)
     ? (string)($_GET['crossing_quality'] ?? 'all') : 'all';
-$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy'])
+$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy','granice'])
     ? $_GET['tab'] : 'calendar';
 
 $stmt = $db->prepare(
@@ -73,6 +73,8 @@ $selectedCrossingsByDate = [];
 $timelineCrossingsByDate = [];
 $timelineDateFrom = null;
 $timelineDateTo   = null;
+$borderStays = [];
+$borderCompareAvailable = false;
 $dateFrom    = date('Y-m-01');
 $dateTo      = date('Y-m-t');
 
@@ -296,7 +298,7 @@ if ($driverId) {
 
 // ── Parse vehicle usage records from driver DDD files (for Pojazdy tab) ──
 $vehicleRecords = [];
-if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
+if ($driverId && $driverInfo && in_array($activeTab, ['pojazdy', 'granice'], true) && $driverFiles) {
     foreach ($driverFiles as $fRow) {
         $fp = dddPhysPath($fRow, $companyId);
         if (!is_file($fp)) continue;
@@ -406,6 +408,133 @@ if ($driverId && $driverInfo) {
         $crossingsDetected = (int)$detStmt->fetchColumn();
     } catch (Throwable $detErr) {
         error_log('driver_calendar: crossings debug query error: ' . $detErr->getMessage());
+    }
+
+    // ── Build border stay timeline rows (entry/exit, duration, km, optional VU compare) ──
+    try {
+        $flat = [];
+        foreach ($timelineCrossingsByDate as $d => $rows) {
+            if (!is_array($rows)) continue;
+            foreach ($rows as $r) {
+                if (!is_array($r)) continue;
+                $tmin = isset($r['tmin']) ? (int)$r['tmin'] : -1;
+                if ($tmin < 0 || $tmin > 1439) continue;
+                $ts = (isset($r['ts']) && is_numeric($r['ts']) && (int)$r['ts'] > 0)
+                    ? (int)$r['ts']
+                    : (strtotime($d . ' 00:00:00 UTC') + $tmin * 60);
+                if ($ts <= 0) continue;
+                $flat[] = [
+                    'date' => (string)$d,
+                    'ts' => $ts,
+                    'tmin' => $tmin,
+                    'type' => isset($r['type']) ? (int)$r['type'] : 2,
+                    'country' => strtoupper(trim((string)($r['country'] ?? ''))),
+                    'quality' => (string)($r['quality'] ?? 'raw'),
+                ];
+            }
+        }
+        usort($flat, static fn(array $a, array $b): int => ($a['ts'] <=> $b['ts']));
+        $ded = [];
+        $seen = [];
+        foreach ($flat as $e) {
+            $k = $e['ts'] . '|' . $e['type'] . '|' . $e['country'];
+            if (isset($seen[$k])) continue;
+            $seen[$k] = true;
+            $ded[] = $e;
+        }
+        $flat = $ded;
+
+        $driverKmByDate = [];
+        $kmStmt = $db->prepare(
+            'SELECT date, dist_km FROM driver_activity_calendar
+             WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?'
+        );
+        $kmStmt->execute([$companyId, $driverId, $timelineDateFrom, $timelineDateTo]);
+        foreach ($kmStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $driverKmByDate[(string)$r['date']] = (int)$r['dist_km'];
+        }
+
+        $vuKmByDate = [];
+        try {
+            $regToVehicle = [];
+            $vStmt = $db->prepare('SELECT id, registration FROM vehicles WHERE company_id=? AND is_active=1');
+            $vStmt->execute([$companyId]);
+            foreach ($vStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
+                $regKey = strtoupper(preg_replace('/\s+/', '', (string)($vr['registration'] ?? '')));
+                if ($regKey !== '') $regToVehicle[$regKey][] = (int)$vr['id'];
+            }
+
+            $candidateIds = [];
+            foreach (($vehicleRecords ?? []) as $vr) {
+                $rk = strtoupper(preg_replace('/\s+/', '', (string)($vr['reg'] ?? '')));
+                if ($rk !== '' && !empty($regToVehicle[$rk])) {
+                    foreach ($regToVehicle[$rk] as $vid) $candidateIds[$vid] = true;
+                }
+            }
+            if (!empty($candidateIds)) {
+                $vids = array_keys($candidateIds);
+                $in = implode(',', array_fill(0, count($vids), '?'));
+                $vuSql = "SELECT date, SUM(dist_km) AS km
+                          FROM vehicle_activity_calendar
+                          WHERE company_id=? AND vehicle_id IN ($in) AND date BETWEEN ? AND ?
+                          GROUP BY date";
+                $vuParams = array_merge([$companyId], $vids, [$timelineDateFrom, $timelineDateTo]);
+                $vuStmt = $db->prepare($vuSql);
+                $vuStmt->execute($vuParams);
+                foreach ($vuStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
+                    $vuKmByDate[(string)$vr['date']] = (int)$vr['km'];
+                }
+                $borderCompareAvailable = !empty($vuKmByDate);
+            }
+        } catch (Throwable $vuErr) {
+            $borderCompareAvailable = false;
+        }
+
+        $sumKm = static function (array $map, int $fromTs, int $toTs): int {
+            if ($toTs < $fromTs) return 0;
+            $km = 0;
+            $cur = gmdate('Y-m-d', $fromTs);
+            $end = gmdate('Y-m-d', $toTs);
+            while ($cur <= $end) {
+                $km += (int)($map[$cur] ?? 0);
+                $cur = gmdate('Y-m-d', strtotime($cur . ' +1 day'));
+            }
+            return $km;
+        };
+
+        for ($i = 0, $n = count($flat); $i < $n; $i++) {
+            $cur = $flat[$i];
+            if ($cur['country'] === '') continue;
+            $exit = null;
+            for ($j = $i + 1; $j < $n; $j++) {
+                if (($flat[$j]['country'] ?? '') === '') continue;
+                if ($flat[$j]['country'] !== $cur['country'] || (int)$flat[$j]['type'] === 1) {
+                    $exit = $flat[$j];
+                    break;
+                }
+            }
+            $enterTs = (int)$cur['ts'];
+            $exitTs = $exit ? (int)$exit['ts'] : null;
+            $durMin = $exitTs ? max(0, (int)floor(($exitTs - $enterTs) / 60)) : null;
+            $driverKm = $exitTs ? $sumKm($driverKmByDate, $enterTs, $exitTs) : null;
+            $vuKm = ($exitTs && $borderCompareAvailable) ? $sumKm($vuKmByDate, $enterTs, $exitTs) : null;
+            $borderStays[] = [
+                'country' => $cur['country'],
+                'enter_ts' => $enterTs,
+                'enter_type' => (int)$cur['type'],
+                'enter_quality' => (string)$cur['quality'],
+                'exit_ts' => $exitTs,
+                'exit_country' => $exit['country'] ?? null,
+                'exit_type' => $exit['type'] ?? null,
+                'duration_min' => $durMin,
+                'driver_km' => $driverKm,
+                'vu_km' => $vuKm,
+            ];
+        }
+    } catch (Throwable $stErr) {
+        error_log('driver_calendar: border stay build error: ' . $stErr->getMessage());
+        $borderStays = [];
+        $borderCompareAvailable = false;
     }
 }
 
@@ -687,6 +816,13 @@ include __DIR__ . '/../../templates/header.php';
               <i class="bi bi-activity me-1"></i>Oś czasu
             </a>
           </li>
+          <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='granice'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=granice"
+               role="tab">
+              <i class="bi bi-signpost-split me-1"></i>Przekroczenia granic
+            </a>
+          </li>
         </ul>
       </div>
 
@@ -894,6 +1030,84 @@ include __DIR__ . '/../../templates/header.php';
         ?>
         <?php /* Infringements in selected scope – hidden per UX request */ ?>
         <?php /* Daily summary table – hidden per UX request */ ?>
+
+        <?php elseif ($activeTab === 'granice'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: BORDER CROSSINGS
+             ════════════════════════════════════════════════════ -->
+        <?php if (!empty($borderStays)): ?>
+        <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+          <i class="bi bi-info-circle text-muted"></i>
+          <small class="text-muted">Źródło: karta kierowcy (crossingi). Dystans: suma dni z kalendarza kierowcy; porównanie VU gdy dostępne dla pojazdów powiązanych rejestracją.</small>
+          <span class="badge bg-primary ms-auto"><?= count($borderStays) ?> wpis<?= count($borderStays) === 1 ? '' : 'ów' ?></span>
+        </div>
+        <div class="table-responsive">
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Kraj</th>
+                <th>Wjazd / zdarzenie</th>
+                <th>Wyjazd / następne zdarzenie</th>
+                <th>Czas w kraju</th>
+                <th class="text-end">KM (karta kierowcy)</th>
+                <?php if ($borderCompareAvailable): ?>
+                <th class="text-end">KM (tacho/VU)</th>
+                <th class="text-end">Różnica</th>
+                <?php endif; ?>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($borderStays as $st): ?>
+              <?php
+                $enterTs = (int)($st['enter_ts'] ?? 0);
+                $exitTs  = isset($st['exit_ts']) && $st['exit_ts'] ? (int)$st['exit_ts'] : null;
+                $enterLbl = ((int)($st['enter_type'] ?? 2) === 0 ? '+ Włożenie karty' : ((int)($st['enter_type'] ?? 2) === 1 ? '− Wycofanie karty' : '↔ Przekroczenie granicy'));
+                $exitLbl = $exitTs
+                    ? (((int)($st['exit_type'] ?? 2) === 0 ? '+ Włożenie karty' : ((int)($st['exit_type'] ?? 2) === 1 ? '− Wycofanie karty' : '↔ Przekroczenie granicy')))
+                    : '—';
+                $durMin = isset($st['duration_min']) ? (int)$st['duration_min'] : null;
+                $durTxt = $durMin !== null ? sprintf('%02dh %02dm', intdiv($durMin, 60), $durMin % 60) : '—';
+                $dkm = isset($st['driver_km']) ? (int)$st['driver_km'] : null;
+                $vkm = isset($st['vu_km']) && $st['vu_km'] !== null ? (int)$st['vu_km'] : null;
+              ?>
+              <tr>
+                <td><strong><?= e($st['country'] ?? '—') ?></strong></td>
+                <td class="text-nowrap">
+                  <?php if ($enterTs > 0): ?>
+                  <?= gmdate('d.m.Y H:i:s', $enterTs) ?><br>
+                  <span class="text-muted small"><?= e($enterLbl) ?><?= ($st['enter_quality'] ?? '') === 'inferred' ? ' · inferred' : '' ?></span>
+                  <?php else: ?>—<?php endif; ?>
+                </td>
+                <td class="text-nowrap">
+                  <?php if ($exitTs): ?>
+                  <?= gmdate('d.m.Y H:i:s', $exitTs) ?><br>
+                  <span class="text-muted small"><?= e($exitLbl) ?><?= !empty($st['exit_country']) ? ' · '.e($st['exit_country']) : '' ?></span>
+                  <?php else: ?>
+                  <span class="text-muted">brak wyjazdu w zakresie</span>
+                  <?php endif; ?>
+                </td>
+                <td class="text-nowrap"><?= $durTxt ?></td>
+                <td class="text-end text-nowrap"><?= $dkm !== null ? number_format($dkm) . ' km' : '—' ?></td>
+                <?php if ($borderCompareAvailable): ?>
+                <td class="text-end text-nowrap"><?= $vkm !== null ? number_format($vkm) . ' km' : '—' ?></td>
+                <td class="text-end text-nowrap">
+                  <?php if ($vkm !== null && $dkm !== null): ?>
+                  <?= number_format($dkm - $vkm) ?> km
+                  <?php else: ?>—<?php endif; ?>
+                </td>
+                <?php endif; ?>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php else: ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-signpost-2" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak danych przekroczeń granic</p>
+          <p class="text-muted small">Brak zdarzeń granicznych dla wybranego zakresu.</p>
+        </div>
+        <?php endif; ?>
 
         <?php elseif ($activeTab === 'violations'): ?>
         <!-- ════════════════════════════════════════════════════

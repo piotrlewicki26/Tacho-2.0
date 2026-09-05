@@ -2671,12 +2671,17 @@ function getDriverBorderCrossingsByDateRange(
     $out = [];
     foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
         $d = (string)$r['crossing_date'];
+        $type = (int)$r['crossing_type'];
+        $quality = in_array((string)($r['quality'] ?? ''), ['raw', 'inferred', 'validated'], true) ? (string)$r['quality'] : 'raw';
+        if (($type === 0 || $type === 1) && $quality === 'inferred') {
+           continue; // keep only real insert/remove events on timeline/list views
+        }
         $out[$d][] = [
            'ts'      => isset($r['crossing_ts']) ? (int)$r['crossing_ts'] : null,
            'tmin'    => (int)$r['crossing_tmin'],
-           'type'    => (int)$r['crossing_type'],
+           'type'    => $type,
            'country' => (string)$r['country_code'],
-           'quality' => in_array((string)($r['quality'] ?? ''), ['raw', 'inferred', 'validated'], true) ? (string)$r['quality'] : 'raw',
+           'quality' => $quality,
            'confidence' => isset($r['confidence']) && is_numeric($r['confidence']) ? (int)$r['confidence'] : 70,
         ];
     }
