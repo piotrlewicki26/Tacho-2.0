@@ -410,7 +410,8 @@ if ($driverId && $driverInfo) {
         error_log('driver_calendar: crossings debug query error: ' . $detErr->getMessage());
     }
 
-    // ── Build border stay timeline rows (entry/exit, duration, km, optional VU compare) ──
+    // ── Build border stay timeline rows only for dedicated border tab ──
+    if ($activeTab === 'granice') {
     try {
         $flat = [];
         foreach ($timelineCrossingsByDate as $d => $rows) {
@@ -531,10 +532,11 @@ if ($driverId && $driverInfo) {
                 'vu_km' => $vuKm,
             ];
         }
-    } catch (Throwable $stErr) {
-        error_log('driver_calendar: border stay build error: ' . $stErr->getMessage());
-        $borderStays = [];
-        $borderCompareAvailable = false;
+        } catch (Throwable $stErr) {
+            error_log('driver_calendar: border stay build error: ' . $stErr->getMessage());
+            $borderStays = [];
+            $borderCompareAvailable = false;
+        }
     }
 }
 

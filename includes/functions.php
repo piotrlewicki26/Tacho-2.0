@@ -2686,7 +2686,6 @@ function getDriverBorderCrossingsByDateRange(
         ];
     }
     $out = validateCrossingSequenceByDay($out);
-    $out = alignCardPlacementCrossingsToActivityDays($db, $companyId, $driverId, $fromDate, $toDate, $out);
     if ($qualityFilter === 'validated') {
         foreach ($out as $d => $rows) {
            $rows = array_values(array_filter($rows, static fn(array $r): bool => (string)($r['quality'] ?? '') === 'validated'));
