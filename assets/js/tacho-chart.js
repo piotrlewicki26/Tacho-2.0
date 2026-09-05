@@ -49,6 +49,17 @@
     m = Math.round(m);
     return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
   }
+  function hhmmssFromCrossing(crossing) {
+    var ts = crossing && Number(crossing.ts);
+    if (Number.isFinite(ts) && ts > 0) {
+      var d = new Date(ts * 1000);
+      return String(d.getUTCHours()).padStart(2, '0') + ':' +
+             String(d.getUTCMinutes()).padStart(2, '0') + ':' +
+             String(d.getUTCSeconds()).padStart(2, '0');
+    }
+    var tmin = crossing && Number(crossing.tmin);
+    return hhmm(Number.isFinite(tmin) ? tmin : 0) + ':00';
+  }
   /* Format minutes as "Xd HH:MM" for durations >= 1 day, else plain "HH:MM" */
   function ddhhmm(m) {
     m = Math.round(m);
@@ -649,7 +660,7 @@
                   '<strong style="font-size:15px;color:#ECEFF1;">' + crossing.country + '</strong>' +
                 '</div>' +
                 (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
-                '<div style="color:#B0BEC5;font-size:13px;">' + hhmm(crossing.tmin) + '</div>' +
+                '<div style="color:#B0BEC5;font-size:13px;">' + hhmmssFromCrossing(crossing) + '</div>' +
                 '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
                   (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy') +
                 '</div>';
