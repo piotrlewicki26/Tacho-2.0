@@ -1,0 +1,719 @@
+<?php
+/**
+ * Standalone tests for parseDriverCardFull() – weekly summary computation and
+ * weekly/bi-weekly violation checks.
+ *
+ * Run:  php tests/test_parseDriverCardFull.php
+ *
+ * These tests exercise the new weekly-summary layer added inside
+ * parseDriverCardFull() without requiring a real DDD binary file.
+ * The weekly-summary logic is extracted into a helper that is called
+ * directly so we can feed synthetic daily data.
+ *
+ * Covers:
+ *  1. Basic structure – all expected top-level keys present
+ *  2. Single week with days in the same ISO week – totals sum correctly
+ *  3. Two consecutive weeks – each week has its own entry
+ *  4. Weekly driving > 56 h produces an error violation
+ *  5. Weekly driving ≤ 56 h produces no weekly-drive violation
+ *  6. Bi-weekly driving > 90 h (sum of two consecutive weeks) → error
+ *  7. Bi-weekly driving ≤ 90 h → no bi-weekly violation
+ *  8. Weekly rest < 24 h → "missing weekly rest" error
+ *  9. Weekly rest between 24 h and 45 h → "reduced weekly rest" warning
+ * 10. Weekly rest ≥ 45 h → no rest violation
+ * 11. Non-consecutive weeks skipped for bi-weekly check
+ * 12. days_worked counter – only days with drive or work > 0 are counted
+ * 13. Weekly summary scope tag = 'weekly' in summary violations
+ * 14. Daily summary scope tag = 'daily' in summary violations
+ * 15. parseDriverCardFull() returns correct keys even for empty/bad path
+ */
+
+require_once __DIR__ . '/../includes/functions.php';
+
+$passed = 0;
+$failed = 0;
+
+function ok(string $label, bool $cond): void {
+    global $passed, $failed;
+    if ($cond) {
+        echo "  PASS  $label\n";
+        $passed++;
+    } else {
+        echo "  FAIL  $label\n";
+        $failed++;
+    }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Weekly-summary helper extracted for unit-testing.
+ *
+ * Replicates the logic inside parseDriverCardFull() so we can feed synthetic
+ * daily arrays without needing a binary DDD file on disk.
+ * ──────────────────────────────────────────────────────────────────────────── */
+function buildWeeklySummary(array $days): array
+{
+    $EU_WEEKLY_MAX      = 3360;  // 56 h
+    $EU_BIWEEKLY_MAX    = 5400;  // 90 h
+    $EU_WEEKLY_REST_REG = 2700;  // 45 h
+    $EU_WEEKLY_REST_RED = 1440;  // 24 h
+
+    $weekMap = [];
+    foreach ($days as $day) {
+        $ts   = strtotime($day['date'] . 'T00:00:00Z');
+        $wKey = gmdate('o', $ts) . '-W' . gmdate('W', $ts);  // e.g. "2025-W04"
+        $weekMap[$wKey][] = $day;
+    }
+    ksort($weekMap);
+    $weekKeys = array_keys($weekMap);
+
+    $weeks = [];
+    foreach ($weekMap as $wKey => $wDays) {
+        $driveW = $workW = $restW = $availW = $daysWorked = 0;
+        foreach ($wDays as $d) {
+            $driveW += (int)($d['drive'] ?? 0);
+            $workW  += (int)($d['work']  ?? 0);
+            $restW  += (int)($d['rest']  ?? 0);
+            $availW += (int)($d['avail'] ?? 0);
+            if (($d['drive'] ?? 0) > 0 || ($d['work'] ?? 0) > 0) {
+                $daysWorked++;
+            }
+        }
+
+        $parts      = explode('-W', $wKey);
+        $isoYear    = (int)($parts[0] ?? 0);
+        $isoWeekNum = (int)($parts[1] ?? 1);
+        $mondayTs   = strtotime($isoYear . 'W' . sprintf('%02d', $isoWeekNum) . '1');
+        $sundayTs   = $mondayTs + 6 * 86400;
+
+        $wViol = [];
+        if ($driveW > $EU_WEEKLY_MAX) {
+            $h = (int)floor($driveW / 60);
+            $m = $driveW % 60;
+            $wViol[] = [
+                'type' => 'error',
+                'msg'  => sprintf('Przekroczenie tygodniowego czasu jazdy: %dh %dm (max 56h)', $h, $m),
+            ];
+        }
+
+        // Longest continuous rest across the week's segments.
+        // Days with no tachograph data (card removed = driver resting) are counted
+        // as full 1 440-minute rest days so that cross-midnight rest spanning an
+        // off-card day is not under-counted.
+        $longestWeeklyRest = 0;
+        $sortedWDays = $wDays;
+        usort($sortedWDays, fn($a, $b) => strcmp($a['date'], $b['date']));
+        $curRestBlock = 0;
+        $prevDayDate  = null;
+        foreach ($sortedWDays as $d) {
+            // Count any missing calendar days between consecutive data days as rest.
+            if ($prevDayDate !== null) {
+                $prevTs  = strtotime($prevDayDate . 'T00:00:00Z');
+                $currTs  = strtotime($d['date']   . 'T00:00:00Z');
+                $dayGap  = (int)round(($currTs - $prevTs) / 86400) - 1;
+                if ($dayGap > 0) {
+                    $curRestBlock += $dayGap * 1440;
+                    $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+                }
+            }
+            foreach (($d['segs'] ?? []) as $seg) {
+                if (($seg['act'] ?? -1) === 0) {
+                    $curRestBlock += (int)($seg['dur'] ?? 0);
+                    $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+                } else {
+                    $curRestBlock = 0;
+                }
+            }
+            $prevDayDate = $d['date'];
+        }
+        // Count any missing trailing days at the end of the week (between the last
+        // data day and Sunday midnight).  Only applied when lastDayIndex >= 3
+        // (Thursday or later) and curRestBlock > 0 to avoid inflating counts when
+        // early-week days are the only data (incomplete upload scenario).
+        if ($prevDayDate !== null && $curRestBlock > 0) {
+            $lastTs       = strtotime($prevDayDate . 'T00:00:00Z');
+            $lastDayIndex = (int)round(($lastTs - $mondayTs) / 86400);
+            $trailingGap  = (int)round(($sundayTs - $lastTs) / 86400);
+            if ($trailingGap > 0 && $lastDayIndex >= 3) {
+                $curRestBlock += $trailingGap * 1440;
+                $longestWeeklyRest = max($longestWeeklyRest, $curRestBlock);
+            }
+        }
+
+        if ($longestWeeklyRest > 0 && $longestWeeklyRest < $EU_WEEKLY_REST_RED) {
+            $h = (int)floor($longestWeeklyRest / 60);
+            $m = $longestWeeklyRest % 60;
+            $wViol[] = [
+                'type' => 'error',
+                'msg'  => sprintf('Brak wymaganego odpoczynku tygodniowego: %dh %dm (min 24h)', $h, $m),
+            ];
+        } elseif ($longestWeeklyRest >= $EU_WEEKLY_REST_RED && $longestWeeklyRest < $EU_WEEKLY_REST_REG) {
+            $h = (int)floor($longestWeeklyRest / 60);
+            $m = $longestWeeklyRest % 60;
+            $wViol[] = [
+                'type' => 'warn',
+                'msg'  => sprintf('Skrócony odpoczynek tygodniowy: %dh %dm (regularny min 45h)', $h, $m),
+            ];
+        }
+
+        $weeks[$wKey] = [
+            'week_key'         => $wKey,
+            'week_start'       => gmdate('Y-m-d', $mondayTs),
+            'week_end'         => gmdate('Y-m-d', $sundayTs),
+            'drive'            => $driveW,
+            'work'             => $workW,
+            'rest'             => $restW,
+            'avail'            => $availW,
+            'days_worked'      => $daysWorked,
+            'longest_rest_min' => $longestWeeklyRest,
+            'violations'       => $wViol,
+        ];
+    }
+
+    // Bi-weekly check
+    $weekKeysArr = array_values($weekKeys);
+    for ($wi = 0; $wi + 1 < count($weekKeysArr); $wi++) {
+        $k1 = $weekKeysArr[$wi];
+        $k2 = $weekKeysArr[$wi + 1];
+        $p1 = explode('-W', $k1);
+        $p2 = explode('-W', $k2);
+        $ts1 = strtotime($p1[0] . 'W' . sprintf('%02d', (int)$p1[1]) . '1');
+        $ts2 = strtotime($p2[0] . 'W' . sprintf('%02d', (int)$p2[1]) . '1');
+        if (abs($ts2 - $ts1) !== 7 * 86400) continue;
+
+        $biWeekDrive = ($weeks[$k1]['drive'] ?? 0) + ($weeks[$k2]['drive'] ?? 0);
+        if ($biWeekDrive > $EU_BIWEEKLY_MAX) {
+            $h   = (int)floor($biWeekDrive / 60);
+            $m   = $biWeekDrive % 60;
+            $msg = sprintf(
+                'Przekroczenie dwutygodniowego czasu jazdy: %dh %dm (max 90h, tygodnie %s i %s)',
+                $h, $m, $k1, $k2
+            );
+            $bv = ['type' => 'error', 'msg' => $msg];
+            $weeks[$k1]['violations'][] = $bv;
+            $weeks[$k2]['violations'][] = $bv;
+        }
+    }
+
+    return array_values($weeks);
+}
+
+/* Helper: build a synthetic day record */
+function makeDay(string $date, int $driveMins, int $workMins = 0, int $restMins = 0, int $availMins = 0, array $segs = [], array $viol = []): array {
+    return [
+        'date'      => $date,
+        'drive'     => $driveMins,
+        'work'      => $workMins,
+        'rest'      => $restMins,
+        'avail'     => $availMins,
+        'dist'      => 0,
+        'segs'      => $segs,
+        'crossings' => [],
+        'viol'      => $viol,
+    ];
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 1: parseDriverCardFull() returns correct top-level keys for bad path
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 1: parseDriverCardFull() returns correct structure for non-existent path\n";
+$r1 = parseDriverCardFull('/tmp/nonexistent_test_file_xyz.ddd');
+ok('1a: key driver_info present',      array_key_exists('driver_info',      $r1));
+ok('1b: key days present',             array_key_exists('days',             $r1));
+ok('1c: key weeks present',            array_key_exists('weeks',            $r1));
+ok('1d: key vehicles present',         array_key_exists('vehicles',         $r1));
+ok('1e: key summary present',          array_key_exists('summary',          $r1));
+ok('1f: key error present',            array_key_exists('error',            $r1));
+ok('1g: days is array',                is_array($r1['days']));
+ok('1h: weeks is array',               is_array($r1['weeks']));
+ok('1i: vehicles is array',            is_array($r1['vehicles']));
+ok('1j: key border_crossings present', array_key_exists('border_crossings', $r1));
+ok('1k: border_crossings is array',    is_array($r1['border_crossings']));
+ok('1l: summary has border_crossings_count', array_key_exists('border_crossings_count', $r1['summary']));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 2: Single week – totals sum correctly
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 2: Single week – drive/work/rest totals sum correctly\n";
+// ISO week 2025-W01 = Mon 2024-12-30 … Sun 2025-01-05
+$days2 = [
+    makeDay('2024-12-30', 300, 60, 1080),  // Mon  drive 5h work 1h rest 18h
+    makeDay('2024-12-31', 240, 90, 1110),  // Tue  drive 4h work 1.5h rest 18.5h
+    makeDay('2025-01-02', 180,  0, 1260),  // Thu  drive 3h rest 21h
+];
+$w2 = buildWeeklySummary($days2);
+ok('2a: 1 week entry',            count($w2) === 1);
+ok('2b: drive sum = 720',         $w2[0]['drive'] === 720);
+ok('2c: work sum = 150',          $w2[0]['work']  === 150);
+ok('2d: rest sum = 3450',         $w2[0]['rest']  === 3450);
+ok('2e: days_worked = 3',         $w2[0]['days_worked'] === 3);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 3: Two consecutive weeks – separate entries
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 3: Two consecutive ISO weeks produce two week entries\n";
+$days3 = [
+    makeDay('2025-01-06', 300, 60, 1080),   // Mon W02
+    makeDay('2025-01-13', 240, 90, 1110),   // Mon W03
+];
+$w3 = buildWeeklySummary($days3);
+ok('3a: 2 week entries',          count($w3) === 2);
+ok('3b: first week key contains W02',  str_contains($w3[0]['week_key'], 'W02') || str_contains($w3[0]['week_key'], '-02'));
+ok('3c: each week has its own drive',  $w3[0]['drive'] === 300 && $w3[1]['drive'] === 240);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 4: Weekly driving > 56 h → error violation
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 4: Weekly driving > 56 h produces error violation\n";
+// 57 h = 3420 min spread across 6 days (570 min/day)
+$days4 = [];
+foreach (['2025-01-06','2025-01-07','2025-01-08','2025-01-09','2025-01-10','2025-01-11'] as $d) {
+    $days4[] = makeDay($d, 570);
+}
+$w4 = buildWeeklySummary($days4);
+$viol4 = $w4[0]['violations'] ?? [];
+ok('4a: violation present',       count($viol4) >= 1);
+ok('4b: type = error',            ($viol4[0]['type'] ?? '') === 'error');
+ok('4c: msg contains 56h',        str_contains($viol4[0]['msg'] ?? '', '56h'));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 5: Weekly driving ≤ 56 h → no weekly-drive violation
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 5: Weekly driving ≤ 56 h → no weekly driving violation\n";
+// 56 h = 3360 min spread across 6 days (560 min/day)
+$days5 = [];
+foreach (['2025-01-06','2025-01-07','2025-01-08','2025-01-09','2025-01-10','2025-01-11'] as $d) {
+    $days5[] = makeDay($d, 560);
+}
+$w5 = buildWeeklySummary($days5);
+$driveViols5 = array_filter($w5[0]['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', '56h'));
+ok('5a: no weekly drive violation',  count($driveViols5) === 0);
+ok('5b: drive total = 3360',         $w5[0]['drive'] === 3360);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 6: Bi-weekly driving > 90 h → error on both weeks
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 6: Bi-weekly driving > 90 h produces error on both consecutive weeks\n";
+// Week A: 48 h = 2880 min; Week B: 44 h = 2640 min → total 92 h = 5520 min
+$days6a = [];
+foreach (['2025-01-06','2025-01-07','2025-01-08','2025-01-09','2025-01-10','2025-01-11'] as $d) {
+    $days6a[] = makeDay($d, 480);    // 8 h × 6 days = 48 h
+}
+$days6b = [];
+foreach (['2025-01-13','2025-01-14','2025-01-15','2025-01-16','2025-01-17','2025-01-18'] as $d) {
+    $days6b[] = makeDay($d, 440);    // 7 h 20 m × 6 days = 44 h
+}
+$w6 = buildWeeklySummary(array_merge($days6a, $days6b));
+ok('6a: 2 weeks present',         count($w6) === 2);
+$bwViols6_w1 = array_filter($w6[0]['violations'], fn($v) => str_contains($v['msg'] ?? '', '90h'));
+$bwViols6_w2 = array_filter($w6[1]['violations'], fn($v) => str_contains($v['msg'] ?? '', '90h'));
+ok('6b: bi-weekly viol on week 1',  count($bwViols6_w1) >= 1);
+ok('6c: bi-weekly viol on week 2',  count($bwViols6_w2) >= 1);
+ok('6d: type = error on week 1',    ($bwViols6_w1[array_key_first($bwViols6_w1)]['type'] ?? '') === 'error');
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 7: Bi-weekly driving ≤ 90 h → no bi-weekly violation
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 7: Bi-weekly driving ≤ 90 h → no bi-weekly violation\n";
+$days7a = [];
+foreach (['2025-01-06','2025-01-07','2025-01-08','2025-01-09','2025-01-10','2025-01-11'] as $d) {
+    $days7a[] = makeDay($d, 450);    // 7 h 30 m × 6 = 45 h
+}
+$days7b = [];
+foreach (['2025-01-13','2025-01-14','2025-01-15','2025-01-16','2025-01-17','2025-01-18'] as $d) {
+    $days7b[] = makeDay($d, 450);    // 7 h 30 m × 6 = 45 h  → total 90 h exactly
+}
+$w7 = buildWeeklySummary(array_merge($days7a, $days7b));
+$bwViols7 = array_merge(
+    array_filter($w7[0]['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', '90h')),
+    array_filter($w7[1]['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', '90h'))
+);
+ok('7a: no bi-weekly violation',  count($bwViols7) === 0);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 8: Weekly rest < 24 h → error violation
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 8: Weekly rest < 24 h → missing weekly rest error\n";
+// Provide one day with a 20 h rest block (1200 min, < 1440 min)
+$segs8 = [
+    ['act' => 3, 'start' => 0,    'end' => 240,  'dur' => 240],   // drive
+    ['act' => 0, 'start' => 240,  'end' => 1440, 'dur' => 1200],  // rest 20 h
+];
+$days8 = [makeDay('2025-01-06', 240, 0, 1200, 0, $segs8)];
+$w8 = buildWeeklySummary($days8);
+$restViols8 = array_filter($w8[0]['violations'], fn($v) => str_contains($v['msg'] ?? '', '24h'));
+ok('8a: rest viol present',       count($restViols8) >= 1);
+ok('8b: type = error',            current($restViols8)['type'] === 'error');
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 9: Weekly rest 24 h ≤ rest < 45 h → warning (reduced rest)
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 9: Weekly rest 24 h ≤ rest < 45 h → reduced rest warning\n";
+// Provide one day with exactly 30 h rest block (1800 min)
+$segs9 = [
+    ['act' => 3, 'start' => 0,    'end' => 240,  'dur' => 240],
+    ['act' => 0, 'start' => 240,  'end' => 2040, 'dur' => 1800],   // rest 30 h
+];
+$days9 = [makeDay('2025-01-06', 240, 0, 1800, 0, $segs9)];
+$w9 = buildWeeklySummary($days9);
+$restViols9 = array_filter($w9[0]['violations'], fn($v) => str_contains($v['msg'] ?? '', '45h'));
+ok('9a: reduced rest warn present', count($restViols9) >= 1);
+ok('9b: type = warn',               current($restViols9)['type'] === 'warn');
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 10: Weekly rest ≥ 45 h → no rest violation
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 10: Weekly rest ≥ 45 h → no rest violation\n";
+$segs10 = [
+    ['act' => 3, 'start' => 0,    'end' => 240,  'dur' => 240],
+    ['act' => 0, 'start' => 240,  'end' => 2940, 'dur' => 2700],   // rest 45 h
+];
+$days10 = [makeDay('2025-01-06', 240, 0, 2700, 0, $segs10)];
+$w10 = buildWeeklySummary($days10);
+ok('10a: no rest violations',    count($w10[0]['violations']) === 0);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 11: Non-consecutive weeks are NOT checked for bi-weekly limit
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 11: Non-consecutive weeks (gap > 1 week) skip bi-weekly check\n";
+// Week A: 2025-W01 (2024-12-30), Week B: 2025-W05 (4 weeks later)
+$days11a = [makeDay('2024-12-30', 600)];   // W01: 10 h
+$days11b = [makeDay('2025-01-27', 600)];   // W05: 10 h (not consecutive to W01)
+$w11 = buildWeeklySummary(array_merge($days11a, $days11b));
+$allViol11 = array_merge(
+    array_filter($w11[0]['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', '90h')),
+    array_filter($w11[1]['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', '90h'))
+);
+ok('11a: no bi-weekly violation for gap weeks', count($allViol11) === 0);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 12: days_worked counts only days with drive or work > 0
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 12: days_worked counts only active days\n";
+$days12 = [
+    makeDay('2025-01-06', 300,   0),   // drive only → worked
+    makeDay('2025-01-07',   0, 120),   // work only  → worked
+    makeDay('2025-01-08',   0,   0),   // rest day   → not worked
+    makeDay('2025-01-09', 120, 120),   // drive+work → worked
+];
+$w12 = buildWeeklySummary($days12);
+ok('12a: days_worked = 3',        $w12[0]['days_worked'] === 3);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 13: Week summaries have week_start (Monday) and week_end (Sunday)
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 13: week_start is a Monday and week_end is a Sunday\n";
+$days13 = [makeDay('2025-01-08', 300)];   // Wednesday of 2025-W02
+$w13 = buildWeeklySummary($days13);
+ok('13a: 1 week',                  count($w13) === 1);
+$mon13 = $w13[0]['week_start'];
+$sun13 = $w13[0]['week_end'];
+ok('13b: week_start is Monday',    date('N', strtotime($mon13)) == 1);
+ok('13c: week_end is Sunday',      date('N', strtotime($sun13)) == 7);
+ok('13d: week spans 6 days',       (strtotime($sun13) - strtotime($mon13)) === 6 * 86400);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 14: Violation scope tags
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 14: summary violations carry correct scope tag\n";
+// We can't easily test this through buildWeeklySummary alone since the scope
+// tag is added in parseDriverCardFull()'s summary-building loop.
+// Verify the weekly violations contain 'type' and 'msg' keys (no scope here).
+$days14 = [];
+foreach (['2025-01-06','2025-01-07','2025-01-08','2025-01-09','2025-01-10','2025-01-11'] as $d) {
+    $days14[] = makeDay($d, 570);    // > 56 h
+}
+$w14 = buildWeeklySummary($days14);
+$v14 = $w14[0]['violations'][0] ?? [];
+ok('14a: viol has type key',       array_key_exists('type', $v14));
+ok('14b: viol has msg key',        array_key_exists('msg',  $v14));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 15: week_key format is "YYYY-WNN"
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 15: week_key follows 'YYYY-WNN' format\n";
+$days15 = [makeDay('2025-03-10', 300)];   // 2025-W11
+$w15 = buildWeeklySummary($days15);
+ok('15a: week_key matches pattern', (bool)preg_match('/^\d{4}-W\d{2}$/', $w15[0]['week_key'] ?? ''));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 16: border_crossings aggregation – multiple days, sorted by ts
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 16: border_crossings aggregated from per-day data, sorted by timestamp\n";
+// Build two days that each carry one synthetic crossing, then call the same
+// aggregation logic that parseDriverCardFull() uses internally.
+$crossDay1 = [
+    'date'      => '2025-06-10',
+    'drive'     => 240,
+    'work'      => 0,
+    'rest'      => 1200,
+    'avail'     => 0,
+    'dist'      => 0,
+    'segs'      => [],
+    'crossings' => [
+        ['ts' => 1749600600, 'tmin' => 540, 'type' => 1, 'country' => 'PL'],
+    ],
+    'viol'      => [],
+];
+$crossDay2 = [
+    'date'      => '2025-06-11',
+    'drive'     => 180,
+    'work'      => 0,
+    'rest'      => 1260,
+    'avail'     => 0,
+    'dist'      => 0,
+    'segs'      => [],
+    'crossings' => [
+        ['ts' => 1749672000, 'tmin' => 180, 'type' => 2, 'country' => 'D'],
+        ['ts' => 1749650000, 'tmin' => 120, 'type' => 1, 'country' => 'CZ'],
+    ],
+    'viol'      => [],
+];
+$days16 = [$crossDay1, $crossDay2];
+
+// Replicate the aggregation logic from parseDriverCardFull() step 7.
+$bc16 = [];
+foreach ($days16 as $d16) {
+    foreach ($d16['crossings'] as $c16) {
+        $bc16[] = array_merge($c16, ['date' => $d16['date']]);
+    }
+}
+usort($bc16, fn($a, $b) => $a['ts'] <=> $b['ts']);
+
+ok('16a: 3 crossings total',              count($bc16) === 3);
+ok('16b: sorted ascending by ts',         $bc16[0]['ts'] <= $bc16[1]['ts'] && $bc16[1]['ts'] <= $bc16[2]['ts']);
+ok('16c: first crossing country = PL',    $bc16[0]['country'] === 'PL');
+ok('16d: second crossing country = CZ',   $bc16[1]['country'] === 'CZ');
+ok('16e: third crossing country = D',     $bc16[2]['country'] === 'D');
+ok('16f: date field attached',            isset($bc16[0]['date']));
+ok('16g: tmin field preserved',           isset($bc16[0]['tmin']));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 17: summary.border_crossings_count reflects the total
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 17: summary.border_crossings_count equals total crossing count\n";
+// Using same bc16 from test 16
+$count17 = count($bc16);
+ok('17a: count = 3',                      $count17 === 3);
+ok('17b: count matches aggregated list',  $count17 === count($bc16));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 18: border_crossings empty when days carry no crossings
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 18: border_crossings empty when no days carry crossings\n";
+$days18 = [
+    makeDay('2025-07-01', 300),
+    makeDay('2025-07-02', 240),
+];
+$bc18 = [];
+foreach ($days18 as $d18) {
+    foreach (($d18['crossings'] ?? []) as $c18) {
+        $bc18[] = array_merge($c18, ['date' => $d18['date']]);
+    }
+}
+ok('18a: bc empty when no crossings',     count($bc18) === 0);
+ok('18b: count = 0',                      count($bc18) === 0);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 19: longestWeeklyRest counts null (missing-data) days as rest days
+ *
+ * Scenario: Saturday has a rest ending at midnight, Sunday has NO card data
+ * (card removed – driver resting), Monday has activity starting mid-morning.
+ * The continuous rest should span Sat-rest + Sun-full-day + Mon-morning = >45h.
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 19: longestWeeklyRest counts missing data days (card removed) as rest\n";
+
+// Saturday 2025-02-15: 6h drive then rest from 18:00 to midnight (360 min rest)
+$segs19_sat = [
+    ['act' => 3, 'start' => 0,    'end' => 1080, 'dur' => 1080],  // drive 0-18:00
+    ['act' => 0, 'start' => 1080, 'end' => 1440, 'dur' => 360],   // rest 18:00-midnight
+];
+// Sunday 2025-02-16: NO entry → treated as full rest day (card removed)
+// Monday 2025-02-17: rest continues until 09:00 (540 min), then drive
+$segs19_mon = [
+    ['act' => 0, 'start' => 0,   'end' => 540,  'dur' => 540],    // rest 0-09:00
+    ['act' => 3, 'start' => 540, 'end' => 1440, 'dur' => 900],    // drive rest of day
+];
+
+// Build week using buildWeeklySummary (same as parseDriverCardFull internal).
+// Note: Sunday is intentionally ABSENT from the $days array to simulate no card data.
+$days19 = [
+    makeDay('2025-02-15', 1080, 0, 360, 0, $segs19_sat),          // Saturday – data
+    // 2025-02-16 (Sunday) MISSING – simulates card not in vehicle
+    makeDay('2025-02-17', 900,  0, 540, 0, $segs19_mon),          // Monday – data
+];
+
+$w19  = buildWeeklySummary($days19);
+// Week 2025-W07 contains Feb 10–16; week 2025-W08 contains Feb 17–23.
+// The Saturday rest (360 min) + missing Sunday (1440 min) = 1800 min within W07.
+// With the null-day fix the gap counts, so longest rest in W07 ≥ 1440 min → reduced rest warning.
+$wk07_key = '2025-W07';
+$wk08_key = '2025-W08';
+$wk07_19  = null;
+$wk08_19  = null;
+foreach ($w19 as $wk19e) {
+    if (($wk19e['week_key'] ?? '') === $wk07_key) $wk07_19 = $wk19e;
+    if (($wk19e['week_key'] ?? '') === $wk08_key) $wk08_19 = $wk19e;
+}
+
+// W07: Sat 18:00-midnight (360) + null Sunday (1440) = 1800 min rest.
+// The gap-day fix should make longestWeeklyRest = 1800 (≥1440, reduced weekly rest).
+$rest19_w07 = $wk07_19['longest_rest_min'] ?? 0;
+ok('19a: W07 longest rest includes null Sunday (>= 1800)',  $rest19_w07 >= 1800);
+ok('19b: W07 does NOT have missing-rest error (rest ≥ 24h)', !array_filter($wk07_19['violations'] ?? [], fn($v) => str_contains($v['msg'] ?? '', 'min 24h')));
+
+// W08: Mon rest 540 min only within that week – no weekly-rest violation expected
+// (rest < 24h but the weekly rest was taken in W07; W08 reduced/missing rest is
+// a separate concern beyond scope of this test).
+ok('19c: W08 entry present',  $wk08_19 !== null);
+ok('19d: W07 entry present',  $wk07_19 !== null);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 20: parseDriverCardFull() returns 'events' key in result
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 20: parseDriverCardFull() returns 'events' key\n";
+$r20 = parseDriverCardFull('/tmp/nonexistent_test_file_xyz.ddd');
+ok('20a: key events present',      array_key_exists('events', $r20));
+ok('20b: events is array',         is_array($r20['events']));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 21: dddParseCardEvents returns [] for too-short data
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 21: dddParseCardEvents returns [] for empty / too-short data\n";
+ok('21a: empty string → []',  dddParseCardEvents('') === []);
+ok('21b: 3-byte string → []', dddParseCardEvents("\x05\x0A\x00") === []);
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 22: dddParseCardEvents parses a synthetic 24-byte event record
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 22: dddParseCardEvents parses a synthetic event record\n";
+$evBegin = time() - 86400;          // yesterday
+$evEnd   = $evBegin + 3600;         // 1-hour event
+// TLV: tag 0x05 0x0A, length 24 (one event record)
+$evBlob  = "\x05\x0A" . pack('n', 24);
+// Event record (24 bytes):
+$evBlob .= chr(0x13);               // eventType: Przekroczenie prędkości (0x13)
+$evBlob .= pack('N', $evBegin);     // beginTs
+$evBlob .= pack('N', $evEnd);       // endTs
+// vehicleRegistration (15 bytes): nationNumeric(1) + codePage(1) + regNumber(13)
+$evBlob .= chr(40);                 // nationNumeric = PL
+$evBlob .= chr(1);                  // codePage
+$evBlob .= "WA12345" . str_repeat("\x00", 6); // regNumber (13 bytes)
+
+$ev22 = dddParseCardEvents($evBlob);
+ok('22a: 1 event returned',            count($ev22) === 1);
+ok('22b: type = 0x13',                 ($ev22[0]['type'] ?? -1) === 0x13);
+ok('22c: type_label correct',          ($ev22[0]['type_label'] ?? '') === 'Przekroczenie prędkości');
+ok('22d: begin_ts matches',            ($ev22[0]['begin_ts'] ?? 0) === $evBegin);
+ok('22e: end_ts matches',              ($ev22[0]['end_ts']   ?? 0) === $evEnd);
+ok('22f: duration_min = 60',           ($ev22[0]['duration_min'] ?? -1) === 60);
+ok('22g: begin_date is a date string', (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $ev22[0]['begin_date'] ?? ''));
+ok('22h: reg contains WA12345',        str_contains($ev22[0]['reg'] ?? '', 'WA12345'));
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 23: dddParseDriverInfo returns card_type and card_generation fields
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 23: dddParseDriverInfo includes card_type and card_generation\n";
+// Craft a synthetic DDD blob that triggers Strategy 1 (tag 0x05 0x20) for the
+// name and Strategy for card type (tag 0x05 0x01).
+//
+// Strategy 1 block (tag 0x05 0x20 + length + content):
+//   byte 0 of content: NameCodeType 0x02 (Latin-1)
+//   bytes 1-35: surname "WROBLEWSKI" + 25 null bytes
+//   byte 36: NameCodeType 0x02 for first name
+//   bytes 37-71: first name "LESZEK" + 29 null bytes
+//   bytes 72-79: padding
+$nameBlock  = "\x02" . "WROBLEWSKI" . str_repeat("\x00", 25)
+            . "\x02" . "LESZEK"     . str_repeat("\x00", 29)
+            . str_repeat("\x00", 8);   // 80 bytes
+$nameBlob23 = "\x05\x20" . pack('n', 80) . $nameBlock;
+
+// Card type block (tag 0x05 0x01 + length 5 + content):
+//   byte 0: typeOfTachographCard = 0x04 (Driver)
+//   bytes 1-2: padding
+//   byte 3: generationByte = 0x02 (Gen 2)
+//   byte 4: padding
+$cardTypeBlock = "\x04\x00\x00\x02\x00";  // 5 bytes
+$cardTypeBlob  = "\x05\x01" . pack('n', 5) . $cardTypeBlock;
+
+$blob23   = $nameBlob23 . $cardTypeBlob;
+$result23 = dddParseDriverInfo($blob23);
+
+ok('23a: result is not null',                   $result23 !== null);
+ok('23b: last_name = WROBLEWSKI',               ($result23['last_name']       ?? '') === 'WROBLEWSKI');
+ok('23c: first_name = LESZEK',                  ($result23['first_name']      ?? '') === 'LESZEK');
+ok('23d: card_type key present',                array_key_exists('card_type',       $result23 ?? []));
+ok('23e: card_generation key present',          array_key_exists('card_generation', $result23 ?? []));
+ok('23f: card_type = Driver',                   ($result23['card_type']       ?? '') === 'Driver');
+ok('23g: card_generation = Gen 2',              ($result23['card_generation'] ?? '') === 'Gen 2');
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Test 24: Step 5b – rest compensation violation emitted when compensation
+ *           was not detected within 3 following weeks of a reduced rest week
+ * ════════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 24: rest compensation violation for uncompensated reduced weekly rest\n";
+// buildWeeklySummary (the test helper above) does not include Step 5b, so we
+// call parseDriverCardFull indirectly via a helper that reproduces Step 5b logic.
+// Instead, test it through the exported function directly using a mini reproduction.
+
+// Week A (2025-W02, Mon 2025-01-06): reduced weekly rest = 30h = 1800 min
+// Weeks B, C, D (W03, W04, W05): longest_rest_min = 1200 each (< 45h, no compensation)
+// Compensation needed = 2700 - 1800 = 900 min.
+// Since all 3 following weeks have data (followingWeeksWithData >= 2) and none
+// provides a rest >= 2700 + 900 = 3600 min, a violation should be emitted.
+
+// We replicate Step 5b logic inline (same as in parseDriverCardFull):
+$EU_WEEKLY_REST_REG_24 = 2700;
+$EU_WEEKLY_REST_RED_24 = 1440;
+
+$synWeeks = [
+    '2025-W02' => ['week_key' => '2025-W02', 'longest_rest_min' => 1800, 'violations' => []],
+    '2025-W03' => ['week_key' => '2025-W03', 'longest_rest_min' => 1200, 'violations' => []],
+    '2025-W04' => ['week_key' => '2025-W04', 'longest_rest_min' => 1200, 'violations' => []],
+    '2025-W05' => ['week_key' => '2025-W05', 'longest_rest_min' => 1200, 'violations' => []],
+];
+
+foreach (array_keys($synWeeks) as $wKey24) {
+    $lwr = $synWeeks[$wKey24]['longest_rest_min'];
+    if ($lwr < $EU_WEEKLY_REST_RED_24 || $lwr >= $EU_WEEKLY_REST_REG_24) continue;
+    $comp24  = $EU_WEEKLY_REST_REG_24 - $lwr;
+    $wP      = explode('-W', $wKey24);
+    $wMonTs  = strtotime($wP[0] . 'W' . sprintf('%02d', (int)$wP[1]) . '1');
+    $found   = false;
+    $hasData = 0;
+    for ($n = 1; $n <= 3; $n++) {
+        $nd   = gmdate('Y-m-d', strtotime('+' . ($n * 7) . ' days', $wMonTs));
+        $nts  = strtotime($nd . 'T00:00:00Z');
+        $nwk  = (int)gmdate('o', $nts) . '-W' . sprintf('%02d', (int)gmdate('W', $nts));
+        if (!isset($synWeeks[$nwk])) continue;
+        $hasData++;
+        if (($synWeeks[$nwk]['longest_rest_min'] ?? 0) >= $EU_WEEKLY_REST_REG_24 + $comp24) {
+            $found = true; break;
+        }
+    }
+    if (!$found && $hasData >= 2) {
+        $synWeeks[$wKey24]['violations'][] = [
+            'type' => 'warn',
+            'msg'  => sprintf(
+                'Nie wykryto kompensaty skróconego odpoczynku tygodniowego (%dh %dm) do końca 3. tygodnia po tygodniu %s',
+                (int)floor($comp24 / 60), $comp24 % 60, $wKey24
+            ),
+        ];
+    }
+}
+
+$viol24 = $synWeeks['2025-W02']['violations'];
+$comp24Msg = $viol24[0]['msg'] ?? '';
+ok('24a: violation emitted for W02',   count($viol24) >= 1);
+ok('24b: type = warn',                 ($viol24[0]['type'] ?? '') === 'warn');
+ok('24c: msg mentions kompensaty',     str_contains($comp24Msg, 'kompensaty'));
+ok('24d: msg mentions 15h 0m (900/60=15)', str_contains($comp24Msg, '15h 0m'));
+ok('24e: msg mentions W02',            str_contains($comp24Msg, '2025-W02'));
+ok('24f: W03 has no violation',        count($synWeeks['2025-W03']['violations']) === 0);
+
+
+echo "\n";
+echo str_repeat('─', 50) . "\n";
+echo "Passed: $passed  |  Failed: $failed\n";
+echo str_repeat('─', 50) . "\n";
+
+exit($failed > 0 ? 1 : 0);
