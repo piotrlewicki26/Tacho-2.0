@@ -298,7 +298,7 @@ if ($driverId) {
 
 // ── Parse vehicle usage records from driver DDD files (for Pojazdy tab) ──
 $vehicleRecords = [];
-if ($driverId && $driverInfo && in_array($activeTab, ['pojazdy', 'granice'], true) && $driverFiles) {
+if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
     foreach ($driverFiles as $fRow) {
         $fp = dddPhysPath($fRow, $companyId);
         if (!is_file($fp)) continue;
@@ -315,12 +315,11 @@ if ($driverId && $driverInfo && in_array($activeTab, ['pojazdy', 'granice'], tru
     $vehicleRecords = groupVehicleTrips($vehicleRecords);
 }
 
-// ── The timeline always shows all available data (independent of calendar date filter) ──
-// Load chart days for the full available data range for timeline tab.
+// ── Timeline range ───────────────────────────────────────────────
 $timelineChartDays = $chartDays; // fallback: same as calendar range
 $timelineDateFrom = $dateFrom;
 $timelineDateTo   = $dateTo;
-if ($driverId && $driverInfo && $dataDateMin) {
+if ($driverId && $driverInfo && $activeTab === 'timeline' && $dataDateMin) {
     try {
         $timelineDateFrom = $dataDateMin;
         $timelineDateTo   = $dataDateMax ?? date('Y-m-d');
@@ -354,7 +353,18 @@ $filteredChartDays = $chartDays; // used for violations/summary tabs (respects d
 if ($driverId && $driverInfo) {
     try {
         $selectedCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $dateFrom, $dateTo, $crossingQuality);
-        $timelineCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $timelineDateFrom, $timelineDateTo, $crossingQuality);
+        if ($activeTab === 'timeline') {
+            if ($timelineDateFrom === $dateFrom && $timelineDateTo === $dateTo) {
+                $timelineCrossingsByDate = $selectedCrossingsByDate;
+            } else {
+                $timelineCrossingsByDate = getDriverBorderCrossingsByDateRange($db, $companyId, $driverId, $timelineDateFrom, $timelineDateTo, $crossingQuality);
+            }
+        } elseif ($activeTab === 'granice') {
+            // Border list must respect the currently selected date filter.
+            $timelineCrossingsByDate = $selectedCrossingsByDate;
+        } else {
+            $timelineCrossingsByDate = [];
+        }
     } catch (Throwable $bcLoadErr) {
         error_log('driver_calendar: crossings load error for driver ' . $driverId . ': ' . $bcLoadErr->getMessage());
         $selectedCrossingsByDate = [];
@@ -456,39 +466,41 @@ if ($driverId && $driverInfo) {
         }
 
         $vuKmByDate = [];
-        try {
-            $regToVehicle = [];
-            $vStmt = $db->prepare('SELECT id, registration FROM vehicles WHERE company_id=? AND is_active=1');
-            $vStmt->execute([$companyId]);
-            foreach ($vStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
-                $regKey = strtoupper(preg_replace('/\s+/', '', (string)($vr['registration'] ?? '')));
-                if ($regKey !== '') $regToVehicle[$regKey][] = (int)$vr['id'];
-            }
+        if (!empty($vehicleRecords)) {
+            try {
+                $regToVehicle = [];
+                $vStmt = $db->prepare('SELECT id, registration FROM vehicles WHERE company_id=? AND is_active=1');
+                $vStmt->execute([$companyId]);
+                foreach ($vStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
+                    $regKey = strtoupper(preg_replace('/\s+/', '', (string)($vr['registration'] ?? '')));
+                    if ($regKey !== '') $regToVehicle[$regKey][] = (int)$vr['id'];
+                }
 
-            $candidateIds = [];
-            foreach (($vehicleRecords ?? []) as $vr) {
-                $rk = strtoupper(preg_replace('/\s+/', '', (string)($vr['reg'] ?? '')));
-                if ($rk !== '' && !empty($regToVehicle[$rk])) {
-                    foreach ($regToVehicle[$rk] as $vid) $candidateIds[$vid] = true;
+                $candidateIds = [];
+                foreach (($vehicleRecords ?? []) as $vr) {
+                    $rk = strtoupper(preg_replace('/\s+/', '', (string)($vr['reg'] ?? '')));
+                    if ($rk !== '' && !empty($regToVehicle[$rk])) {
+                        foreach ($regToVehicle[$rk] as $vid) $candidateIds[$vid] = true;
+                    }
                 }
-            }
-            if (!empty($candidateIds)) {
-                $vids = array_keys($candidateIds);
-                $in = implode(',', array_fill(0, count($vids), '?'));
-                $vuSql = "SELECT date, SUM(dist_km) AS km
-                          FROM vehicle_activity_calendar
-                          WHERE company_id=? AND vehicle_id IN ($in) AND date BETWEEN ? AND ?
-                          GROUP BY date";
-                $vuParams = array_merge([$companyId], $vids, [$timelineDateFrom, $timelineDateTo]);
-                $vuStmt = $db->prepare($vuSql);
-                $vuStmt->execute($vuParams);
-                foreach ($vuStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
-                    $vuKmByDate[(string)$vr['date']] = (int)$vr['km'];
+                if (!empty($candidateIds)) {
+                    $vids = array_keys($candidateIds);
+                    $in = implode(',', array_fill(0, count($vids), '?'));
+                    $vuSql = "SELECT date, SUM(dist_km) AS km
+                              FROM vehicle_activity_calendar
+                              WHERE company_id=? AND vehicle_id IN ($in) AND date BETWEEN ? AND ?
+                              GROUP BY date";
+                    $vuParams = array_merge([$companyId], $vids, [$timelineDateFrom, $timelineDateTo]);
+                    $vuStmt = $db->prepare($vuSql);
+                    $vuStmt->execute($vuParams);
+                    foreach ($vuStmt->fetchAll(PDO::FETCH_ASSOC) as $vr) {
+                        $vuKmByDate[(string)$vr['date']] = (int)$vr['km'];
+                    }
+                    $borderCompareAvailable = !empty($vuKmByDate);
                 }
-                $borderCompareAvailable = !empty($vuKmByDate);
+            } catch (Throwable $vuErr) {
+                $borderCompareAvailable = false;
             }
-        } catch (Throwable $vuErr) {
-            $borderCompareAvailable = false;
         }
 
         $sumKm = static function (array $map, int $fromTs, int $toTs): int {
