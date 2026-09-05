@@ -2599,34 +2599,22 @@ function alignCardPlacementCrossingsToActivityDays(
             $type = isset($row['type']) ? (int)$row['type'] : 2;
             $tmin = isset($row['tmin']) ? (int)$row['tmin'] : -1;
             $targetDate = (string)$date;
-            if (($type === 0 || $type === 1) && $tmin >= 0 && $tmin <= 1439) {
+            $quality = strtolower(trim((string)($row['quality'] ?? 'raw')));
+            if ($type === 0 && $quality === 'inferred' && $tmin >= 0 && $tmin <= 1439) {
                 $curActive = !empty($activity[$date]['active']);
                 if (!$curActive) {
                     $dObj = new \DateTimeImmutable($date . ' 00:00:00', new \DateTimeZone('UTC'));
-                    $prevDate = $dObj->modify('-1 day')->format('Y-m-d');
                     $nextDate = $dObj->modify('+1 day')->format('Y-m-d');
-                    $prevActive = !empty($activity[$prevDate]['active']);
                     $nextActive = !empty($activity[$nextDate]['active']);
                     $absNow = $dayIndex($date) * 1440 + $tmin;
 
-                    if ($type === 0) {
-                        if ($nextActive && isset($activity[$nextDate]['first']) && $activity[$nextDate]['first'] !== null) {
-                            $nextFirstAbs = $dayIndex($nextDate) * 1440 + (int)$activity[$nextDate]['first'];
-                            $delta = $nextFirstAbs - $absNow;
-                            if ($delta >= 0 && $delta <= 720) $targetDate = $nextDate;
-                        }
-                        if ($targetDate === $date && $nextActive && $tmin >= 1080) {
-                            $targetDate = $nextDate;
-                        }
-                    } else { /* type 1 = card removal */
-                        if ($prevActive && isset($activity[$prevDate]['last']) && $activity[$prevDate]['last'] !== null) {
-                            $prevLastAbs = $dayIndex($prevDate) * 1440 + (int)$activity[$prevDate]['last'];
-                            $delta = $absNow - $prevLastAbs;
-                            if ($delta >= 0 && $delta <= 720) $targetDate = $prevDate;
-                        }
-                        if ($targetDate === $date && $prevActive && $tmin <= 360) {
-                            $targetDate = $prevDate;
-                        }
+                    if ($nextActive && isset($activity[$nextDate]['first']) && $activity[$nextDate]['first'] !== null) {
+                        $nextFirstAbs = $dayIndex($nextDate) * 1440 + (int)$activity[$nextDate]['first'];
+                        $delta = $nextFirstAbs - $absNow;
+                        if ($delta >= 0 && $delta <= 720) $targetDate = $nextDate;
+                    }
+                    if ($targetDate === $date && $nextActive && $tmin >= 1080) {
+                        $targetDate = $nextDate;
                     }
                 }
             }
