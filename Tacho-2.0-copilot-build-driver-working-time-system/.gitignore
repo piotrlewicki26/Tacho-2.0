@@ -1,0 +1,23 @@
+# TachoPro 2.0 .gitignore
+
+# Sensitive config
+config.php
+
+# Uploaded DDD files (potentially contain PII)
+uploads/ddd/*/
+
+# PHP session files
+*.sess
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
