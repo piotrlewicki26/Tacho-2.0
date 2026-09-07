@@ -290,6 +290,45 @@ function dddParseDriverInfo(string $data): ?array
 }
 
 /**
+ * Normalise a raw vehicle registration field that may contain null/FF padding.
+ */
+function normaliseVehicleRegField(string $raw): ?string
+{
+    if ($raw === '') return null;
+
+    $clean = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $raw)));
+    $clean = preg_replace('/[^A-Z0-9 \-]/', '', $clean);
+    $clean = preg_replace('/\s+/', ' ', $clean);
+    $clean = trim($clean);
+
+    if ($clean === '') return null;
+    if (!preg_match('/[A-Z]/', $clean) || !preg_match('/[0-9]/', $clean)) {
+        return null;
+    }
+
+    $tokens = preg_split('/\s+/', $clean);
+    if (count($tokens) >= 3) {
+        for ($i = 1, $last = count($tokens) - 1; $i < $last; $i++) {
+            if (strlen($tokens[$i]) === 1 && ctype_alpha($tokens[$i])) {
+               return null;
+            }
+        }
+    }
+
+    $noSpc = str_replace(' ', '', $clean);
+    if (strlen($noSpc) < 4 || strlen($noSpc) > 10) {
+        return null;
+    }
+
+    if (preg_match('/^[A-Z]{1,4}\s?[A-Z0-9]{3,9}$/', $clean)
+        || preg_match('/^[A-Z]{1,4}\s[A-Z0-9]{1,6}\s[A-Z0-9]{1,6}$/', $clean)) {
+        return $clean;
+    }
+
+    return null;
+}
+
+/**
  * Parse vehicle registration plate from a vehicle DDD binary blob.
  * Returns the registration string or null if not found.
  *
@@ -301,34 +340,22 @@ function dddParseDriverInfo(string $data): ?array
  */
 function dddParseVehicleReg(string $data): ?string {
     $len = strlen($data);
-    for ($i = 0; $i < $len - 14; $i++) {
-        /* Read up to 14 bytes (codePage(1) + regNumber(13)); strip null/FF padding */
-        $raw = dddReadStr($data, $i, 14);
-        $s   = strtoupper(trim(preg_replace('/\s+/', ' ',
-               preg_replace('/[^A-Z0-9 ]/', '', str_replace(["\x00", "\xFF"], ' ', $raw)))));
-        if ($s === '') continue;
-        /* Accept plates that:
-         *  – contain only letters, digits and single spaces
-         *  – total visible length (no spaces) between 3 and 10 chars
-         *  – start with 1–4 letters
-         *  – contain at least one digit (avoids pure-word false positives)
-         *  – suffix is at least 3 characters (avoids partial boundary reads)
-         *
-         * Pattern A: 1–4 leading letters + optional space + 3–9 alphanumerics
-         *            covers "AB12345", "AB 12345", "B AB1234" (single-space suffix)
-         * Pattern B: 1–4 leading letters + space + 1–6 alnum + space + 1–6 alnum
-         *            covers 3-token plates like "B AB 1234"
-         */
-        $noSpc = str_replace(' ', '', $s);
-        if (strlen($noSpc) < 4 || strlen($noSpc) > 10) continue;
-        if (!preg_match('/^[A-Z]/', $s))               continue;
-        if (!preg_match('/[0-9]/', $s))                continue;  /* must contain a digit */
-        if (preg_match('/^[A-Z]{1,4}\s?[A-Z0-9]{3,9}$/', $s) ||
-            preg_match('/^[A-Z]{1,4}\s[A-Z0-9]{1,6}\s[A-Z0-9]{1,6}$/', $s)) {
-            return $s;
+    $best = null;
+    $bestLen = 0;
+
+    for ($i = 0; $i < $len - 8; $i++) {
+        $maxSpan = min(16, $len - $i);
+        for ($span = 8; $span <= $maxSpan; $span++) {
+            $candidate = normaliseVehicleRegField(substr($data, $i, $span));
+            if ($candidate === null) continue;
+            if (strlen($candidate) > $bestLen) {
+               $best = $candidate;
+               $bestLen = strlen($candidate);
+            }
         }
     }
-    return null;
+
+    return $best;
 }
 
 /**
@@ -1079,13 +1106,12 @@ function parseDriverCardVehicles(string $data): array
     $len = strlen($data);
     if ($len < 40) return [];
 
-    /* Only return records whose last_use falls within the past 12 months.
+    /* Only return records whose last_use falls within a recent historical window.
      * firstUse is deliberately NOT checked against tsMin: a vehicle may have
      * been on the card for years (firstUse very old) but still driven recently.
-     * Filtering on firstUse was the root cause of missed records – e.g. a truck
-     * used since 2020 but last driven in December 2025 was incorrectly rejected
-     * because its firstUse (2020) predated the 12-month window. */
-    $tsMin   = strtotime('-12 months');
+     * A 36-month window avoids missing valid legacy card entries while still
+     * rejecting ancient data (e.g. year 2010). */
+    $tsMin   = strtotime('-36 months');
     $tsMax   = time() + 90 * 86400;
 
     /* NationNumeric → EU plate code (same table as parseBorderCrossings) */
@@ -1181,18 +1207,53 @@ function parseDriverCardVehicles(string $data): array
                 $nationAlpha = strtoupper(trim(str_replace(["\x00", "\xFF"], '', $nationRaw)));
             }
 
-            $regRaw = substr($data, $pos + $regOff, 13);
-            $reg    = strtoupper(trim(str_replace(["\x00", "\xFF"], ' ', $regRaw)));
-            $reg    = preg_replace('/[^A-Z0-9 \-]/', '', $reg);
-            $reg    = preg_replace('/\s+/', ' ', $reg);  /* collapse padding-induced extra spaces */
-            $reg    = trim($reg);
+            $reg = null;
+            for ($span = 8; $span <= 13; $span++) {
+                $candidate = normaliseVehicleRegField(substr($data, $pos + $regOff, $span));
+                if ($candidate === null) continue;
+                if ($reg === null || strlen($candidate) > strlen($reg)) {
+                    $reg = $candidate;
+                }
+            }
+            if ($reg === null) continue;
 
-            $firstUse = unpack('N', substr($data, $pos + $tsOff,     4))[1];
-            $lastUse  = unpack('N', substr($data, $pos + $tsOff + 4, 4))[1];
+            $tsOffsets = [$tsOff];
+            if ($recSize >= 29 && $recSize <= 32) {
+                $tsOffsets = array_values(array_unique([$tsOff - 2, $tsOff - 1, $tsOff, $tsOff + 1, $tsOff + 2]));
+            }
+
+            $bestTs = null;
+            foreach ($tsOffsets as $tsPos) {
+                if ($pos + $tsPos + 8 > $limit) continue;
+                $firstUse = unpack('N', substr($data, $pos + $tsPos, 4))[1];
+                $lastUse  = unpack('N', substr($data, $pos + $tsPos + 4, 4))[1];
+                if ($firstUse < 946684800 || $lastUse < 946684800) continue;
+                if ($lastUse  < $tsMin)   continue;  // not driven in the relevant recent window
+                if ($lastUse  > $tsMax)   continue;  // implausible future timestamp
+                if ($firstUse > $tsMax)   continue;  // implausible future timestamp
+                if ($lastUse  < $firstUse) continue; // invalid: last before first
+                $bestTs = ['first' => $firstUse, 'last' => $lastUse, 'delta' => $tsPos - $tsOff];
+                break;
+            }
+
+            if ($bestTs === null) {
+                $pos += $recSize;
+                continue;
+            }
+
+            $firstUse = $bestTs['first'];
+            $lastUse  = $bestTs['last'];
+            $delta    = $bestTs['delta'];
 
             if ($odoBeginOff >= 0) {
-                $odoB = (ord($data[$pos + $odoBeginOff])     << 16) | (ord($data[$pos + $odoBeginOff + 1]) << 8) | ord($data[$pos + $odoBeginOff + 2]);
-                $odoE = (ord($data[$pos + $odoEndOff])       << 16) | (ord($data[$pos + $odoEndOff   + 1]) << 8) | ord($data[$pos + $odoEndOff   + 2]);
+                $odoBOff = $odoBeginOff + $delta;
+                $odoEOff = $odoEndOff + $delta;
+                $odoB = ($pos + $odoBOff + 2 <= $limit)
+                    ? ((ord($data[$pos + $odoBOff]) << 16) | (ord($data[$pos + $odoBOff + 1]) << 8) | ord($data[$pos + $odoBOff + 2]))
+                    : 0;
+                $odoE = ($pos + $odoEOff + 2 <= $limit)
+                    ? ((ord($data[$pos + $odoEOff]) << 16) | (ord($data[$pos + $odoEOff + 1]) << 8) | ord($data[$pos + $odoEOff + 2]))
+                    : 0;
             } else {
                 $odoB = 0;
                 $odoE = 0;
@@ -1200,13 +1261,6 @@ function parseDriverCardVehicles(string $data): array
 
             $pos += $recSize;
 
-            /* Accept the record if the vehicle was last used within the 12-month window.
-             * Do NOT require firstUse >= tsMin: vehicles often have an old firstUse
-             * (date the vehicle was first added to the card) but recent lastUse. */
-            if ($lastUse  < $tsMin)   continue;  // not driven in the last 12 months
-            if ($lastUse  > $tsMax)   continue;  // implausible future timestamp
-            if ($firstUse > $tsMax)   continue;  // implausible future timestamp
-            if ($lastUse  < $firstUse) continue; // invalid: last before first
             if (strlen($reg) < 2)                          continue;
             /* Registration must contain at least one letter (rules out pure-digit noise) */
             if (!preg_match('/[A-Z]/', $reg))              continue;
