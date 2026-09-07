@@ -47,11 +47,17 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$tabAliases = ['calendar','timeline','violations','files','pojazdy','crossings','border_crossings','granice','przekraczanie_granic','przekraczanie-granic'];
+$tabAliases = [
+    'calendar', 'timeline', 'violations', 'files',
+    'pojazdy', 'crossings', 'border_crossings',
+    'granice',
+    'przekroczenia_granic', 'przekroczenia-granic',
+    'przekraczanie_granic', 'przekraczanie-granic'
+];
 $requestedTab = $_GET['tab'] ?? 'calendar';
 if (!in_array($requestedTab, $tabAliases, true)) {
     $activeTab = 'calendar';
-} elseif (in_array($requestedTab, ['granice','przekraczanie_granic','przekraczanie-granic'], true)) {
+} elseif (in_array($requestedTab, ['granice','przekroczenia_granic','przekroczenia-granic','przekraczanie_granic','przekraczanie-granic'], true)) {
     $activeTab = 'crossings';
 } else {
     $activeTab = $requestedTab;
@@ -567,7 +573,7 @@ include __DIR__ . '/../../templates/header.php';
             <a class="nav-link<?= $activeTab==='crossings'?' active':'' ?>"
                href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=crossings"
                role="tab">
-              <i class="bi bi-signpost-split me-1"></i>Przekraczanie granic
+              <i class="bi bi-signpost-split me-1"></i>Przekroczenia granic
               <?php if (count($crossingEvents) > 0): ?>
               <span class="badge bg-info ms-1"><?= count($crossingEvents) ?></span>
               <?php endif; ?>
