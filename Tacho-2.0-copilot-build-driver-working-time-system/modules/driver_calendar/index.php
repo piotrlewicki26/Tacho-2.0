@@ -47,8 +47,15 @@ try {
 
 // ── Driver filter ─────────────────────────────────────────────
 $driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
-$activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy'])
-    ? $_GET['tab'] : 'calendar';
+$tabAliases = ['calendar','timeline','violations','files','pojazdy','crossings','border_crossings','granice','przekraczanie_granic','przekraczanie-granic'];
+$requestedTab = $_GET['tab'] ?? 'calendar';
+if (!in_array($requestedTab, $tabAliases, true)) {
+    $activeTab = 'calendar';
+} elseif (in_array($requestedTab, ['granice','przekraczanie_granic','przekraczanie-granic'], true)) {
+    $activeTab = 'crossings';
+} else {
+    $activeTab = $requestedTab;
+}
 
 $stmt = $db->prepare(
     'SELECT id, first_name, last_name FROM drivers WHERE company_id=? AND is_active=1 ORDER BY last_name,first_name'
@@ -302,6 +309,24 @@ if ($driverId && $driverInfo && $dataDateMin) {
 }
 $filteredChartDays = $chartDays; // used for violations/summary tabs (respects date filter)
 
+$crossingEvents = [];
+foreach ($calDays as $dayDate => $day) {
+    foreach (($day['crossings'] ?? []) as $crossing) {
+        $crossingEvents[] = [
+            'date'    => $dayDate,
+            'country' => $crossing['country'] ?? '—',
+            'type'    => (int)($crossing['type'] ?? 0),
+            'tmin'    => (int)($crossing['tmin'] ?? 0),
+            'ts'      => $crossing['ts'] ?? null,
+        ];
+    }
+}
+usort($crossingEvents, function ($a, $b) {
+    $dateCmp = strcmp($a['date'], $b['date']);
+    if ($dateCmp !== 0) return $dateCmp;
+    return $a['tmin'] <=> $b['tmin'];
+});
+
 // ── Build month grid ──────────────────────────────────────────
 function monthRange(string $from, string $to): array
 {
@@ -539,6 +564,16 @@ include __DIR__ . '/../../templates/header.php';
             </a>
           </li>
           <li class="nav-item" role="presentation">
+            <a class="nav-link<?= $activeTab==='crossings'?' active':'' ?>"
+               href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=crossings"
+               role="tab">
+              <i class="bi bi-signpost-split me-1"></i>Przekraczanie granic
+              <?php if (count($crossingEvents) > 0): ?>
+              <span class="badge bg-info ms-1"><?= count($crossingEvents) ?></span>
+              <?php endif; ?>
+            </a>
+          </li>
+          <li class="nav-item" role="presentation">
             <a class="nav-link<?= $activeTab==='timeline'?' active':'' ?>"
                href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom??'') ?>&to=<?= e($dateTo??'') ?>&tab=timeline"
                role="tab">
@@ -754,6 +789,57 @@ include __DIR__ . '/../../templates/header.php';
         ?>
         <?php /* Infringements in selected scope – hidden per UX request */ ?>
         <?php /* Daily summary table – hidden per UX request */ ?>
+
+        <?php elseif ($activeTab === 'crossings'): ?>
+        <!-- ════════════════════════════════════════════════════
+             TAB: BORDER CROSSINGS
+             ════════════════════════════════════════════════════ -->
+        <?php if ($crossingEvents): ?>
+        <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+          <div class="text-muted small">
+            <i class="bi bi-signpost-split me-1"></i>Wykryte przekroczenia granic w wybranym zakresie dat.
+          </div>
+          <span class="badge bg-primary-subtle text-primary-emphasis"><?= count($crossingEvents) ?> wpisów</span>
+        </div>
+        <div class="table-responsive">
+          <table class="tp-table">
+            <thead>
+             <tr>
+               <th>Data</th>
+               <th>Godzina</th>
+               <th>Kraj</th>
+               <th>Typ</th>
+             </tr>
+            </thead>
+            <tbody>
+             <?php foreach ($crossingEvents as $item): ?>
+             <tr>
+               <td class="text-nowrap"><?= fmtDate($item['date']) ?></td>
+               <td class="text-nowrap font-monospace"><?= sprintf('%02d:%02d', intdiv($item['tmin'], 60), $item['tmin'] % 60) ?></td>
+               <td><span class="badge bg-primary-subtle text-primary-emphasis"><?= e($item['country']) ?></span></td>
+               <td>
+                 <?php
+                   $crossType = $item['type'];
+                   $crossLabel = match (true) {
+                       $crossType === 0 => 'Wjazd',
+                       $crossType === 1 => 'Wyjazd',
+                       default => 'Przejazd',
+                   };
+                 ?>
+                 <?= e($crossLabel) ?>
+               </td>
+             </tr>
+             <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php else: ?>
+        <div class="tp-empty-state py-5">
+          <i class="bi bi-signpost-split" style="font-size:2.5rem;color:#94a3b8"></i>
+          <p class="mt-3 mb-1 fw-600">Brak przekroczeń granic</p>
+          <p class="text-muted small">Nie wykryto żadnych wpisów o przekroczeniu granicy w wybranym zakresie dat.</p>
+        </div>
+        <?php endif; ?>
 
         <?php elseif ($activeTab === 'violations'): ?>
         <!-- ════════════════════════════════════════════════════
