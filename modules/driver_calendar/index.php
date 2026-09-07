@@ -90,11 +90,6 @@ if ($driverId) {
         } catch (Throwable $bfErr) {
             error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
         }
-        try {
-            rebuildDriverBorderCrossings($db, $companyId, $driverId, false);
-        } catch (Throwable $bcErr) {
-            error_log('driver_calendar: crossings rebuild error for driver ' . $driverId . ': ' . $bcErr->getMessage());
-        }
 
         // Detect actual data range for this driver
         try {
@@ -503,45 +498,84 @@ if ($driverId && $driverInfo) {
             }
         }
 
-        $sumKm = static function (array $map, int $fromTs, int $toTs): int {
-            if ($toTs < $fromTs) return 0;
-            $km = 0;
-            $cur = gmdate('Y-m-d', $fromTs);
-            $end = gmdate('Y-m-d', $toTs);
-            while ($cur <= $end) {
-                $km += (int)($map[$cur] ?? 0);
+        $buildPrefix = static function (array $map, string $fromDate, string $toDate): array {
+            $idx = [];
+            $pref = [];
+            $sum = 0;
+            $cur = $fromDate;
+            $i = 0;
+            while ($cur <= $toDate) {
+                $sum += (int)($map[$cur] ?? 0);
+                $idx[$cur] = $i++;
+                $pref[] = $sum;
                 $cur = gmdate('Y-m-d', strtotime($cur . ' +1 day'));
             }
-            return $km;
+            return [$idx, $pref, $fromDate, $toDate];
         };
+        $sumFromPrefix = static function (array $px, int $fromTs, int $toTs): int {
+            if ($toTs < $fromTs) return 0;
+            [$idx, $pref, $minDate, $maxDate] = $px;
+            $d1 = gmdate('Y-m-d', $fromTs);
+            $d2 = gmdate('Y-m-d', $toTs);
+            if ($d2 < $minDate || $d1 > $maxDate) return 0;
+            if ($d1 < $minDate) $d1 = $minDate;
+            if ($d2 > $maxDate) $d2 = $maxDate;
+            $i1 = $idx[$d1] ?? null;
+            $i2 = $idx[$d2] ?? null;
+            if ($i1 === null || $i2 === null || $i2 < $i1) return 0;
+            return (int)$pref[$i2] - ($i1 > 0 ? (int)$pref[$i1 - 1] : 0);
+        };
+        $driverKmPrefix = $buildPrefix($driverKmByDate, $timelineDateFrom, $timelineDateTo);
+        $vuKmPrefix = $buildPrefix($vuKmByDate, $timelineDateFrom, $timelineDateTo);
 
-        for ($i = 0, $n = count($flat); $i < $n; $i++) {
-            $cur = $flat[$i];
-            if ($cur['country'] === '') continue;
-            $exit = null;
-            for ($j = $i + 1; $j < $n; $j++) {
-                if (($flat[$j]['country'] ?? '') === '') continue;
-                if ($flat[$j]['country'] !== $cur['country'] || (int)$flat[$j]['type'] === 1) {
-                    $exit = $flat[$j];
-                    break;
+        $open = null;
+        foreach ($flat as $ev) {
+            if (($ev['country'] ?? '') === '') continue;
+            if ($open === null) {
+                $open = $ev;
+                if ((int)$ev['type'] === 1) {
+                    $open = null;
                 }
+                continue;
             }
-            $enterTs = (int)$cur['ts'];
-            $exitTs = $exit ? (int)$exit['ts'] : null;
-            $durMin = $exitTs ? max(0, (int)floor(($exitTs - $enterTs) / 60)) : null;
-            $driverKm = $exitTs ? $sumKm($driverKmByDate, $enterTs, $exitTs) : null;
-            $vuKm = ($exitTs && $borderCompareAvailable) ? $sumKm($vuKmByDate, $enterTs, $exitTs) : null;
+
+            $isBoundary = ((string)$ev['country'] !== (string)$open['country']) || ((int)$ev['type'] === 1);
+            if (!$isBoundary) {
+                continue;
+            }
+
+            $enterTs = (int)$open['ts'];
+            $exitTs = (int)$ev['ts'];
+            $durMin = max(0, (int)floor(($exitTs - $enterTs) / 60));
+            $driverKm = $sumFromPrefix($driverKmPrefix, $enterTs, $exitTs);
+            $vuKm = $borderCompareAvailable ? $sumFromPrefix($vuKmPrefix, $enterTs, $exitTs) : null;
             $borderStays[] = [
-                'country' => $cur['country'],
+                'country' => (string)$open['country'],
                 'enter_ts' => $enterTs,
-                'enter_type' => (int)$cur['type'],
-                'enter_quality' => (string)$cur['quality'],
+                'enter_type' => (int)$open['type'],
+                'enter_quality' => (string)$open['quality'],
                 'exit_ts' => $exitTs,
-                'exit_country' => $exit['country'] ?? null,
-                'exit_type' => $exit['type'] ?? null,
+                'exit_country' => (string)($ev['country'] ?? ''),
+                'exit_type' => (int)($ev['type'] ?? 2),
                 'duration_min' => $durMin,
                 'driver_km' => $driverKm,
                 'vu_km' => $vuKm,
+            ];
+
+            $open = ((int)$ev['type'] === 1) ? null : $ev;
+        }
+        if ($open !== null) {
+            $borderStays[] = [
+                'country' => (string)$open['country'],
+                'enter_ts' => (int)$open['ts'],
+                'enter_type' => (int)$open['type'],
+                'enter_quality' => (string)$open['quality'],
+                'exit_ts' => null,
+                'exit_country' => null,
+                'exit_type' => null,
+                'duration_min' => null,
+                'driver_km' => null,
+                'vu_km' => null,
             ];
         }
         } catch (Throwable $stErr) {
