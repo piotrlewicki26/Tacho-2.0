@@ -266,7 +266,8 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
             $vehicleRecords[] = array_merge($r, ['source_file' => $fRow['original_name']]);
         }
     }
-    // Deduplicate by (reg, first_use), keep record with highest distance
+    // Deduplicate by (reg, first_use), keep the richer record, then merge
+    // repeated entries for the same registration into a single usage period.
     $vUniq = [];
     foreach ($vehicleRecords as $r) {
         $key = $r['reg'] . '|' . $r['first_use'];
@@ -274,8 +275,46 @@ if ($driverId && $driverInfo && $activeTab === 'pojazdy' && $driverFiles) {
             $vUniq[$key] = $r;
         }
     }
-    usort($vUniq, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
-    $vehicleRecords = array_values($vUniq);
+
+    $mergedByReg = [];
+    foreach (array_values($vUniq) as $r) {
+        $regKey = trim((string)$r['reg']);
+        if ($regKey === '') continue;
+        if (!isset($mergedByReg[$regKey])) {
+            $mergedByReg[$regKey] = [
+                'reg' => $regKey,
+                'nation' => $r['nation'] ?? '',
+                'first_use' => $r['first_use'],
+                'last_use' => $r['last_use'],
+                'odo_begin' => (int)($r['odo_begin'] ?? 0),
+                'odo_end' => (int)($r['odo_end'] ?? 0),
+                'distance' => (int)($r['distance'] ?? 0),
+                'source_files' => [trim((string)($r['source_file'] ?? ''))],
+            ];
+            continue;
+        }
+
+        $entry = &$mergedByReg[$regKey];
+        $entry['first_use'] = min($entry['first_use'], $r['first_use']);
+        $entry['last_use']  = max($entry['last_use'], $r['last_use']);
+        $entry['odo_begin'] = min((int)($entry['odo_begin'] ?? 0), (int)($r['odo_begin'] ?? 0));
+        $entry['odo_end']   = max((int)($entry['odo_end'] ?? 0), (int)($r['odo_end'] ?? 0));
+        $entry['distance'] += (int)($r['distance'] ?? 0);
+
+        $src = trim((string)($r['source_file'] ?? ''));
+        if ($src !== '' && !in_array($src, $entry['source_files'], true)) {
+            $entry['source_files'][] = $src;
+        }
+    }
+
+    foreach ($mergedByReg as &$entry) {
+        $entry['source_file'] = implode(', ', $entry['source_files']);
+        unset($entry['source_files']);
+    }
+    unset($entry);
+
+    usort($mergedByReg, fn($a, $b) => strcmp($a['first_use'], $b['first_use']));
+    $vehicleRecords = array_values($mergedByReg);
 }
 
 // ── The timeline always shows all available data (independent of calendar date filter) ──
