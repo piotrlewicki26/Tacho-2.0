@@ -110,8 +110,9 @@ if ($driverId) {
             error_log('driver_calendar: range query error: ' . $e->getMessage());
         }
 
-        // Date range – default: current month; fall back to most-recent data month
-        // when the current month has no data at all.
+        // Date range – default to the current month, but if that month lies outside
+        // the driver's actual data range (or no data is available there), fall back to
+        // the nearest real dates in the uploaded DDD files.
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
@@ -120,20 +121,31 @@ if ($driverId) {
         $rawTo   = isset($_GET['to'])   ? trim($_GET['to'])   : '';
 
         if ($rawFrom !== '' || $rawTo !== '') {
-            // User explicitly submitted the filter form – honour their choice.
+            // User explicitly submitted the filter form – honour their choice,
+            // but never let the selected range drift outside the driver's actual data.
             $fallbackFrom = $dataDateMin ?? $curMonthFrom;
             $fallbackTo   = $dataDateMax ?? $curMonthTo;
             $dateFrom = $rawFrom !== '' ? $rawFrom : $fallbackFrom;
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
-            // First driver selection (no dates in URL).
-            // Always default to the current month; the user can click quick-select
-            // buttons ("Bież. mies.", "28 dni", "3 mies.") to navigate to historical data.
+            // First driver selection (no dates in URL): prefer the current month,
+            // but switch to the actual data window when the current month is empty.
             $dateFrom = $curMonthFrom;
             $dateTo   = $curMonthTo;
+            if ($dataDateMin && $dataDateMax) {
+                $currentMonthHasData = !($curMonthFrom > $dataDateMax || $curMonthTo < $dataDateMin);
+                if (!$currentMonthHasData) {
+                    $dateFrom = $dataDateMin;
+                    $dateTo   = $dataDateMax;
+                }
+            }
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom)) $dateFrom = $dataDateMin ?? $curMonthFrom;
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo))   $dateTo   = $dataDateMax ?? $curMonthTo;
+        if ($dataDateMin && $dataDateMax) {
+            if ($dateFrom < $dataDateMin) $dateFrom = $dataDateMin;
+            if ($dateTo > $dataDateMax)   $dateTo   = $dataDateMax;
+        }
         if ($dateFrom > $dateTo) [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
 
         // Re-parse border crossings for stale/null rows
