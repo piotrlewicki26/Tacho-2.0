@@ -562,9 +562,11 @@ function parseDddFile(string $path): array {
                 }
             }
 
-            // Validate total minutes (accept 1350–1460 to handle minor truncation)
+            // Validate total minutes. Some valid cards have a few minutes missing
+            // from the final slot sequence due truncation / out-of-order binary data,
+            // so accept a slightly wider range than the ideal 24h total.
             $total = array_sum(array_column($slots, 'dur'));
-            if ($total < 1350 || $total > 1460) continue; // try next candidate
+            if ($total < 1300 || $total > 1460) continue; // try next candidate
 
             $driveTotal = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 3), 'dur'));
             $restTotal  = array_sum(array_column(array_filter($slots, fn($s) => $s['act'] === 0), 'dur'));

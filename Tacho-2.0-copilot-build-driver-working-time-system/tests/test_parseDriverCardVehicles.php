@@ -430,6 +430,21 @@ ok('18a: old-firstUse/recent-lastUse accepted', count($out) === 1);
 ok('18b: plate = TR9988AB',                     ($out[0]['reg'] ?? '') === 'TR9988AB');
 ok('18c: last_use is recent',                   ($out[0]['last_use'] ?? '') === gmdate('Y-m-d', $recentLastUse));
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Test 19: real-world DDD file with a valid 24h-ish day at 1339 minutes
+ *          must not be filtered out as "no activity".
+ * ══════════════════════════════════════════════════════════════════════════ */
+echo "\nTest 19: real-world DDD file retains valid activity
+";
+
+$sampleFile = dirname(__DIR__, 2) . '/C_20260831_0951_J_Nowicki_1850805169790000.DDD';
+if (is_file($sampleFile)) {
+    $sample = parseDddFile($sampleFile);
+    ok('sample DDD returns activity days', count($sample['days'] ?? []) > 0);
+} else {
+    ok('sample DDD returns activity days', false);
+}
+
 /* ── Summary ──────────────────────────────────────────────────────────────── */
 echo "\n";
 echo str_repeat('─', 50) . "\n";
