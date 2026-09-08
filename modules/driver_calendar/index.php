@@ -75,6 +75,7 @@ $timelineDateFrom = null;
 $timelineDateTo   = null;
 $borderStays = [];
 $borderCompareAvailable = false;
+$readCoverageRows = [];
 $dateFrom    = date('Y-m-01');
 $dateTo      = date('Y-m-t');
 
@@ -401,6 +402,72 @@ if ($driverId && $driverInfo) {
             $crossingsShown += count($crossings);
         }
     }
+
+    // ── Per-day read-coverage report for UI (calendar + timeline) ──
+    foreach ($calDays as $dKey => $day) {
+        $segments = is_array($day['segs'] ?? null) ? $day['segs'] : [];
+        $segMinutes = 0;
+        foreach ($segments as $s) {
+            if (!is_array($s)) continue;
+            if (isset($s['dur']) && is_numeric($s['dur'])) {
+                $segMinutes += max(0, (int)$s['dur']);
+                continue;
+            }
+            $st = isset($s['start']) ? (int)$s['start'] : -1;
+            $en = isset($s['end']) ? (int)$s['end'] : -1;
+            if ($st >= 0 && $en > $st) $segMinutes += ($en - $st);
+        }
+
+        $actMinutes = max(
+            0,
+            (int)($day['drive'] ?? 0) + (int)($day['work'] ?? 0) + (int)($day['avail'] ?? 0) + (int)($day['rest'] ?? 0),
+            $segMinutes
+        );
+        $coveragePct = max(0, min(100, (int)round(($actMinutes / 1440) * 100)));
+
+        $decoderSource = 'EF multi-block (partial)';
+        $confidence = $coveragePct;
+        if ($actMinutes >= 1350 && $actMinutes <= 1460) {
+            $decoderSource = 'EF multi-block (primary)';
+            $confidence += 8;
+        } elseif ($actMinutes >= 1200 && $actMinutes <= 1560) {
+            $decoderSource = 'EF multi-block (fallback)';
+            $confidence += 3;
+        }
+        if (!empty($segments)) $confidence += 4;
+
+        $crossRows = is_array($selectedCrossingsByDate[$dKey] ?? null) ? $selectedCrossingsByDate[$dKey] : [];
+        $crossCnt = count($crossRows);
+        $crossValidated = 0;
+        $crossConfSum = 0;
+        foreach ($crossRows as $cr) {
+            if (!is_array($cr)) continue;
+            if ((string)($cr['quality'] ?? '') === 'validated') $crossValidated++;
+            $crossConfSum += is_numeric($cr['confidence'] ?? null) ? (int)$cr['confidence'] : 70;
+        }
+        $crossConfAvg = $crossCnt > 0 ? (int)round($crossConfSum / $crossCnt) : null;
+        if ($crossConfAvg !== null) {
+            $confidence += (int)round(($crossConfAvg - 70) / 10);
+        }
+        $confidence = max(0, min(100, $confidence));
+
+        $completeness = ($coveragePct >= 98)
+            ? 'pełny'
+            : (($coveragePct >= 90) ? 'wysoki' : (($coveragePct >= 75) ? 'średni' : 'niski'));
+
+        $readCoverageRows[] = [
+            'date' => $dKey,
+            'coverage_pct' => $coveragePct,
+            'confidence' => $confidence,
+            'decoder_source' => $decoderSource,
+            'segments_count' => count($segments),
+            'crossings_count' => $crossCnt,
+            'crossings_validated' => $crossValidated,
+            'crossings_confidence' => $crossConfAvg,
+            'completeness' => $completeness,
+        ];
+    }
+    usort($readCoverageRows, static fn(array $a, array $b): int => strcmp((string)$a['date'], (string)$b['date']));
 
     try {
         $detStmt = $db->prepare(
@@ -908,6 +975,52 @@ include __DIR__ . '/../../templates/header.php';
         </div>
 
         <?php elseif ($activeTab === 'calendar'): ?>
+        <?php if (!empty($readCoverageRows)): ?>
+        <div class="tp-card mb-3">
+          <div class="tp-card-header">
+            <i class="bi bi-shield-check text-primary"></i>
+            <span class="tp-card-title">Raport pokrycia odczytu (per dzień)</span>
+            <span class="badge bg-primary ms-auto"><?= count($readCoverageRows) ?> dni</span>
+          </div>
+          <div class="tp-card-body p-0">
+            <div class="table-responsive">
+              <table class="tp-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Pokrycie</th>
+                    <th>Confidence</th>
+                    <th>Źródło dekodera</th>
+                    <th>Crossingi</th>
+                    <th>Kompletność</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($readCoverageRows as $rc): ?>
+                  <tr>
+                    <td><?= fmtDate($rc['date']) ?></td>
+                    <td><?= (int)$rc['coverage_pct'] ?>%</td>
+                    <td><?= (int)$rc['confidence'] ?>%</td>
+                    <td><?= e($rc['decoder_source']) ?></td>
+                    <td>
+                      <?= (int)$rc['crossings_count'] ?>
+                      <?php if ($rc['crossings_count'] > 0): ?>
+                        <span class="text-muted small">(val: <?= (int)$rc['crossings_validated'] ?><?= $rc['crossings_confidence'] !== null ? ', conf: '.(int)$rc['crossings_confidence'].'%' : '' ?>)</span>
+                      <?php endif; ?>
+                    </td>
+                    <td>
+                      <span class="badge <?= $rc['completeness']==='pełny' ? 'bg-success' : ($rc['completeness']==='wysoki' ? 'bg-primary' : ($rc['completeness']==='średni' ? 'bg-warning text-dark' : 'bg-danger')) ?>">
+                        <?= e($rc['completeness']) ?>
+                      </span>
+                    </td>
+                  </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <?php endif; ?>
         <!-- ════════════════════════════════════════════════════
              TAB: CALENDAR
              ════════════════════════════════════════════════════ -->
@@ -1042,6 +1155,25 @@ include __DIR__ . '/../../templates/header.php';
         <?php endif; ?>
 
         <?php elseif ($activeTab === 'timeline'): ?>
+        <?php if (!empty($readCoverageRows)): ?>
+        <div class="tp-card mb-3">
+          <div class="tp-card-header">
+            <i class="bi bi-shield-check text-primary"></i>
+            <span class="tp-card-title">Raport pokrycia odczytu (per dzień)</span>
+          </div>
+          <div class="tp-card-body py-2">
+            <small class="text-muted">
+              Średnie confidence:
+              <?php
+                $rcAvg = (int)round(array_sum(array_map(static fn($r) => (int)$r['confidence'], $readCoverageRows)) / max(1, count($readCoverageRows)));
+                $rcFull = count(array_filter($readCoverageRows, static fn($r) => (string)$r['completeness'] === 'pełny'));
+              ?>
+              <strong><?= $rcAvg ?>%</strong>,
+              dni pełne: <strong><?= $rcFull ?>/<?= count($readCoverageRows) ?></strong>.
+            </small>
+          </div>
+        </div>
+        <?php endif; ?>
         <!-- ════════════════════════════════════════════════════
              TAB: TIMELINE / ANALIZATOR
              ════════════════════════════════════════════════════ -->
