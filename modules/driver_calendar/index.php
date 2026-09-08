@@ -494,7 +494,9 @@ if ($driverId && $driverInfo) {
             'crossings' => $crosses,
         ];
     }
-    usort($timelineChartDays, static fn($a, $b) => strcmp((string)$a['date'], (string)$b['date']));
+    usort($timelineChartDays, static function ($a, $b) {
+        return strcmp((string)$a['date'], (string)$b['date']);
+    });
 
     // ── Per-day read-coverage report for UI (calendar + timeline) ──
     foreach ($calDays as $dKey => $day) {
@@ -560,7 +562,9 @@ if ($driverId && $driverInfo) {
             'completeness' => $completeness,
         ];
     }
-    usort($readCoverageRows, static fn(array $a, array $b): int => strcmp((string)$a['date'], (string)$b['date']));
+    usort($readCoverageRows, static function (array $a, array $b): int {
+        return strcmp((string)$a['date'], (string)$b['date']);
+    });
 
     // ── Build border stay timeline rows only for dedicated border tab ──
     if ($activeTab === 'granice') {
@@ -586,7 +590,10 @@ if ($driverId && $driverInfo) {
                 ];
             }
         }
-        usort($flat, static fn(array $a, array $b): int => ($a['ts'] <=> $b['ts']));
+        usort($flat, static function (array $a, array $b): int {
+            if ($a['ts'] == $b['ts']) return 0;
+            return ($a['ts'] < $b['ts']) ? -1 : 1;
+        });
         $ded = [];
         $seen = [];
         foreach ($flat as $e) {
@@ -748,8 +755,12 @@ function monthRange(string $from, string $to): array
 $months = ($driverId && $driverInfo && !empty($calDays)) ? monthRange($dateFrom, $dateTo) : [];
 
 // ── Days driving/working count ────────────────────────────────
-$driveDays = count(array_filter($calDays, fn($d) => $d['drive'] > 0));
-$workDays  = count(array_filter($calDays, fn($d) => ($d['drive'] + $d['work']) > 0));
+$driveDays = count(array_filter($calDays, function ($d) {
+    return $d['drive'] > 0;
+}));
+$workDays  = count(array_filter($calDays, function ($d) {
+    return ($d['drive'] + $d['work']) > 0;
+}));
 
 $pageTitle  = 'Kalendarz kierowcy';
 $activePage = 'driver_calendar';
@@ -1147,8 +1158,12 @@ include __DIR__ . '/../../templates/header.php';
             <?php
               $dateStr  = sprintf('%04d-%02d-%02d', $year, $month, $d);
               $day      = $calDays[$dateStr] ?? null;
-              $hasError = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='error'));
-              $hasWarn  = $day && !empty(array_filter($day['viol'], fn($v)=>($v['type']??'')==='warn'));
+              $hasError = $day && !empty(array_filter($day['viol'], function ($v) {
+                  return ($v['type'] ?? '') === 'error';
+              }));
+              $hasWarn  = $day && !empty(array_filter($day['viol'], function ($v) {
+                  return ($v['type'] ?? '') === 'warn';
+              }));
               $isWeekend= in_array(date('N', strtotime($dateStr)), ['6','7']);
               $dowNames = ['','Pn','Wt','Śr','Cz','Pt','Sb','Nd'];
               $dowLabel = $dowNames[(int)date('N', strtotime($dateStr))];
@@ -1242,8 +1257,12 @@ include __DIR__ . '/../../templates/header.php';
             <small class="text-muted">
               Średnie confidence:
               <?php
-                $rcAvg = (int)round(array_sum(array_map(static fn($r) => (int)$r['confidence'], $readCoverageRows)) / max(1, count($readCoverageRows)));
-                $rcFull = count(array_filter($readCoverageRows, static fn($r) => (string)$r['completeness'] === 'pełny'));
+                $rcAvg = (int)round(array_sum(array_map(static function ($r) {
+                    return (int)$r['confidence'];
+                }, $readCoverageRows)) / max(1, count($readCoverageRows)));
+                $rcFull = count(array_filter($readCoverageRows, static function ($r) {
+                    return (string)$r['completeness'] === 'pełny';
+                }));
               ?>
               <strong><?= $rcAvg ?>%</strong>,
               dni pełne: <strong><?= $rcFull ?>/<?= count($readCoverageRows) ?></strong>.
