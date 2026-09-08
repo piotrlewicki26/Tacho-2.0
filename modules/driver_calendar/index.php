@@ -67,8 +67,6 @@ $driverInfo = null;
 $driverFiles = [];
 $dataDateMin = null;
 $dataDateMax = null;
-$crossingsDetected = 0;
-$crossingsShown    = 0;
 $selectedCrossingsByDate = [];
 $timelineCrossingsByDate = [];
 $timelineDateFrom = null;
@@ -153,8 +151,6 @@ if ($driverId) {
         // Date range – default aligned with profile view:
         // latest activity anchor and ~90-day window.
         $today        = new DateTime();
-        $curMonthFrom = $today->format('Y-m-01');
-        $curMonthTo   = $today->format('Y-m-t');
         $defaultAnchor = $dataDateMax ?: date('Y-m-d');
         $defaultFrom  = date('Y-m-d', strtotime($defaultAnchor . ' -90 days'));
         $defaultTo    = $defaultAnchor;
@@ -500,14 +496,6 @@ if ($driverId && $driverInfo) {
     }
     usort($timelineChartDays, static fn($a, $b) => strcmp((string)$a['date'], (string)$b['date']));
 
-    $crossingsShown = 0;
-    foreach ($calDays as $d) {
-        $crossings = $d['crossings'] ?? [];
-        if (is_array($crossings)) {
-            $crossingsShown += count($crossings);
-        }
-    }
-
     // ── Per-day read-coverage report for UI (calendar + timeline) ──
     foreach ($calDays as $dKey => $day) {
         $segments = is_array($day['segs'] ?? null) ? $day['segs'] : [];
@@ -573,19 +561,6 @@ if ($driverId && $driverInfo) {
         ];
     }
     usort($readCoverageRows, static fn(array $a, array $b): int => strcmp((string)$a['date'], (string)$b['date']));
-
-    try {
-        $detStmt = $db->prepare(
-            'SELECT COUNT(*)
-             FROM driver_border_crossings
-             WHERE company_id=? AND driver_id=?
-               AND crossing_date BETWEEN ? AND ?'
-        );
-        $detStmt->execute([$companyId, $driverId, $dateFrom, $dateTo]);
-        $crossingsDetected = (int)$detStmt->fetchColumn();
-    } catch (Throwable $detErr) {
-        error_log('driver_calendar: crossings debug query error: ' . $detErr->getMessage());
-    }
 
     // ── Build border stay timeline rows only for dedicated border tab ──
     if ($activeTab === 'granice') {
@@ -783,7 +758,7 @@ include __DIR__ . '/../../templates/header.php';
 
 <!-- ── Summary row: driver filter + stats ─────────────────────── -->
 <?php if (!$driverId): ?>
-<div class="row g-3 mb-3">
+<div class="row g-3 mb-3 dc-layout">
   <div class="col-xl-3 col-lg-4">
     <div class="tp-card">
       <div class="tp-card-header">
@@ -992,9 +967,9 @@ include __DIR__ . '/../../templates/header.php';
 </div><!-- /.row summary -->
 
 <!-- ── Tabs (full-width) ───────────────────────────────────────── -->
-<div class="row g-3 mb-3">
+<div class="row g-3 mb-3 dc-workspace">
   <div class="col-12">
-    <div class="tp-card mb-0">
+    <div class="tp-card mb-0 dc-main-card">
       <div class="tp-card-header p-0 border-bottom-0">
         <ul class="nav nav-tabs dc-tabs w-100 px-3 pt-2" role="tablist">
           <li class="nav-item" role="presentation">
@@ -1047,17 +1022,6 @@ include __DIR__ . '/../../templates/header.php';
       </div>
 
       <div class="tp-card-body">
-        <?php if ($driverInfo): ?>
-        <div class="d-flex justify-content-end align-items-center gap-2 mb-2">
-          <span class="badge text-bg-light border">
-            crossings detected / shown: <?= (int)$crossingsDetected ?> / <?= (int)$crossingsShown ?>
-          </span>
-          <a class="btn btn-sm btn-outline-secondary"
-             href="?driver_id=<?= $driverId ?>&from=<?= e($dateFrom) ?>&to=<?= e($dateTo) ?>&tab=<?= e($activeTab) ?>&rebuild_crossings=1">
-            Rebuild crossings
-          </a>
-        </div>
-        <?php endif; ?>
 
         <?php if (empty($calDays) && !in_array($activeTab, ['files', 'pojazdy', 'timeline'], true)): ?>
         <!-- No data state -->
@@ -1131,14 +1095,14 @@ include __DIR__ . '/../../templates/header.php';
              ════════════════════════════════════════════════════ -->
 
         <!-- Legend -->
-        <div class="d-flex flex-wrap gap-3 mb-3 small align-items-center">
-          <span><span class="dc-badge dc-drive"></span> 🛞 Jazda</span>
-          <span><span class="dc-badge dc-work"></span> ⚒ Praca</span>
-          <span><span class="dc-badge dc-avail"></span> □ Dyspozycyjność</span>
-          <span><span class="dc-badge dc-rest"></span> 🛏 Odpoczynek</span>
-          <span><span class="dc-badge dc-viol"></span> Naruszenie</span>
-          <span><span class="dc-badge dc-no-data"></span> Brak danych</span>
-          <span class="ms-auto text-muted"><?= $workDays ?> dni aktywności · <?= count($calDays) ?> dni z danymi</span>
+        <div class="dc-legend mb-3">
+          <span class="dc-legend-item"><span class="dc-badge dc-drive"></span>🛞 Jazda</span>
+          <span class="dc-legend-item"><span class="dc-badge dc-work"></span>⚒ Praca</span>
+          <span class="dc-legend-item"><span class="dc-badge dc-avail"></span>□ Dyspozycyjność</span>
+          <span class="dc-legend-item"><span class="dc-badge dc-rest"></span>🛏 Odpoczynek</span>
+          <span class="dc-legend-item"><span class="dc-badge dc-viol"></span>Naruszenie</span>
+          <span class="dc-legend-item"><span class="dc-badge dc-no-data"></span>Brak danych</span>
+          <span class="dc-legend-summary"><?= $workDays ?> dni aktywności · <?= count($calDays) ?> dni z danymi</span>
         </div>
 
         <?php foreach ($months as [$year, $month]): ?>
@@ -1595,180 +1559,240 @@ include __DIR__ . '/../../templates/header.php';
 <?php endif; // !$driverId / !$driverInfo / else ?>
 
 <style>
-/* ── Driver Calendar styles ─────────────────────────────────── */
+/* ── Driver Calendar redesign ───────────────────────────────── */
+.dc-layout .tp-stat {
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, .06);
+}
+.dc-main-card {
+  border-radius: 18px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .08);
+}
 .dc-driver-card {
   display: flex;
   align-items: center;
   gap: .75rem;
-  padding: .75rem;
-  background: var(--tp-card-bg, #f8fafc);
-  border-radius: 8px;
-  border: 1px solid var(--tp-border, #e2e8f0);
+  padding: .9rem;
+  background: linear-gradient(145deg, #f8fbff 0%, #f1f5f9 100%);
+  border-radius: 14px;
+  border: 1px solid #dbe7ff;
 }
 .dc-driver-avatar {
-  width: 42px; height: 42px;
-  border-radius: 50%;
-  background: var(--tp-primary, #2563eb);
+  width: 46px; height: 46px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #2563eb, #1d4ed8);
   color: #fff;
-  font-size: .9rem;
+  font-size: .95rem;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, .35);
+}
+.dc-tabs {
+  gap: .35rem;
+  border-bottom: 0;
+  flex-wrap: wrap;
 }
 .dc-tabs .nav-link {
-  font-size: .875rem;
-  padding: .45rem .85rem;
-  color: var(--tp-text-muted, #64748b);
-  border-bottom: 2px solid transparent;
-  border-top: none; border-left: none; border-right: none;
+  font-size: .83rem;
+  padding: .5rem .85rem;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #fff;
+  transition: all .16s ease;
 }
 .dc-tabs .nav-link.active {
-  color: var(--tp-primary, #2563eb);
-  border-bottom-color: var(--tp-primary, #2563eb);
-  background: transparent;
+  color: #fff;
+  border-color: #1d4ed8;
+  background: linear-gradient(145deg, #2563eb, #1d4ed8);
+  box-shadow: 0 8px 16px rgba(37, 99, 235, .25);
   font-weight: 600;
 }
 .dc-tabs .nav-link:hover:not(.active) {
-  color: var(--tp-text, #1e293b);
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 .dc-file-list .list-group-item { border-left: none; border-right: none; }
 .dc-file-list .list-group-item:first-child { border-top: none; }
 
-/* Calendar grid */
+.dc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+}
+.dc-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .74rem;
+  font-weight: 600;
+  color: #334155;
+  padding: .34rem .55rem;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.dc-legend-summary {
+  margin-left: auto;
+  font-size: .78rem;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+
 .dc-badge {
   display: inline-block;
-  width: 14px; height: 14px;
+  width: 12px; height: 12px;
   border-radius: 3px;
-  vertical-align: middle;
-  margin-right: 3px;
 }
-.dc-badge.dc-drive  { background: var(--tp-primary, #2563eb); }
+.dc-badge.dc-drive  { background: #2563eb; }
 .dc-badge.dc-work   { background: #f59e0b; }
 .dc-badge.dc-avail  { background: #10b981; }
 .dc-badge.dc-rest   { background: #94a3b8; }
 .dc-badge.dc-viol   { background: #ef4444; }
 .dc-badge.dc-no-data{ background: #e5e7eb; border:1px solid #d1d5db; }
+
+.dc-month {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: .75rem;
+  background: #fff;
+}
 .dc-month-header {
   display: flex;
   align-items: center;
-  margin-bottom: .5rem;
+  margin-bottom: .75rem;
 }
 .dc-month-title {
   font-weight: 700;
-  font-size: .95rem;
-  color: var(--tp-text, #1e293b);
+  font-size: 1rem;
+  color: #0f172a;
+  letter-spacing: .01em;
 }
 .dc-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  column-gap: 3px;
-  row-gap: 10px;
+  grid-template-columns: repeat(7, minmax(0,1fr));
+  column-gap: 6px;
+  row-gap: 8px;
 }
 .dc-dow {
   text-align: center;
   font-size: .68rem;
-  font-weight: 600;
+  font-weight: 700;
   color: #64748b;
-  padding: 3px 0;
+  padding: 4px 0;
+  text-transform: uppercase;
+  letter-spacing: .04em;
 }
 .dc-cell {
-  border-radius: 5px;
-  min-height: 120px;
-  padding: 4px 5px 3px;
+  border-radius: 12px;
+  min-height: 116px;
+  padding: 8px 8px 6px;
   position: relative;
-  cursor: default;
   overflow: hidden;
-  transition: filter .1s;
+  transition: transform .14s ease, box-shadow .14s ease, filter .14s ease;
   display: flex;
   flex-direction: column;
+  border: 1px solid #e2e8f0;
 }
-.dc-empty { background: transparent; }
-.dc-no-data { background: #f1f5f9; }
-.dc-weekend.dc-no-data { background: #f8f3f3; }
-.dc-has-data { border: 1px solid rgba(0,0,0,.07); }
-.dc-drive  { background: #dbeafe; }
-.dc-work   { background: #fef3c7; }
-.dc-avail  { background: #d1fae5; }
-.dc-rest   { background: #f1f5f9; }
-.dc-viol   { border: 2px solid #ef4444 !important; }
-.dc-warn   { border: 2px solid #f59e0b !important; }
-.dc-weekend.dc-has-data { opacity: .85; }
-.dc-has-data:hover { filter: brightness(.93); cursor: pointer; }
+.dc-empty { background: transparent; border: none; }
+.dc-no-data { background: #f8fafc; }
+.dc-weekend.dc-no-data { background: #fef7f7; }
+.dc-drive  { background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%); }
+.dc-work   { background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%); }
+.dc-avail  { background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%); }
+.dc-rest   { background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%); }
+.dc-viol   { border-color: #ef4444 !important; box-shadow: inset 0 0 0 1px #ef4444; }
+.dc-warn   { border-color: #f59e0b !important; box-shadow: inset 0 0 0 1px #f59e0b; }
+.dc-weekend.dc-has-data { opacity: .95; }
+.dc-has-data:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(15, 23, 42, .12); cursor: pointer; }
 .dc-day-num {
-  font-size: .65rem;
-  font-weight: 700;
-  color: #374151;
+  font-size: .78rem;
+  font-weight: 800;
+  color: #1f2937;
   line-height: 1;
-  display: block;
 }
-
 .dc-sum {
-  margin-top: 3px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   flex: 1;
 }
 .dc-si {
   display: flex;
   align-items: center;
-  gap: 3px;
-  font-size: .62rem;
-  font-weight: 600;
-  color: #374151;
+  gap: 4px;
+  font-size: .64rem;
+  font-weight: 700;
+  color: #334155;
   line-height: 1.35;
   white-space: nowrap;
 }
 .dc-si-ico {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 11px;
-  min-width: 11px;
+  width: 12px;
+  min-width: 12px;
   font-size: 10px;
-  line-height: 1;
+  display: inline-flex;
+  justify-content: center;
   color: #334155;
 }
 .dc-si-dot {
-  display: inline-block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.dc-si-drive { background: var(--tp-primary, #2563eb); }
+.dc-si-drive { background: #2563eb; }
 .dc-si-work  { background: #f59e0b; }
 .dc-si-rest  { background: #94a3b8; }
 .dc-si-avail { background: #10b981; }
 .dc-si-km {
-  color: #64748b;
-  padding-left: 9px;
+  color: #475569;
+  padding-left: 10px;
 }
 .dc-day-header {
   display: flex;
   align-items: baseline;
-  gap: 3px;
-  line-height: 1;
+  gap: 4px;
 }
 .dc-day-dow {
-  font-size: .58rem;
-  font-weight: 500;
-  color: #9ca3af;
-  line-height: 1;
+  font-size: .6rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
 }
 .dc-viol-dot {
   position: absolute;
-  top: 3px; right: 4px;
-  width: 6px; height: 6px;
+  top: 7px; right: 8px;
+  width: 8px; height: 8px;
   border-radius: 50%;
   background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, .16);
 }
 .btn-xs {
-  padding: .15rem .45rem;
-  font-size: .75rem;
+  padding: .22rem .5rem;
+  font-size: .73rem;
   line-height: 1.4;
+}
+@media (max-width: 1200px) {
+  .dc-cell { min-height: 106px; padding: 7px 6px 5px; }
+  .dc-si { font-size: .61rem; }
+}
+@media (max-width: 900px) {
+  .dc-legend-summary { width: 100%; margin-left: 0; margin-top: .2rem; }
+}
+@media (max-width: 768px) {
+  .dc-grid { column-gap: 4px; row-gap: 6px; }
+  .dc-cell { min-height: 88px; border-radius: 10px; }
+  .dc-sum { display: none; }
+  .dc-day-num { font-size: .84rem; }
 }
 </style>
 
