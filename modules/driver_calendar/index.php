@@ -821,8 +821,16 @@ include __DIR__ . '/../../templates/header.php';
 
           <!-- Driver info card -->
           <div class="dc-driver-card mb-3">
+            <?php
+              $firstName = (string)($driverInfo['first_name'] ?? '');
+              $lastName = (string)($driverInfo['last_name'] ?? '');
+              $firstInitial = function_exists('mb_substr') ? mb_substr($firstName, 0, 1) : substr($firstName, 0, 1);
+              $lastInitial = function_exists('mb_substr') ? mb_substr($lastName, 0, 1) : substr($lastName, 0, 1);
+              $driverInitials = strtoupper(trim($firstInitial . $lastInitial));
+              if ($driverInitials === '') $driverInitials = '?';
+            ?>
             <div class="dc-driver-avatar">
-              <?= strtoupper(mb_substr($driverInfo['first_name'], 0, 1) . mb_substr($driverInfo['last_name'], 0, 1)) ?>
+              <?= e($driverInitials) ?>
             </div>
             <div>
               <div class="fw-700"><?= e($driverInfo['last_name'] . ' ' . $driverInfo['first_name']) ?></div>
