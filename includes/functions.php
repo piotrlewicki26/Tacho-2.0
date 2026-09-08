@@ -685,6 +685,7 @@ function parseDddFile(string $path): array {
         }
         return ['cand' => $candCount, 'dates' => count($datesMap)];
     };
+    $knownBlocks = [];
     $bestKnown = ['start' => null, 'end' => null, 'bl' => 0, 'dates' => 0, 'cand' => 0];
     foreach ([[0x05, 0x05], [0x05, 0x03], [0x05, 0x0D]] as [$t0, $t1]) {
         for ($i = 0; $i < $len - 4; $i++) {
@@ -692,6 +693,14 @@ function parseDddFile(string $path): array {
             $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
             if ($bl < 200 || $bl > 300000 || $i + 4 + $bl > $len) continue;
             $score = $scoreBlock($i + 8, $i + 4 + $bl);
+            $knownBlocks[] = [
+                'start' => $i + 4,
+                'end' => $i + 4 + $bl,
+                'bl' => $bl,
+                'dates' => $score['dates'],
+                'cand' => $score['cand'],
+                'tag' => sprintf('%02X%02X', $t0, $t1),
+            ];
             if (
                 $score['dates'] > $bestKnown['dates']
                 || ($score['dates'] === $bestKnown['dates'] && $score['cand'] > $bestKnown['cand'])
@@ -702,12 +711,21 @@ function parseDddFile(string $path): array {
         }
     }
     // Evaluate all 0x05xx blocks as a fallback for vendor-specific layouts.
+    $anyBlocks = [];
     $bestAny = ['start' => null, 'end' => null, 'bl' => 0, 'dates' => 0, 'cand' => 0];
     for ($i = 0; $i < $len - 4; $i++) {
         if (ord($data[$i]) !== 0x05) continue;
         $bl = (ord($data[$i + 2]) << 8) | ord($data[$i + 3]);
         if ($bl < 200 || $bl > 300000 || $i + 4 + $bl > $len) continue;
         $score = $scoreBlock($i + 8, $i + 4 + $bl);
+        $anyBlocks[] = [
+            'start' => $i + 4,
+            'end' => $i + 4 + $bl,
+            'bl' => $bl,
+            'dates' => $score['dates'],
+            'cand' => $score['cand'],
+            'tag' => sprintf('%02X%02X', 0x05, ord($data[$i + 1])),
+        ];
         if (
             $score['dates'] > $bestAny['dates']
             || ($score['dates'] === $bestAny['dates'] && $score['cand'] > $bestAny['cand'])
@@ -723,7 +741,33 @@ function parseDddFile(string $path): array {
     $selected = $useAny ? $bestAny : $bestKnown;
     $activityStart = $selected['start'];
     $activityEnd   = $selected['end'];
-    $activityBestBl = $selected['bl'];
+    $activityBestBl = $selected['bl']; // kept for backward compatibility in diagnostics
+    $activityRanges = [];
+    if ($activityStart !== null && $activityEnd !== null && $activityEnd > $activityStart) {
+        $activityRanges[] = ['start' => $activityStart + 4, 'end' => $activityEnd];
+    }
+    $allScoredBlocks = array_merge($knownBlocks, $anyBlocks);
+    usort($allScoredBlocks, static function (array $a, array $b): int {
+        if ($a['dates'] !== $b['dates']) return $b['dates'] <=> $a['dates'];
+        if ($a['cand'] !== $b['cand']) return $b['cand'] <=> $a['cand'];
+        return $b['bl'] <=> $a['bl'];
+    });
+    foreach ($allScoredBlocks as $blk) {
+        if (($blk['dates'] ?? 0) <= 0 || ($blk['cand'] ?? 0) <= 0) continue;
+        $st = (int)($blk['start'] ?? 0) + 4;
+        $en = (int)($blk['end'] ?? 0);
+        if ($en <= $st) continue;
+        $isDuplicate = false;
+        foreach ($activityRanges as $rng) {
+            if ((int)$rng['start'] === $st && (int)$rng['end'] === $en) {
+                $isDuplicate = true;
+                break;
+            }
+        }
+        if ($isDuplicate) continue;
+        $activityRanges[] = ['start' => $st, 'end' => $en];
+        if (count($activityRanges) >= 4) break; // primary + top alternates
+    }
 
     // ── Step 1: Collect candidate record headers ───────────────────────────────
     $collectCandidates = function (int $from, int $to) use ($data, $yrMin, $yrMax, $tsMax): array {
@@ -744,10 +788,29 @@ function parseDddFile(string $path): array {
         }
         return $out;
     };
-    // Use TLV-bounded region if found; skip first 4 management bytes (pointers/length).
-    $scanStart = ($activityStart !== null) ? $activityStart + 4 : 0;
-    $scanEnd   = $activityEnd ?? $len;
-    $cands     = $collectCandidates($scanStart, $scanEnd);
+    // Use several top TLV-bounded candidate regions; this improves coverage for cards
+    // that split/duplicate daily activity records across multiple EF blocks.
+    $cands = [];
+    if ($activityRanges) {
+        foreach ($activityRanges as $rng) {
+            $scanStart = max(0, min($len, (int)$rng['start']));
+            $scanEnd   = max(0, min($len, (int)$rng['end']));
+            if ($scanEnd - $scanStart < 8) continue;
+            foreach ($collectCandidates($scanStart, $scanEnd) as $c) {
+                $cands[] = $c;
+            }
+        }
+        if ($cands) {
+            $uniq = [];
+            foreach ($cands as $c) {
+                $k = (int)$c['off'];
+                if (!isset($uniq[$k])) $uniq[$k] = $c;
+            }
+            $cands = array_values($uniq);
+        }
+    } else {
+        $cands = $collectCandidates(0, $len);
+    }
     // Fallback: if bounded scan yields too few candidates, retry on full file.
     if (count($cands) < 8 && ($scanStart > 0 || $scanEnd < $len)) {
         $fullCands = $collectCandidates(0, $len);
