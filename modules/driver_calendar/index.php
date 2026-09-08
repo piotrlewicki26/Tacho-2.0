@@ -291,8 +291,8 @@ if ($driverId) {
             error_log('driver_calendar: files query error: ' . $e->getMessage());
         }
 
-        // Recovery pass: if selected range has missing days, re-parse overlapping
-        // source files and persist missing days to the calendar.
+        // Lightweight recovery pass: if selected range has missing days, hydrate
+        // them from already persisted ddd_activity_days (no on-request file re-parse).
         if ($driverFiles) {
             try {
                 $missingDates = [];
@@ -303,54 +303,25 @@ if ($driverId) {
                 }
 
                 if (!empty($missingDates)) {
-                    $overlapFiles = array_values(array_filter($driverFiles, static function (array $f) use ($dateFrom, $dateTo): bool {
-                        $ps = (string)($f['period_start'] ?? '');
-                        $pe = (string)($f['period_end'] ?? '');
-                        if ($ps === '' || $pe === '') return true;
-                        return !($pe < $dateFrom || $ps > $dateTo);
-                    }));
-
-                    $parsedFiles = 0;
-                    foreach ($overlapFiles as $fRow) {
-                        if (empty($missingDates) || $parsedFiles >= 3) break;
-                        $fp = dddPhysPath($fRow, $companyId);
-                        if (!is_file($fp)) continue;
-                        $pr = parseDddFile($fp);
-                        $pDays = is_array($pr['days'] ?? null) ? $pr['days'] : [];
-                        if (!$pDays) continue;
-                        $parsedFiles++;
-
-                        $fileCrossings = [];
-                        foreach ($pDays as $pd) {
-                            $d = (string)($pd['date'] ?? '');
-                            if ($d === '') continue;
-                            $fileCrossings[$d] = is_array($pd['crossings'] ?? null) ? $pd['crossings'] : [];
-
-                            if ($d < $dateFrom || $d > $dateTo) continue;
-                            if (!isset($missingDates[$d])) continue;
-
-                            $rowForUpsert = [
-                                'date' => $d,
-                                'drive_min' => (int)($pd['drive'] ?? 0),
-                                'work_min' => (int)($pd['work'] ?? 0),
-                                'avail_min' => (int)($pd['avail'] ?? 0),
-                                'rest_min' => (int)($pd['rest'] ?? 0),
-                                'dist_km' => (int)($pd['dist'] ?? 0),
-                                'violations' => json_encode($pd['viol'] ?? []),
-                                'segments' => json_encode($pd['segs'] ?? []),
-                                'border_crossings' => !empty($pd['crossings']) ? json_encode($pd['crossings']) : json_encode(0),
-                            ];
-                            upsertDriverActivityCalendarDay($db, $companyId, $driverId, $rowForUpsert, (int)$fRow['id']);
-                            unset($missingDates[$d]);
-                        }
-
-                        // Keep derived stores synchronized for this file after re-parse.
-                        try {
-                            syncDriverBorderCrossingsForFile($db, $companyId, $driverId, (int)$fRow['id'], $fileCrossings);
-                            syncDriverActivitySegmentsForFile($db, $companyId, $driverId, (int)$fRow['id'], $pDays);
-                        } catch (Throwable $syncErr) {
-                            error_log('driver_calendar: recovery sync error for file ' . (int)$fRow['id'] . ': ' . $syncErr->getMessage());
-                        }
+                    $srcStmt = $db->prepare(
+                        "SELECT d.file_id AS source_file_id, d.date, d.drive_min, d.work_min, d.avail_min, d.rest_min,
+                                d.dist_km, d.violations, d.segments, d.border_crossings
+                         FROM ddd_activity_days d
+                         JOIN ddd_files f ON f.id=d.file_id
+                         WHERE f.company_id=? AND f.driver_id=? AND f.file_type='driver' AND f.is_deleted=0
+                           AND d.date BETWEEN ? AND ?
+                         ORDER BY d.date ASC, (d.drive_min + d.work_min + d.avail_min + d.rest_min) DESC, d.file_id DESC"
+                    );
+                    $srcStmt->execute([$companyId, $driverId, $dateFrom, $dateTo]);
+                    $bestByDate = [];
+                    foreach ($srcStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                        $d = (string)($row['date'] ?? '');
+                        if ($d === '' || !isset($missingDates[$d])) continue;
+                        if (!isset($bestByDate[$d])) $bestByDate[$d] = $row;
+                    }
+                    foreach ($bestByDate as $d => $row) {
+                        upsertDriverActivityCalendarDay($db, $companyId, $driverId, $row, (int)($row['source_file_id'] ?? 0));
+                        unset($missingDates[$d]);
                     }
 
                     // Reload selected range once if recovery filled any missing day.
