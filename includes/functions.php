@@ -791,6 +791,8 @@ function parseDddFile(string $path): array {
     // Use several top TLV-bounded candidate regions; this improves coverage for cards
     // that split/duplicate daily activity records across multiple EF blocks.
     $cands = [];
+    $scanStart = 0;
+    $scanEnd = $len;
     if ($activityRanges) {
         foreach ($activityRanges as $rng) {
             $scanStart = max(0, min($len, (int)$rng['start']));
