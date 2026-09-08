@@ -866,6 +866,11 @@ function parseDddFile(string $path): array {
         $iqr  = $p75 - $p25;
         $pMin = $p25 - 3 * $iqr;
     }
+    $allTs = array_column($cands, 'ts');
+    $maxTs = $allTs ? max($allTs) : 0;
+    // Keep a recent recovery window even for low presenceCounter values to avoid
+    // dropping valid early-month days from the current card period.
+    $recentKeepTs = $maxTs > 0 ? ($maxTs - 540 * 86400) : 0;
     // Filter date groups: drop dates where ALL candidates are below the lower fence.
     // A date is kept if at least one candidate is in/above the main cluster (pres >= pMin).
     // This handles days where coincidental low-pres binary patterns lower the median
@@ -878,7 +883,10 @@ function parseDddFile(string $path): array {
     $filteredGroups = [];
     foreach ($dateGroups as $date => $candidates) {
         $maxPres = max(array_column($candidates, 'pres'));
-        if ($maxPres < $pMin) continue;
+        if ($maxPres < $pMin) {
+            $dateMaxTs = max(array_column($candidates, 'ts'));
+            if ($recentKeepTs <= 0 || $dateMaxTs < $recentKeepTs) continue;
+        }
         // Re-sort: in-cluster candidates first; within the same cluster tier prefer
         // candidates whose timestamp is close to midnight (real EF_DailyWorkPeriod
         // records typically start at the day boundary, whereas false positives from

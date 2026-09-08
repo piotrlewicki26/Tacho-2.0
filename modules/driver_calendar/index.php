@@ -289,6 +289,115 @@ if ($driverId) {
         } catch (Throwable $e) {
             error_log('driver_calendar: files query error: ' . $e->getMessage());
         }
+
+        // Recovery pass: if selected range has missing days, re-parse overlapping
+        // source files and persist missing days to the calendar.
+        if ($driverFiles) {
+            try {
+                $missingDates = [];
+                $cur = $dateFrom;
+                while ($cur <= $dateTo) {
+                    if (!isset($calDays[$cur])) $missingDates[$cur] = true;
+                    $cur = gmdate('Y-m-d', strtotime($cur . ' +1 day'));
+                }
+
+                if (!empty($missingDates)) {
+                    $overlapFiles = array_values(array_filter($driverFiles, static function (array $f) use ($dateFrom, $dateTo): bool {
+                        $ps = (string)($f['period_start'] ?? '');
+                        $pe = (string)($f['period_end'] ?? '');
+                        if ($ps === '' || $pe === '') return true;
+                        return !($pe < $dateFrom || $ps > $dateTo);
+                    }));
+
+                    $parsedFiles = 0;
+                    foreach ($overlapFiles as $fRow) {
+                        if (empty($missingDates) || $parsedFiles >= 3) break;
+                        $fp = dddPhysPath($fRow, $companyId);
+                        if (!is_file($fp)) continue;
+                        $pr = parseDddFile($fp);
+                        $pDays = is_array($pr['days'] ?? null) ? $pr['days'] : [];
+                        if (!$pDays) continue;
+                        $parsedFiles++;
+
+                        $fileCrossings = [];
+                        foreach ($pDays as $pd) {
+                            $d = (string)($pd['date'] ?? '');
+                            if ($d === '') continue;
+                            $fileCrossings[$d] = is_array($pd['crossings'] ?? null) ? $pd['crossings'] : [];
+
+                            if ($d < $dateFrom || $d > $dateTo) continue;
+                            if (!isset($missingDates[$d])) continue;
+
+                            $rowForUpsert = [
+                                'date' => $d,
+                                'drive_min' => (int)($pd['drive'] ?? 0),
+                                'work_min' => (int)($pd['work'] ?? 0),
+                                'avail_min' => (int)($pd['avail'] ?? 0),
+                                'rest_min' => (int)($pd['rest'] ?? 0),
+                                'dist_km' => (int)($pd['dist'] ?? 0),
+                                'violations' => json_encode($pd['viol'] ?? []),
+                                'segments' => json_encode($pd['segs'] ?? []),
+                                'border_crossings' => !empty($pd['crossings']) ? json_encode($pd['crossings']) : json_encode(0),
+                            ];
+                            upsertDriverActivityCalendarDay($db, $companyId, $driverId, $rowForUpsert, (int)$fRow['id']);
+                            unset($missingDates[$d]);
+                        }
+
+                        // Keep derived stores synchronized for this file after re-parse.
+                        try {
+                            syncDriverBorderCrossingsForFile($db, $companyId, $driverId, (int)$fRow['id'], $fileCrossings);
+                            syncDriverActivitySegmentsForFile($db, $companyId, $driverId, (int)$fRow['id'], $pDays);
+                        } catch (Throwable $syncErr) {
+                            error_log('driver_calendar: recovery sync error for file ' . (int)$fRow['id'] . ': ' . $syncErr->getMessage());
+                        }
+                    }
+
+                    // Reload selected range once if recovery filled any missing day.
+                    if (count($missingDates) < ((strtotime($dateTo) - strtotime($dateFrom)) / 86400 + 1)) {
+                        $calDays = [];
+                        $chartDays = [];
+                        $violations = [];
+                        $summary = ['drive' => 0, 'work' => 0, 'rest' => 0, 'avail' => 0, 'dist' => 0, 'violations' => 0];
+
+                        $rows = $db->prepare(
+                            'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments, source_file_id
+                             FROM driver_activity_calendar
+                             WHERE driver_id=? AND date BETWEEN ? AND ?
+                             ORDER BY date ASC'
+                        );
+                        $rows->execute([$driverId, $dateFrom, $dateTo]);
+                        foreach ($rows->fetchAll() as $row) {
+                            $viols = json_decode($row['violations'] ?? '[]', true) ?: [];
+                            $segs  = json_decode($row['segments']   ?? '[]', true) ?: [];
+                            $calDays[$row['date']] = [
+                                'date'      => $row['date'],
+                                'drive'     => (int)$row['drive_min'],
+                                'work'      => (int)$row['work_min'],
+                                'avail'     => (int)$row['avail_min'],
+                                'rest'      => (int)$row['rest_min'],
+                                'dist'      => (int)$row['dist_km'],
+                                'segs'      => $segs,
+                                'crossings' => [],
+                                'viol'      => $viols,
+                                'file_id'   => $row['source_file_id'],
+                            ];
+                            $summary['drive'] += (int)$row['drive_min'];
+                            $summary['work']  += (int)$row['work_min'];
+                            $summary['rest']  += (int)$row['rest_min'];
+                            $summary['avail'] += (int)$row['avail_min'];
+                            $summary['dist']  += (int)$row['dist_km'];
+                            $summary['violations'] += count($viols);
+                            $chartDays[] = ['date' => $row['date'], 'segs' => $segs, 'dist' => (int)$row['dist_km'], 'crossings' => []];
+                            foreach ($viols as $v) {
+                                $violations[] = array_merge($v, ['date' => $row['date']]);
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable $recErr) {
+                error_log('driver_calendar: missing-day recovery error: ' . $recErr->getMessage());
+            }
+        }
     }
 }
 
