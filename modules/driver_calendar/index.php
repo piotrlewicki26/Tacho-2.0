@@ -46,7 +46,7 @@ try {
 }
 
 // ── Driver filter ─────────────────────────────────────────────
-$driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : 0;
+$driverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : (isset($_GET['id']) ? (int)$_GET['id'] : 0);
 $crossingQuality = in_array($_GET['crossing_quality'] ?? 'all', ['all', 'validated', 'raw', 'inferred'], true)
     ? (string)($_GET['crossing_quality'] ?? 'all') : 'all';
 $activeTab = in_array($_GET['tab'] ?? '', ['calendar','timeline','violations','files','pojazdy','granice'])
@@ -126,12 +126,14 @@ if ($driverId) {
             }
         }
 
-        // Date range – default: last 28 days (today − 27 days → today).
+        // Date range – default aligned with profile view:
+        // latest activity anchor and ~90-day window.
         $today        = new DateTime();
         $curMonthFrom = $today->format('Y-m-01');
         $curMonthTo   = $today->format('Y-m-t');
-        $defaultFrom  = date('Y-m-d', strtotime('-27 days'));
-        $defaultTo    = date('Y-m-d');
+        $defaultAnchor = $dataDateMax ?: date('Y-m-d');
+        $defaultFrom  = date('Y-m-d', strtotime($defaultAnchor . ' -90 days'));
+        $defaultTo    = $defaultAnchor;
 
         $rawFrom = isset($_GET['from']) ? trim($_GET['from']) : '';
         $rawTo   = isset($_GET['to'])   ? trim($_GET['to'])   : '';
@@ -143,8 +145,7 @@ if ($driverId) {
             $dateFrom = $rawFrom !== '' ? $rawFrom : $fallbackFrom;
             $dateTo   = $rawTo   !== '' ? $rawTo   : $fallbackTo;
         } else {
-            // First driver selection (no dates in URL).
-            // Default to the last 28 days (today − 27 days → today).
+            // First driver selection (no dates in URL) – keep in sync with profile.
             $dateFrom = $defaultFrom;
             $dateTo   = $defaultTo;
         }
