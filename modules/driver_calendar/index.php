@@ -85,11 +85,35 @@ if ($driverId) {
     $driverInfo = $dStmt->fetch();
 
     if ($driverInfo) {
-        // Always sync latest DDD data into the calendar
+        // Conditional sync: avoid heavy full backfill on every page request.
         try {
-            backfillDriverActivityCalendar($db, $companyId, $driverId);
+            $calCntStmt = $db->prepare(
+                'SELECT COUNT(*) FROM driver_activity_calendar WHERE company_id=? AND driver_id=?'
+            );
+            $calCntStmt->execute([$companyId, $driverId]);
+            $calCount = (int)$calCntStmt->fetchColumn();
+            $shouldBackfill = ($calCount === 0);
+
+            if (!$shouldBackfill) {
+                $missStmt = $db->prepare(
+                    "SELECT 1
+                     FROM ddd_activity_days d
+                     JOIN ddd_files f ON f.id=d.file_id
+                     LEFT JOIN driver_activity_calendar c
+                       ON c.company_id=f.company_id AND c.driver_id=f.driver_id AND c.date=d.date
+                     WHERE f.company_id=? AND f.driver_id=? AND f.file_type='driver' AND f.is_deleted=0
+                       AND c.id IS NULL
+                     LIMIT 1"
+                );
+                $missStmt->execute([$companyId, $driverId]);
+                $shouldBackfill = (bool)$missStmt->fetchColumn();
+            }
+
+            if ($shouldBackfill) {
+                backfillDriverActivityCalendar($db, $companyId, $driverId);
+            }
         } catch (Throwable $bfErr) {
-            error_log('driver_calendar: backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
+            error_log('driver_calendar: conditional backfill error for driver ' . $driverId . ': ' . $bfErr->getMessage());
         }
 
         // Detect actual data range for this driver
