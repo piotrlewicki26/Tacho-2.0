@@ -2833,9 +2833,26 @@ function getDriverBorderCrossingsByDateRange(
             ];
         };
 
+        $fromObj = \DateTimeImmutable::createFromFormat('!Y-m-d', $fromDate);
+        $toObj = \DateTimeImmutable::createFromFormat('!Y-m-d', $toDate);
+        if (!$fromObj || !$toObj) {
+            return $out;
+        }
+        if ($fromObj > $toObj) {
+            $tmpObj = $fromObj;
+            $fromObj = $toObj;
+            $toObj = $tmpObj;
+        }
+        $spanDays = (int)$fromObj->diff($toObj)->format('%a');
+        if ($spanDays > 370) {
+            $toObj = $fromObj->modify('+370 days');
+        }
+
         $currentCountry = $prevCountry;
-        $cur = $fromDate;
-        while ($cur <= $toDate) {
+        $curObj = $fromObj;
+        $guard = 0;
+        while ($curObj <= $toObj && $guard < 400) {
+            $cur = $curObj->format('Y-m-d');
             $rows = isset($out[$cur]) && is_array($out[$cur]) ? $out[$cur] : [];
             usort($rows, static function (array $a, array $b): int {
                 return ((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1));
@@ -2866,7 +2883,8 @@ function getDriverBorderCrossingsByDateRange(
                 });
                 $out[$cur] = $rows;
             }
-            $cur = gmdate('Y-m-d', strtotime($cur . ' +1 day'));
+            $curObj = $curObj->modify('+1 day');
+            $guard++;
         }
     }
 

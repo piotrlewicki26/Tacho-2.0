@@ -250,13 +250,18 @@ if ($action === 'profile' && $editDriver) {
             $chartStmtRaw->execute([$companyId, $driverId, $chartFrom, $chartTo]);
             $chartRows = $chartStmtRaw->fetchAll();
         }
-        $profileCrossingsByDate = getDriverBorderCrossingsByDateRange(
-            $db,
-            $companyId,
-            $driverId,
-            $chartFrom,
-            $chartTo
-        );
+        $profileCrossingsByDate = [];
+        try {
+            $profileCrossingsByDate = getDriverBorderCrossingsByDateRange(
+                $db,
+                $companyId,
+                $driverId,
+                $chartFrom,
+                $chartTo
+            );
+        } catch (\Throwable $e) {
+            $profileCrossingsByDate = [];
+        }
 
         foreach ($chartRows as $cr) {
             $dKey = (string)$cr['date'];
