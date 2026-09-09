@@ -135,6 +135,9 @@ $activityRangeLabel  = 'ostatnie 28 dni';
 $profileViolations   = [];
 $violationByCountry  = [];
 $violationTotals     = ['count' => 0, 'driver' => 0.0, 'company' => 0.0];
+$violationTotalsSelected = ['count' => 0, 'driver' => 0.0, 'company' => 0.0];
+$selectedPenaltyCountry = 'PL';
+$selectedPenaltyCountryName = 'Polska';
 if ($action === 'profile' && $editDriver) {
     // Last download date (latest period_end from card_downloads)
     $stmt = $db->prepare(
@@ -311,6 +314,16 @@ if ($action === 'profile' && $editDriver) {
         'UNKN' => 1.00,
     ];
     $driverNat = strtoupper(trim((string)($editDriver['nationality'] ?? '')));
+    $requestedPenaltyCountry = strtoupper(trim((string)($_GET['viol_country'] ?? '')));
+    if ($requestedPenaltyCountry !== '' && isset($euCountries[$requestedPenaltyCountry])) {
+        $selectedPenaltyCountry = $requestedPenaltyCountry;
+    } elseif ($driverNat !== '' && isset($euCountries[$driverNat])) {
+        $selectedPenaltyCountry = $driverNat;
+    }
+    $selectedPenaltyCountryName = $euCountries[$selectedPenaltyCountry] ?? 'Polska';
+    $selectedCountryFactor = isset($countryPenaltyFactor[$selectedPenaltyCountry])
+        ? (float)$countryPenaltyFactor[$selectedPenaltyCountry]
+        : 1.0;
 
     foreach ($profileChartDays as $day) {
         $dayDate = (string)($day['date'] ?? '');
@@ -345,6 +358,7 @@ if ($action === 'profile' && $editDriver) {
             $article = (string)($v['article'] ?? ($penaltyData['article'] ?? 'rozp. WE 561/2006'));
 
             $violationTotals['count']++;
+            $violationTotalsSelected['count']++;
             $countryCount = max(1, count($countryCodes));
             $totalDriverEst = 0.0;
             $totalCompanyEst = 0.0;
@@ -369,6 +383,10 @@ if ($action === 'profile' && $editDriver) {
             }
             $violationTotals['driver'] += $totalDriverEst;
             $violationTotals['company'] += $totalCompanyEst;
+            $selectedDriverEst = $baseDriver * $selectedCountryFactor;
+            $selectedCompanyEst = $baseCompany * $selectedCountryFactor;
+            $violationTotalsSelected['driver'] += $selectedDriverEst;
+            $violationTotalsSelected['company'] += $selectedCompanyEst;
 
             $countryNames = [];
             foreach ($countryCodes as $cc) {
@@ -382,6 +400,8 @@ if ($action === 'profile' && $editDriver) {
                 'countries' => $countryNames,
                 'penalty_driver' => $totalDriverEst,
                 'penalty_company' => $totalCompanyEst,
+                'penalty_driver_selected' => $selectedDriverEst,
+                'penalty_company_selected' => $selectedCompanyEst,
             ];
         }
     }
@@ -1019,9 +1039,31 @@ $totalM = $profileTotalDrive % 60;
             <div class="alert alert-warning py-2 small mb-3">
               Szacunki kar są orientacyjne (na bazie klasyfikacji naruszeń) i mają charakter informacyjny.
             </div>
+            <form method="GET" class="row g-2 align-items-end mb-3">
+              <input type="hidden" name="action" value="profile">
+              <input type="hidden" name="id" value="<?= (int)$driverId ?>">
+              <input type="hidden" name="act_preset" value="<?= e($activityPreset) ?>">
+              <input type="hidden" name="act_from" value="<?= e($activityFrom ?? '') ?>">
+              <input type="hidden" name="act_to" value="<?= e($activityTo ?? '') ?>">
+              <div class="col-md-8">
+                <label class="form-label small text-muted mb-1">Kraj do symulacji kar</label>
+                <select name="viol_country" class="form-select form-select-sm">
+                  <?php foreach ($euCountries as $code => $name): ?>
+                  <option value="<?= e($code) ?>"<?= $selectedPenaltyCountry === $code ? ' selected' : '' ?>>
+                    <?= e($name) ?> (<?= e($code) ?>)
+                  </option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <button type="submit" class="btn btn-sm btn-primary w-100">
+                  <i class="bi bi-globe-europe-africa me-1"></i>Przelicz kary
+                </button>
+              </div>
+            </form>
             <?php if (!empty($profileViolations)): ?>
             <div class="row g-2 mb-3">
-              <div class="col-md-4">
+              <div class="col-md-3">
                 <div class="tp-stat">
                   <div class="tp-stat-icon danger"><i class="bi bi-exclamation-triangle"></i></div>
                   <div>
@@ -1030,7 +1072,7 @@ $totalM = $profileTotalDrive % 60;
                   </div>
                 </div>
               </div>
-              <div class="col-md-4">
+              <div class="col-md-3">
                 <div class="tp-stat">
                   <div class="tp-stat-icon warning"><i class="bi bi-person-badge"></i></div>
                   <div>
@@ -1039,12 +1081,41 @@ $totalM = $profileTotalDrive % 60;
                   </div>
                 </div>
               </div>
-              <div class="col-md-4">
+              <div class="col-md-3">
                 <div class="tp-stat">
                   <div class="tp-stat-icon primary"><i class="bi bi-building"></i></div>
                   <div>
                     <div class="tp-stat-value"><?= number_format((float)$violationTotals['company'], 0, ',', ' ') ?> PLN</div>
                     <div class="tp-stat-label">Potencjalne kary firmy</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-3">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon info"><i class="bi bi-geo-alt"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= e($selectedPenaltyCountry) ?></div>
+                    <div class="tp-stat-label"><?= e($selectedPenaltyCountryName) ?></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="row g-2 mb-3">
+              <div class="col-md-6">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon warning"><i class="bi bi-person-badge"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= number_format((float)$violationTotalsSelected['driver'], 0, ',', ' ') ?> PLN</div>
+                    <div class="tp-stat-label">Ewentualne kary kierowcy po zmianie kraju</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon primary"><i class="bi bi-building"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= number_format((float)$violationTotalsSelected['company'], 0, ',', ' ') ?> PLN</div>
+                    <div class="tp-stat-label">Ewentualne kary firmy po zmianie kraju</div>
                   </div>
                 </div>
               </div>
@@ -1081,8 +1152,10 @@ $totalM = $profileTotalDrive % 60;
                     <th>Poziom</th>
                     <th>Naruszenie</th>
                     <th>Kraje UE</th>
-                    <th class="text-end">Kara kierowcy</th>
-                    <th class="text-end">Kara firmy</th>
+                    <th class="text-end">Kierowca (pot.)</th>
+                    <th class="text-end">Kierowca (po zmianie)</th>
+                    <th class="text-end">Firma (pot.)</th>
+                    <th class="text-end">Firma (po zmianie)</th>
                     <th>Podstawa</th>
                   </tr>
                 </thead>
@@ -1098,7 +1171,9 @@ $totalM = $profileTotalDrive % 60;
                     <td><?= e($v['msg']) ?></td>
                     <td class="small"><?= e(implode(', ', $v['countries'])) ?></td>
                     <td class="text-end"><?= number_format((float)$v['penalty_driver'], 0, ',', ' ') ?> PLN</td>
+                    <td class="text-end"><?= number_format((float)$v['penalty_driver_selected'], 0, ',', ' ') ?> PLN</td>
                     <td class="text-end fw-600"><?= number_format((float)$v['penalty_company'], 0, ',', ' ') ?> PLN</td>
+                    <td class="text-end fw-600"><?= number_format((float)$v['penalty_company_selected'], 0, ',', ' ') ?> PLN</td>
                     <td class="small text-muted"><?= e($v['article']) ?></td>
                   </tr>
                   <?php endforeach; ?>
@@ -1257,6 +1332,10 @@ $totalM = $profileTotalDrive % 60;
                 if (hash) {
                   var genericTab = document.querySelector('#profileTabList a[href="' + hash + '"]');
                   if (genericTab) { genericTab.click(); }
+                }
+                if (new URLSearchParams(window.location.search).has('viol_country')) {
+                  var violTab = document.getElementById('tab-violations');
+                  if (violTab) { violTab.click(); }
                 }
                 if (hash === '#pane-vehicles' || new URLSearchParams(window.location.search).has('veh_from') || new URLSearchParams(window.location.search).has('veh_to')) {
                   var tabEl = document.getElementById('tab-vehicles');
