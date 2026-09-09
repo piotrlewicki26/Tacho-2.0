@@ -417,14 +417,16 @@ if ($action === 'profile' && $editDriver) {
         return ($a['company'] < $b['company']) ? 1 : -1;
     });
 
-    // Weekly driving time table from driver_activity_calendar
+    // Weekly driving time table from driver_activity_calendar (selected range).
+    $weekFrom = $activityFrom ?: (new DateTime('today'))->modify('-27 days')->format('Y-m-d');
+    $weekTo = $activityTo ?: (new DateTime('today'))->format('Y-m-d');
     $stmt = $db->prepare(
         'SELECT date, drive_min
          FROM driver_activity_calendar
-         WHERE company_id=? AND driver_id=?
+         WHERE company_id=? AND driver_id=? AND date BETWEEN ? AND ?
          ORDER BY date'
     );
-    $stmt->execute([$companyId, $driverId]);
+    $stmt->execute([$companyId, $driverId, $weekFrom, $weekTo]);
     $calRows = $stmt->fetchAll();
 
     // Group by ISO year-week
@@ -936,7 +938,7 @@ $totalM = $profileTotalDrive % 60;
             </a>
           </div>
           <div class="tp-card-body">
-            <form method="GET" class="row g-2 align-items-end mb-3">
+            <form method="GET" action="/drivers.php#pane-weeks" class="row g-2 align-items-end mb-3">
               <input type="hidden" name="action" value="profile">
               <input type="hidden" name="id" value="<?= (int)$driverId ?>">
               <div class="col-12">
@@ -1216,8 +1218,37 @@ $totalM = $profileTotalDrive % 60;
           <div class="tp-card-header">
             <i class="bi bi-table text-primary"></i>
             <span class="tp-card-title">Tygodnie – czas jazdy</span>
+            <span class="badge bg-secondary ms-2"><?= e($activityRangeLabel) ?></span>
           </div>
-          <div class="tp-card-body p-0">
+          <div class="tp-card-body">
+            <form method="GET" class="row g-2 align-items-end mb-3">
+              <input type="hidden" name="action" value="profile">
+              <input type="hidden" name="id" value="<?= (int)$driverId ?>">
+              <div class="col-12">
+                <div class="d-flex flex-wrap gap-1">
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last28#pane-weeks"
+                     class="btn btn-sm <?= $activityPreset === 'last28' ? 'btn-primary' : 'btn-outline-primary' ?>">Ostatnie 28 dni</a>
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=month#pane-weeks"
+                     class="btn btn-sm <?= $activityPreset === 'month' ? 'btn-info' : 'btn-outline-info' ?>">Obecny miesiąc</a>
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last3m#pane-weeks"
+                     class="btn btn-sm <?= $activityPreset === 'last3m' ? 'btn-success' : 'btn-outline-success' ?>">Ostatnie 3 miesiące</a>
+                </div>
+              </div>
+              <input type="hidden" name="act_preset" value="custom">
+              <div class="col-md-4">
+                <label class="form-label small text-muted mb-1">Od</label>
+                <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-muted mb-1">Do</label>
+                <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
+              </div>
+              <div class="col-md-4">
+                <button type="submit" class="btn btn-sm btn-primary w-100">
+                  <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+                </button>
+              </div>
+            </form>
             <?php if ($activityPeriods): ?>
             <div class="table-responsive">
               <table class="tp-table table-sm">
@@ -1294,7 +1325,7 @@ $totalM = $profileTotalDrive % 60;
             <?php else: ?>
             <div class="tp-empty-state py-4">
               <i class="bi bi-table"></i>
-              Brak danych aktywności dla tego kierowcy.
+              Brak danych aktywności dla wybranego zakresu (<?= fmtDate($activityFrom) ?> – <?= fmtDate($activityTo) ?>).
             </div>
             <?php endif; ?>
           </div>
