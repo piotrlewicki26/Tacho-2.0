@@ -186,10 +186,7 @@
             if (onDriverProfile) {
               window.location.reload();
             } else {
-              let url = '/modules/driver_calendar/?driver_id=' + encodeURIComponent(data.driver_id) + '&tab=calendar';
-              if (data.period_start && data.period_end) {
-                url += '&from=' + encodeURIComponent(data.period_start) + '&to=' + encodeURIComponent(data.period_end);
-              }
+              let url = '/drivers.php?action=profile&id=' + encodeURIComponent(data.driver_id) + '#pane-activity';
               window.location.href = url;
             }
           } else if (window.location.pathname === '/files.php') {

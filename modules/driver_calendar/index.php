@@ -13,6 +13,15 @@ require_once __DIR__ . '/../../includes/license_check.php';
 
 requireLogin();
 
+// Driver calendar module now acts as a bridge to profile activity view.
+$redirectDriverId = isset($_GET['driver_id']) ? (int)$_GET['driver_id'] : (isset($_GET['id']) ? (int)$_GET['id'] : 0);
+if ($redirectDriverId > 0) {
+    header('Location: /drivers.php?action=profile&id=' . $redirectDriverId . '#pane-activity', true, 302);
+    exit;
+}
+header('Location: /drivers.php', true, 302);
+exit;
+
 $db        = getDB();
 $companyId = (int)$_SESSION['company_id'];
 
