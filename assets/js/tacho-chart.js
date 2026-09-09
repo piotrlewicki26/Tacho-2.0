@@ -618,22 +618,25 @@
           var x = baseX + offsetX;
           var stackY = Math.min(20, idx * 4);
 
+          var isStateMarker = !!(cr && cr.state_marker);
+          var markerColor = isStateMarker ? '#2E7D32' : '#1565C0';
+
           svgEl.appendChild(mkSVG('line', {
             x1: x, y1: T1Y - 16 - stackY, x2: x, y2: T2Y + T2H,
-            stroke: '#1565C0', 'stroke-width': 2, opacity: 0.85
+            stroke: markerColor, 'stroke-width': 2, opacity: 0.85
           }));
 
           svgEl.appendChild(mkSVG('circle', {
             cx: x, cy: T1Y - stackY, r: 5,
-            fill: '#1565C0', stroke: '#E3F2FD', 'stroke-width': 1.5
+            fill: markerColor, stroke: '#E3F2FD', 'stroke-width': 1.5
           }));
 
           var evSymbol = (cr.type === 0) ? '+' : (cr.type === 1 ? '−' : '↔');
-          var markerLabel = evSymbol + ' ' + cr.country;
+          var markerLabel = isStateMarker ? String(cr.country || '') : (evSymbol + ' ' + cr.country);
           var pillW = Math.max(34, markerLabel.length * 8 + 8);
           svgEl.appendChild(mkSVG('rect', {
             x: x - pillW/2, y: T1Y - 30 - stackY, width: pillW, height: 17,
-            fill: '#1565C0', rx: 3, 'pointer-events': 'none'
+            fill: markerColor, rx: 3, 'pointer-events': 'none'
           }));
           var lbl = mkSVG('text', {
             x: x, y: T1Y - 16 - stackY,
@@ -662,7 +665,11 @@
                 (crossDate ? '<div style="color:#78909C;font-size:13px;margin-bottom:3px;">' + fmtDate(crossDate) + '</div>' : '') +
                 '<div style="color:#B0BEC5;font-size:13px;">' + hhmmssFromCrossing(crossing) + '</div>' +
                 '<div style="font-size:12px;color:#546E7A;margin-top:4px;">' +
-                  (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy') +
+                  (crossing.state_marker === 'start'
+                    ? 'Początek aktywności dnia'
+                    : (crossing.state_marker === 'end'
+                      ? 'Koniec aktywności dnia'
+                      : (crossing.type === 0 ? '+ Włożenie karty kierowcy' : crossing.type === 1 ? '− Wycofanie karty kierowcy' : '↔ Przekroczenie granicy'))) +
                 '</div>';
               tip.style.display = 'block';
               var vx = Math.min(ev.clientX + 15, window.innerWidth - 220);

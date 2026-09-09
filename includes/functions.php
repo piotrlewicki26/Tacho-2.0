@@ -2759,6 +2759,117 @@ function getDriverBorderCrossingsByDateRange(
         ];
     }
     $out = validateCrossingSequenceByDay($out);
+
+    if ($qualityFilter === 'all') {
+        $prevCountry = null;
+        try {
+            $prevStmt = $db->prepare(
+                "SELECT country_code
+                   FROM driver_border_crossings
+                  WHERE company_id=? AND driver_id=? AND crossing_date < ?
+                  ORDER BY crossing_date DESC, crossing_tmin DESC, id DESC
+                  LIMIT 1"
+            );
+            $prevStmt->execute([$companyId, $driverId, $fromDate]);
+            $prevCountry = strtoupper(trim((string)$prevStmt->fetchColumn()));
+            if ($prevCountry === '') $prevCountry = null;
+        } catch (\Throwable $e) {
+            $prevCountry = null;
+        }
+
+        $activityBounds = [];
+        try {
+            $aStmt = $db->prepare(
+                "SELECT `date`, drive_min, work_min, avail_min, segments
+                   FROM driver_activity_calendar
+                  WHERE company_id=? AND driver_id=? AND `date` BETWEEN ? AND ?"
+            );
+            $aStmt->execute([$companyId, $driverId, $fromDate, $toDate]);
+            foreach ($aStmt->fetchAll(\PDO::FETCH_ASSOC) as $ar) {
+                $d = (string)($ar['date'] ?? '');
+                if ($d === '') continue;
+                $first = null;
+                $last = null;
+                $segs = json_decode((string)($ar['segments'] ?? '[]'), true);
+                if (is_array($segs)) {
+                    foreach ($segs as $s) {
+                        if (!is_array($s)) continue;
+                        $act = isset($s['act']) ? (int)$s['act'] : -1;
+                        if ($act <= 0) continue;
+                        $st = isset($s['start']) ? (int)$s['start'] : -1;
+                        $en = isset($s['end']) ? (int)$s['end'] : -1;
+                        if ($st < 0 || $en < $st || $en > 1440) continue;
+                        if ($first === null || $st < $first) $first = $st;
+                        if ($last === null || $en > $last) $last = $en;
+                    }
+                }
+                $activeTotal = (int)($ar['drive_min'] ?? 0) + (int)($ar['work_min'] ?? 0) + (int)($ar['avail_min'] ?? 0);
+                if ($first === null && $activeTotal > 0) $first = 0;
+                if ($last === null && $activeTotal > 0) $last = 1439;
+                $activityBounds[$d] = ['first' => $first, 'last' => $last];
+            }
+        } catch (\Throwable $e) {
+            $activityBounds = [];
+        }
+
+        $pushAnchor = static function (array &$rows, string $date, int $tmin, string $country, string $statePos): void {
+            $country = strtoupper(trim($country));
+            if ($country === '' || $tmin < 0 || $tmin > 1439) return;
+            foreach ($rows as $r) {
+                if (!is_array($r)) continue;
+                $rt = isset($r['tmin']) ? (int)$r['tmin'] : -1;
+                $rc = strtoupper(trim((string)($r['country'] ?? '')));
+                if ($rt === $tmin && $rc === $country) return;
+            }
+            $ts = strtotime($date . ' 00:00:00 UTC');
+            $rows[] = [
+                'ts' => ($ts === false) ? null : ((int)$ts + $tmin * 60),
+                'tmin' => $tmin,
+                'type' => 2,
+                'country' => $country,
+                'quality' => 'inferred',
+                'confidence' => 65,
+                'state_marker' => $statePos,
+            ];
+        };
+
+        $currentCountry = $prevCountry;
+        $cur = $fromDate;
+        while ($cur <= $toDate) {
+            $rows = isset($out[$cur]) && is_array($out[$cur]) ? $out[$cur] : [];
+            usort($rows, static function (array $a, array $b): int {
+                return ((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1));
+            });
+
+            $first = isset($activityBounds[$cur]['first']) ? $activityBounds[$cur]['first'] : null;
+            $last  = isset($activityBounds[$cur]['last'])  ? $activityBounds[$cur]['last']  : null;
+            if ($currentCountry !== null && $first !== null) {
+                $pushAnchor($rows, $cur, max(0, min(1439, (int)$first)), $currentCountry, 'start');
+            }
+
+            foreach ($rows as $r) {
+                if (!is_array($r)) continue;
+                $cc = strtoupper(trim((string)($r['country'] ?? '')));
+                if ($cc !== '') $currentCountry = $cc;
+            }
+
+            if ($currentCountry !== null && $last !== null) {
+                $endTmin = max(0, min(1439, (int)$last));
+                $pushAnchor($rows, $cur, $endTmin, $currentCountry, 'end');
+            }
+
+            if (!empty($rows)) {
+                usort($rows, static function (array $a, array $b): int {
+                    $cmp = ((int)($a['tmin'] ?? -1)) <=> ((int)($b['tmin'] ?? -1));
+                    if ($cmp !== 0) return $cmp;
+                    return strcmp((string)($a['country'] ?? ''), (string)($b['country'] ?? ''));
+                });
+                $out[$cur] = $rows;
+            }
+            $cur = gmdate('Y-m-d', strtotime($cur . ' +1 day'));
+        }
+    }
+
     if ($qualityFilter === 'validated') {
         foreach ($out as $d => $rows) {
            $rows = array_values(array_filter($rows, static fn(array $r): bool => (string)($r['quality'] ?? '') === 'validated'));
