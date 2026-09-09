@@ -132,6 +132,9 @@ $activityFrom        = null;
 $activityTo          = null;
 $activityPreset      = 'last28';
 $activityRangeLabel  = 'ostatnie 28 dni';
+$profileViolations   = [];
+$violationByCountry  = [];
+$violationTotals     = ['count' => 0, 'driver' => 0.0, 'company' => 0.0];
 if ($action === 'profile' && $editDriver) {
     // Last download date (latest period_end from card_downloads)
     $stmt = $db->prepare(
@@ -290,6 +293,109 @@ if ($action === 'profile' && $editDriver) {
     } catch (Throwable $chartErr) {
         error_log('drivers.php profile chart: ' . $chartErr->getMessage());
     }
+
+    $euCountries = [
+        'AT' => 'Austria', 'BE' => 'Belgia', 'BG' => 'Bułgaria', 'HR' => 'Chorwacja', 'CY' => 'Cypr',
+        'CZ' => 'Czechy', 'DK' => 'Dania', 'EE' => 'Estonia', 'FI' => 'Finlandia', 'FR' => 'Francja',
+        'DE' => 'Niemcy', 'EL' => 'Grecja', 'HU' => 'Węgry', 'IE' => 'Irlandia', 'IT' => 'Włochy',
+        'LV' => 'Łotwa', 'LT' => 'Litwa', 'LU' => 'Luksemburg', 'MT' => 'Malta', 'NL' => 'Niderlandy',
+        'PL' => 'Polska', 'PT' => 'Portugalia', 'RO' => 'Rumunia', 'SK' => 'Słowacja', 'SI' => 'Słowenia',
+        'ES' => 'Hiszpania', 'SE' => 'Szwecja',
+        'GR' => 'Grecja',
+    ];
+    $countryPenaltyFactor = [
+        'PL' => 1.00, 'DE' => 1.35, 'FR' => 1.40, 'ES' => 1.15, 'IT' => 1.20, 'NL' => 1.25, 'BE' => 1.20,
+        'AT' => 1.10, 'CZ' => 0.95, 'SK' => 0.90, 'HU' => 0.90, 'RO' => 0.85, 'BG' => 0.80, 'SI' => 0.95,
+        'HR' => 0.90, 'LT' => 0.85, 'LV' => 0.85, 'EE' => 0.90, 'FI' => 1.20, 'SE' => 1.25, 'DK' => 1.30,
+        'IE' => 1.15, 'PT' => 1.00, 'LU' => 1.10, 'MT' => 0.95, 'CY' => 0.90, 'EL' => 0.95, 'GR' => 0.95,
+        'UNKN' => 1.00,
+    ];
+    $driverNat = strtoupper(trim((string)($editDriver['nationality'] ?? '')));
+
+    foreach ($profileChartDays as $day) {
+        $dayDate = (string)($day['date'] ?? '');
+        if ($dayDate === '') continue;
+        $dayCrossings = is_array($day['crossings'] ?? null) ? $day['crossings'] : [];
+        $dayCountries = [];
+        foreach ($dayCrossings as $cross) {
+            $cc = strtoupper(trim((string)($cross['country'] ?? '')));
+            if ($cc !== '' && isset($euCountries[$cc])) {
+                $dayCountries[$cc] = true;
+            }
+        }
+        if (empty($dayCountries) && $driverNat !== '' && isset($euCountries[$driverNat])) {
+            $dayCountries[$driverNat] = true;
+        }
+        if (empty($dayCountries)) {
+            $dayCountries['UNKN'] = true;
+        }
+        $countryCodes = array_keys($dayCountries);
+
+        $dayViolations = is_array($day['viol'] ?? null) ? $day['viol'] : [];
+        foreach ($dayViolations as $v) {
+            $type = (string)($v['type'] ?? 'warn');
+            $msg = trim((string)($v['msg'] ?? 'Naruszenie'));
+            $penaltyData = violPenalty($type, $msg);
+            $baseDriver = isset($v['penalty_driver']) && is_numeric($v['penalty_driver'])
+                ? (float)$v['penalty_driver']
+                : (float)($penaltyData['penalty_driver'] ?? 0);
+            $baseCompany = isset($v['penalty_company']) && is_numeric($v['penalty_company'])
+                ? (float)$v['penalty_company']
+                : (float)($penaltyData['penalty_company'] ?? 0);
+            $article = (string)($v['article'] ?? ($penaltyData['article'] ?? 'rozp. WE 561/2006'));
+
+            $violationTotals['count']++;
+            $countryCount = max(1, count($countryCodes));
+            $totalDriverEst = 0.0;
+            $totalCompanyEst = 0.0;
+            foreach ($countryCodes as $cc) {
+                $factor = isset($countryPenaltyFactor[$cc]) ? (float)$countryPenaltyFactor[$cc] : 1.0;
+                $drv = ($baseDriver / $countryCount) * $factor;
+                $cmp = ($baseCompany / $countryCount) * $factor;
+                $totalDriverEst += $drv;
+                $totalCompanyEst += $cmp;
+                if (!isset($violationByCountry[$cc])) {
+                    $violationByCountry[$cc] = [
+                        'code' => $cc,
+                        'name' => $euCountries[$cc] ?? 'Nieustalony kraj UE',
+                        'count' => 0,
+                        'driver' => 0.0,
+                        'company' => 0.0,
+                    ];
+                }
+                $violationByCountry[$cc]['count']++;
+                $violationByCountry[$cc]['driver'] += $drv;
+                $violationByCountry[$cc]['company'] += $cmp;
+            }
+            $violationTotals['driver'] += $totalDriverEst;
+            $violationTotals['company'] += $totalCompanyEst;
+
+            $countryNames = [];
+            foreach ($countryCodes as $cc) {
+                $countryNames[] = ($euCountries[$cc] ?? 'Nieustalony kraj UE') . ' (' . $cc . ')';
+            }
+            $profileViolations[] = [
+                'date' => $dayDate,
+                'type' => $type,
+                'msg' => $msg,
+                'article' => $article,
+                'countries' => $countryNames,
+                'penalty_driver' => $totalDriverEst,
+                'penalty_company' => $totalCompanyEst,
+            ];
+        }
+    }
+    usort($profileViolations, static function ($a, $b) {
+        $d = strcmp((string)$b['date'], (string)$a['date']);
+        if ($d !== 0) return $d;
+        return strcmp((string)$a['msg'], (string)$b['msg']);
+    });
+    uasort($violationByCountry, static function ($a, $b) {
+        if ($a['company'] === $b['company']) {
+            return strcmp((string)$a['code'], (string)$b['code']);
+        }
+        return ($a['company'] < $b['company']) ? 1 : -1;
+    });
 
     // Weekly driving time table from driver_activity_calendar
     $stmt = $db->prepare(
@@ -769,6 +875,13 @@ $totalM = $profileTotalDrive % 60;
              data-bs-toggle="list" href="#pane-activity" role="tab">
             <i class="bi bi-bar-chart-line me-2"></i>Aktywność
           </a>
+          <a class="list-group-item list-group-item-action py-2 px-3" id="tab-violations"
+             data-bs-toggle="list" href="#pane-violations" role="tab">
+            <i class="bi bi-exclamation-octagon me-2"></i>Naruszenia
+            <?php if (!empty($violationTotals['count'])): ?>
+            <span class="badge bg-danger ms-1"><?= (int)$violationTotals['count'] ?></span>
+            <?php endif; ?>
+          </a>
           <a class="list-group-item list-group-item-action py-2 px-3" id="tab-delegation"
              data-bs-toggle="list" href="#pane-delegation" role="tab">
             <i class="bi bi-file-earmark-text me-2"></i>Poświadczenie czynności
@@ -888,6 +1001,114 @@ $totalM = $profileTotalDrive % 60;
               <i class="bi bi-activity"></i>
               <p>Brak danych aktywności dla wybranego zakresu (<?= fmtDate($activityFrom) ?> – <?= fmtDate($activityTo) ?>).<br>
                  <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić oś czasu.</p>
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <!-- Violations tab -->
+      <div class="tab-pane fade" id="pane-violations" role="tabpanel">
+        <div class="tp-card">
+          <div class="tp-card-header">
+            <i class="bi bi-exclamation-octagon text-danger"></i>
+            <span class="tp-card-title">Naruszenia i potencjalne kary (UE)</span>
+            <span class="badge bg-secondary ms-2"><?= e($activityRangeLabel) ?></span>
+          </div>
+          <div class="tp-card-body">
+            <div class="alert alert-warning py-2 small mb-3">
+              Szacunki kar są orientacyjne (na bazie klasyfikacji naruszeń) i mają charakter informacyjny.
+            </div>
+            <?php if (!empty($profileViolations)): ?>
+            <div class="row g-2 mb-3">
+              <div class="col-md-4">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon danger"><i class="bi bi-exclamation-triangle"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= (int)$violationTotals['count'] ?></div>
+                    <div class="tp-stat-label">Liczba naruszeń</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon warning"><i class="bi bi-person-badge"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= number_format((float)$violationTotals['driver'], 0, ',', ' ') ?> PLN</div>
+                    <div class="tp-stat-label">Potencjalne kary kierowcy</div>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="tp-stat">
+                  <div class="tp-stat-icon primary"><i class="bi bi-building"></i></div>
+                  <div>
+                    <div class="tp-stat-value"><?= number_format((float)$violationTotals['company'], 0, ',', ' ') ?> PLN</div>
+                    <div class="tp-stat-label">Potencjalne kary firmy</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-responsive mb-3">
+              <table class="tp-table table-sm">
+                <thead>
+                  <tr>
+                    <th>Kraj UE</th>
+                    <th class="text-end">Naruszenia</th>
+                    <th class="text-end">Kara kierowcy</th>
+                    <th class="text-end">Kara firmy</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($violationByCountry as $row): ?>
+                  <tr>
+                    <td><?= e($row['name']) ?> <span class="text-muted">(<?= e($row['code']) ?>)</span></td>
+                    <td class="text-end"><?= (int)$row['count'] ?></td>
+                    <td class="text-end"><?= number_format((float)$row['driver'], 0, ',', ' ') ?> PLN</td>
+                    <td class="text-end fw-600"><?= number_format((float)$row['company'], 0, ',', ' ') ?> PLN</td>
+                  </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="table-responsive">
+              <table class="tp-table table-sm">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Poziom</th>
+                    <th>Naruszenie</th>
+                    <th>Kraje UE</th>
+                    <th class="text-end">Kara kierowcy</th>
+                    <th class="text-end">Kara firmy</th>
+                    <th>Podstawa</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($profileViolations as $v): ?>
+                  <tr>
+                    <td class="text-nowrap"><?= fmtDate($v['date']) ?></td>
+                    <td>
+                      <span class="badge bg-<?= $v['type'] === 'error' ? 'danger' : 'warning' ?>">
+                        <?= $v['type'] === 'error' ? 'Błąd' : 'Ostrzeżenie' ?>
+                      </span>
+                    </td>
+                    <td><?= e($v['msg']) ?></td>
+                    <td class="small"><?= e(implode(', ', $v['countries'])) ?></td>
+                    <td class="text-end"><?= number_format((float)$v['penalty_driver'], 0, ',', ' ') ?> PLN</td>
+                    <td class="text-end fw-600"><?= number_format((float)$v['penalty_company'], 0, ',', ' ') ?> PLN</td>
+                    <td class="small text-muted"><?= e($v['article']) ?></td>
+                  </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+            <?php else: ?>
+            <div class="tp-empty-state py-4">
+              <i class="bi bi-shield-check" style="font-size:2rem;color:#16a34a"></i>
+              <p class="mt-2 text-muted small">Brak wykrytych naruszeń w wybranym zakresie.</p>
             </div>
             <?php endif; ?>
           </div>
@@ -1033,6 +1254,10 @@ $totalM = $profileTotalDrive % 60;
               // Activate vehicles tab after filter submit
               document.addEventListener('DOMContentLoaded', function() {
                 var hash = window.location.hash;
+                if (hash) {
+                  var genericTab = document.querySelector('#profileTabList a[href="' + hash + '"]');
+                  if (genericTab) { genericTab.click(); }
+                }
                 if (hash === '#pane-vehicles' || new URLSearchParams(window.location.search).has('veh_from') || new URLSearchParams(window.location.search).has('veh_to')) {
                   var tabEl = document.getElementById('tab-vehicles');
                   if (tabEl) { tabEl.click(); }
