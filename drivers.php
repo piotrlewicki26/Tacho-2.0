@@ -93,7 +93,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $oldStmt = $db->prepare('SELECT * FROM drivers WHERE id=? AND company_id=?');
         $oldStmt->execute([$id, $companyId]);
         $oldDriver = $oldStmt->fetch() ?: [];
-        $sets = implode(', ', array_map(fn($k) => "$k = ?", array_keys($fields)));
+        $sets = implode(', ', array_map(static function ($k) {
+            return $k . ' = ?';
+        }, array_keys($fields)));
         $vals = array_values($fields);
         $vals[] = $id;
         $vals[] = $companyId;
@@ -126,6 +128,10 @@ $profileChartDays    = [];
 $profileVehicles     = [];
 $vehFrom             = null;
 $vehTo               = null;
+$activityFrom        = null;
+$activityTo          = null;
+$activityPreset      = 'last28';
+$activityRangeLabel  = 'ostatnie 28 dni';
 if ($action === 'profile' && $editDriver) {
     // Last download date (latest period_end from card_downloads)
     $stmt = $db->prepare(
@@ -138,26 +144,84 @@ if ($action === 'profile' && $editDriver) {
         // Auto-backfill calendar from ddd_activity_days when calendar is empty
         backfillDriverActivityCalendar($db, $companyId, $driverId);
 
-        // Activity timeline window is anchored to the latest available activity date
-        // (not always to "today"), so older files still render timeline data.
-        $latestActStmt = $db->prepare(
-            'SELECT MAX(date) FROM driver_activity_calendar WHERE company_id=? AND driver_id=?'
+        // Resolve available activity range.
+        $rangeStmt = $db->prepare(
+            'SELECT MIN(date) AS dmin, MAX(date) AS dmax
+             FROM driver_activity_calendar
+             WHERE company_id=? AND driver_id=?'
         );
-        $latestActStmt->execute([$companyId, $driverId]);
-        $latestActDate = $latestActStmt->fetchColumn() ?: null;
-        if (!$latestActDate) {
-            $latestRawStmt = $db->prepare(
-                'SELECT MAX(d.date)
+        $rangeStmt->execute([$companyId, $driverId]);
+        $rangeRow = $rangeStmt->fetch();
+        $dataDateMin = $rangeRow['dmin'] ?? null;
+        $dataDateMax = $rangeRow['dmax'] ?? null;
+        if (!$dataDateMax) {
+            $rangeRawStmt = $db->prepare(
+                'SELECT MIN(d.date) AS dmin, MAX(d.date) AS dmax
                  FROM ddd_activity_days d
                  JOIN ddd_files f ON f.id=d.file_id
                  WHERE f.company_id=? AND f.driver_id=? AND f.file_type=\'driver\' AND f.is_deleted=0'
             );
-            $latestRawStmt->execute([$companyId, $driverId]);
-            $latestActDate = $latestRawStmt->fetchColumn() ?: null;
+            $rangeRawStmt->execute([$companyId, $driverId]);
+            $rangeRaw = $rangeRawStmt->fetch();
+            $dataDateMin = $rangeRaw['dmin'] ?? null;
+            $dataDateMax = $rangeRaw['dmax'] ?? null;
         }
-        $chartAnchor   = $latestActDate ? new DateTime($latestActDate) : new DateTime('today');
-        $chartFrom     = (clone $chartAnchor)->modify('-90 days')->format('Y-m-d');
-        $chartTo       = $chartAnchor->format('Y-m-d');
+
+        $today = new DateTime('today');
+        $presetLast28From = (clone $today)->modify('-27 days')->format('Y-m-d');
+        $presetLast28To = $today->format('Y-m-d');
+        $presetMonthFrom = $today->format('Y-m-01');
+        $presetMonthTo = $today->format('Y-m-t');
+        $preset3mFrom = (clone $today)->modify('-3 months')->format('Y-m-d');
+        $preset3mTo = $today->format('Y-m-d');
+
+        $preset = isset($_GET['act_preset']) ? (string)$_GET['act_preset'] : 'last28';
+        if (!in_array($preset, ['last28', 'month', 'last3m', 'custom'], true)) {
+            $preset = 'last28';
+        }
+        $rawFrom = isset($_GET['act_from']) ? trim((string)$_GET['act_from']) : '';
+        $rawTo = isset($_GET['act_to']) ? trim((string)$_GET['act_to']) : '';
+        $hasFrom = (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $rawFrom);
+        $hasTo = (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $rawTo);
+
+        if ($hasFrom || $hasTo || $preset === 'custom') {
+            $activityPreset = 'custom';
+            $fallbackFrom = $dataDateMin ?: $presetLast28From;
+            $fallbackTo = $dataDateMax ?: $presetLast28To;
+            $activityFrom = $hasFrom ? $rawFrom : $fallbackFrom;
+            $activityTo = $hasTo ? $rawTo : $fallbackTo;
+        } elseif ($preset === 'month') {
+            $activityPreset = 'month';
+            $activityFrom = $presetMonthFrom;
+            $activityTo = $presetMonthTo;
+        } elseif ($preset === 'last3m') {
+            $activityPreset = 'last3m';
+            $activityFrom = $preset3mFrom;
+            $activityTo = $preset3mTo;
+        } else {
+            $activityPreset = 'last28';
+            $activityFrom = $presetLast28From;
+            $activityTo = $presetLast28To;
+        }
+
+        if ($activityFrom > $activityTo) {
+            $tmp = $activityFrom;
+            $activityFrom = $activityTo;
+            $activityTo = $tmp;
+        }
+
+        $chartFrom = $activityFrom;
+        $chartTo = $activityTo;
+
+        if ($activityPreset === 'month') {
+            $activityRangeLabel = 'obecny miesiąc';
+        } elseif ($activityPreset === 'last3m') {
+            $activityRangeLabel = 'ostatnie 3 miesiące';
+        } elseif ($activityPreset === 'custom') {
+            $activityRangeLabel = 'własny zakres';
+        } else {
+            $activityRangeLabel = 'ostatnie 28 dni';
+        }
 
         $chartStmt = $db->prepare(
             'SELECT date, drive_min, work_min, avail_min, rest_min, dist_km, violations, segments
@@ -220,7 +284,9 @@ if ($action === 'profile' && $editDriver) {
                 'crossings' => $crossings,
             ];
         }
-        usort($profileChartDays, static fn($a, $b) => strcmp((string)$a['date'], (string)$b['date']));
+        usort($profileChartDays, static function ($a, $b) {
+            return strcmp((string)$a['date'], (string)$b['date']);
+        });
     } catch (Throwable $chartErr) {
         error_log('drivers.php profile chart: ' . $chartErr->getMessage());
     }
@@ -729,20 +795,52 @@ $totalM = $profileTotalDrive % 60;
           <div class="tp-card-header">
             <i class="bi bi-activity text-primary"></i>
             <span class="tp-card-title">Oś czasu aktywności tachografu</span>
-            <span class="badge bg-secondary ms-2">ostatnie 90 dni</span>
+            <span class="badge bg-secondary ms-2"><?= e($activityRangeLabel) ?></span>
             <a href="/drivers.php?action=profile&id=<?= $driverId ?>#pane-activity"
                class="btn btn-sm btn-outline-primary ms-auto">
               <i class="bi bi-arrow-repeat me-1"></i>Odśwież aktywność
             </a>
           </div>
           <div class="tp-card-body">
+            <form method="GET" class="row g-2 align-items-end mb-3">
+              <input type="hidden" name="action" value="profile">
+              <input type="hidden" name="id" value="<?= (int)$driverId ?>">
+              <div class="col-12">
+                <div class="d-flex flex-wrap gap-1">
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last28#pane-activity"
+                     class="btn btn-sm <?= $activityPreset === 'last28' ? 'btn-primary' : 'btn-outline-primary' ?>">Ostatnie 28 dni</a>
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=month#pane-activity"
+                     class="btn btn-sm <?= $activityPreset === 'month' ? 'btn-info' : 'btn-outline-info' ?>">Obecny miesiąc</a>
+                  <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last3m#pane-activity"
+                     class="btn btn-sm <?= $activityPreset === 'last3m' ? 'btn-success' : 'btn-outline-success' ?>">Ostatnie 3 miesiące</a>
+                </div>
+              </div>
+              <input type="hidden" name="act_preset" value="custom">
+              <div class="col-md-4">
+                <label class="form-label small text-muted mb-1">Od</label>
+                <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-muted mb-1">Do</label>
+                <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
+              </div>
+              <div class="col-md-4">
+                <button type="submit" class="btn btn-sm btn-primary w-100">
+                  <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+                </button>
+              </div>
+            </form>
             <?php if ($profileChartDays): ?>
             <!-- Summary stats row -->
             <?php
               $pcsD = array_sum(array_column($profileChartDays, 'drive'));
               $pcsW = array_sum(array_column($profileChartDays, 'work'));
               $pcsR = array_sum(array_column($profileChartDays, 'rest'));
-              $pcsV = array_sum(array_map(fn($d) => count(array_filter($d['viol'], fn($v)=>($v['type']??'')==='error')), $profileChartDays));
+              $pcsV = array_sum(array_map(static function ($d) {
+                  return count(array_filter($d['viol'], static function ($v) {
+                      return ($v['type'] ?? '') === 'error';
+                  }));
+              }, $profileChartDays));
             ?>
             <div class="row g-2 mb-3">
               <div class="col-6 col-md-3">
@@ -788,7 +886,7 @@ $totalM = $profileTotalDrive % 60;
             <?php else: ?>
             <div class="tp-empty-state py-4">
               <i class="bi bi-activity"></i>
-              <p>Brak danych aktywności dla ostatnich 90 dni.<br>
+              <p>Brak danych aktywności dla wybranego zakresu (<?= fmtDate($activityFrom) ?> – <?= fmtDate($activityTo) ?>).<br>
                  <a href="/files.php">Wgraj plik DDD</a>, aby wypełnić oś czasu.</p>
             </div>
             <?php endif; ?>
