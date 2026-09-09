@@ -549,8 +549,9 @@ if ($action === 'profile' && $editDriver) {
             }
         }
 
-        // Merge records from multiple DDD files: prefer most recent date_to
-        $profileVehicles = mergeVehicleRecords($rawVehicles);
+        // Merge records from multiple DDD files and collapse consecutive usage
+        // periods of the same vehicle (as in previous behavior).
+        $profileVehicles = groupVehicleTrips(mergeVehicleRecords($rawVehicles));
     } catch (Throwable $vErr) {
         error_log('drivers.php vehicles tab: ' . $vErr->getMessage());
     }
