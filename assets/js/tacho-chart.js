@@ -585,6 +585,7 @@
      * Drawn LAST so they appear on top of both activity and rest bands.
      * Visual: bold country code above band ▸ filled ● pin at band top ▸ solid
      * vertical line through activity + rest bands — matching reference chart. */
+    var statePins = [];
     weekDays.forEach(function(day, di) {
       var crs = day && day.crossings;
       if (!crs || !crs.length) return;
@@ -647,6 +648,16 @@
           lbl.textContent = markerLabel;
           svgEl.appendChild(lbl);
 
+          if (isStateMarker) {
+            statePins.push({
+              x: x,
+              y: T1Y - stackY,
+              absMin: absMin,
+              country: String(cr.country || ''),
+              stateMarker: String(cr.state_marker || '')
+            });
+          }
+
           (function(crossing, dayObj, hitX, yTop) {
             var hit = mkSVG('rect', {
               x: hitX - 12, y: yTop, width: 24, height: T2Y + T2H - yTop,
@@ -682,6 +693,57 @@
         });
       });
     });
+
+    if (statePins.length > 1) {
+      statePins.sort(function(a, b) {
+        if (a.absMin !== b.absMin) return a.absMin - b.absMin;
+        if (a.stateMarker !== b.stateMarker) {
+          if (a.stateMarker === 'start') return -1;
+          if (b.stateMarker === 'start') return 1;
+        }
+        return a.country.localeCompare(b.country);
+      });
+
+      for (var spi = 1; spi < statePins.length; spi++) {
+        var p1 = statePins[spi - 1];
+        var p2 = statePins[spi];
+        if (!p1 || !p2) continue;
+        if (Math.abs(p2.x - p1.x) < 1) continue;
+
+        var yTopLink = Math.min(p1.y, p2.y) - 12;
+        var sameCountry = p1.country && p2.country && p1.country === p2.country;
+        var linkColor = sameCountry ? '#7CB342' : '#43A047';
+        var linkOpacity = sameCountry ? 0.75 : 0.9;
+
+        svgEl.appendChild(mkSVG('path', {
+          d: 'M ' + p1.x + ' ' + p1.y +
+             ' L ' + p1.x + ' ' + yTopLink +
+             ' L ' + p2.x + ' ' + yTopLink +
+             ' L ' + p2.x + ' ' + p2.y,
+          fill: 'none',
+          stroke: linkColor,
+          'stroke-width': sameCountry ? 2 : 2.4,
+          opacity: linkOpacity,
+          'pointer-events': 'none'
+        }));
+
+        if (!sameCountry) {
+          var midX = (p1.x + p2.x) / 2;
+          var tr = mkSVG('text', {
+            x: midX,
+            y: yTopLink - 2,
+            'text-anchor': 'middle',
+            fill: '#2E7D32',
+            'font-size': 10,
+            'font-family': 'Inter,sans-serif',
+            'font-weight': 700,
+            'pointer-events': 'none'
+          });
+          tr.textContent = p1.country + '→' + p2.country;
+          svgEl.appendChild(tr);
+        }
+      }
+    }
 
     /* Separators + axis */
     if (isZoomed) {
