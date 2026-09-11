@@ -943,7 +943,7 @@ $totalM = $profileTotalDrive % 60;
             </a>
           </div>
           <div class="tp-card-body">
-            <form method="GET" action="/drivers.php#pane-weeks" class="row g-2 align-items-end mb-3">
+            <form method="GET" action="/drivers.php#pane-activity" class="row g-2 align-items-end mb-3">
               <input type="hidden" name="action" value="profile">
               <input type="hidden" name="id" value="<?= (int)$driverId ?>">
               <div class="col-12 col-xl-auto">
@@ -956,21 +956,42 @@ $totalM = $profileTotalDrive % 60;
                      class="btn btn-sm <?= $activityPreset === 'last3m' ? 'btn-success' : 'btn-outline-success' ?>">Ostatnie 3 miesiące</a>
                 </div>
               </div>
-              <input type="hidden" name="act_preset" value="custom">
-              <div class="col-6 col-md-4 col-xl-auto">
-                <label class="form-label small text-muted mb-1">Od</label>
-                <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
-              </div>
-              <div class="col-6 col-md-4 col-xl-auto">
-                <label class="form-label small text-muted mb-1">Do</label>
-                <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
-              </div>
-              <div class="col-12 col-md-4 col-xl-auto d-grid">
-                <button type="submit" class="btn btn-sm btn-primary">
-                  <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+              <div class="col-12 col-xl-auto">
+                <button type="button"
+                        class="btn btn-sm btn-outline-dark"
+                        data-bs-toggle="offcanvas"
+                        data-bs-target="#activityRangeDrawer"
+                        aria-controls="activityRangeDrawer">
+                  <i class="bi bi-chevron-up me-1"></i>Rozwiń
                 </button>
               </div>
             </form>
+            <div class="offcanvas offcanvas-bottom h-auto" tabindex="-1" id="activityRangeDrawer" aria-labelledby="activityRangeDrawerLabel">
+              <div class="offcanvas-header">
+                <h5 class="offcanvas-title" id="activityRangeDrawerLabel">Własny zakres dat – Aktywność</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Zamknij"></button>
+              </div>
+              <div class="offcanvas-body pt-0">
+                <form method="GET" action="/drivers.php#pane-activity" class="row g-2 align-items-end">
+                  <input type="hidden" name="action" value="profile">
+                  <input type="hidden" name="id" value="<?= (int)$driverId ?>">
+                  <input type="hidden" name="act_preset" value="custom">
+                  <div class="col-12 col-md-4">
+                    <label class="form-label small text-muted mb-1">Od</label>
+                    <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <label class="form-label small text-muted mb-1">Do</label>
+                    <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
+                  </div>
+                  <div class="col-12 col-md-4 d-grid">
+                    <button type="submit" class="btn btn-sm btn-primary">
+                      <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
             <?php if ($profileChartDays): ?>
             <!-- Summary stats row -->
             <?php
@@ -1239,21 +1260,42 @@ $totalM = $profileTotalDrive % 60;
                      class="btn btn-sm <?= $activityPreset === 'last3m' ? 'btn-success' : 'btn-outline-success' ?>">Ostatnie 3 miesiące</a>
                 </div>
               </div>
-              <input type="hidden" name="act_preset" value="custom">
-              <div class="col-6 col-md-4 col-xl-auto">
-                <label class="form-label small text-muted mb-1">Od</label>
-                <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
-              </div>
-              <div class="col-6 col-md-4 col-xl-auto">
-                <label class="form-label small text-muted mb-1">Do</label>
-                <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
-              </div>
-              <div class="col-12 col-md-4 col-xl-auto d-grid">
-                <button type="submit" class="btn btn-sm btn-primary">
-                  <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+              <div class="col-12 col-xl-auto">
+                <button type="button"
+                        class="btn btn-sm btn-outline-dark"
+                        data-bs-toggle="offcanvas"
+                        data-bs-target="#weeksRangeDrawer"
+                        aria-controls="weeksRangeDrawer">
+                  <i class="bi bi-chevron-up me-1"></i>Rozwiń
                 </button>
               </div>
             </form>
+            <div class="offcanvas offcanvas-bottom h-auto" tabindex="-1" id="weeksRangeDrawer" aria-labelledby="weeksRangeDrawerLabel">
+              <div class="offcanvas-header">
+                <h5 class="offcanvas-title" id="weeksRangeDrawerLabel">Własny zakres dat – Tygodnie</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Zamknij"></button>
+              </div>
+              <div class="offcanvas-body pt-0">
+                <form method="GET" action="/drivers.php#pane-weeks" class="row g-2 align-items-end">
+                  <input type="hidden" name="action" value="profile">
+                  <input type="hidden" name="id" value="<?= (int)$driverId ?>">
+                  <input type="hidden" name="act_preset" value="custom">
+                  <div class="col-12 col-md-4">
+                    <label class="form-label small text-muted mb-1">Od</label>
+                    <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <label class="form-label small text-muted mb-1">Do</label>
+                    <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
+                  </div>
+                  <div class="col-12 col-md-4 d-grid">
+                    <button type="submit" class="btn btn-sm btn-primary">
+                      <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
             <?php if ($activityPeriods): ?>
             <div class="table-responsive">
               <table class="tp-table table-sm">
