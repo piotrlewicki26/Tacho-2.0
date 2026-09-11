@@ -2131,9 +2131,19 @@
       vLg.innerHTML='<div style="width:16px;height:10px;background:#7E57C2;border:1px solid #5E35B199;border-radius:2px;flex-shrink:0;"></div><span style="font-size:11px;font-weight:500;color:#5A6070;">Pojazd</span>';
       legend.appendChild(vLg);
     }
+    var legendToggle = document.createElement('button');
+    legendToggle.type = 'button';
+    legendToggle.style.cssText = 'margin-left:auto;background:#fff;border:1px solid #DDE1E6;border-radius:4px;padding:2px 9px;font-size:11px;line-height:1.2;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;font-weight:600;';
+    var legendDrawerId = 'tpLegendDrawer-' + String(Math.floor(Math.random() * 1000000));
+    legendToggle.setAttribute('data-bs-toggle', 'offcanvas');
+    legendToggle.setAttribute('data-bs-target', '#' + legendDrawerId);
+    legendToggle.setAttribute('aria-controls', legendDrawerId);
+    legendToggle.innerHTML = '<i class="bi bi-chevron-up me-1"></i>Rozwiń legendę';
+    legend.appendChild(legendToggle);
+
     var stLg = document.createElement('div');
-    stLg.style.cssText = 'margin-left:auto;font-size:11px;color:#9AA0AA;white-space:nowrap;';
-    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span> &nbsp;<span style="opacity:0.6;">| przeci\u0105gnij \u2192 powi\u0119kszenie (inline) | kliknij dat\u0119 \u2192 poka\u017c dzie\u0144 | kliknij na aktywno\u015b\u0107/pojazd \u2192 opis</span>';
+    stLg.style.cssText = 'font-size:11px;color:#9AA0AA;white-space:nowrap;';
+    stLg.innerHTML = '&#9679; <span style="color:#43A047;">OK</span> &nbsp;&#9679; <span style="color:#FF9800;">Ostrzez.</span> &nbsp;&#9679; <span style="color:#E53935;">Narusz.</span>';
     legend.appendChild(stLg);
     container.appendChild(legend);
 
@@ -2178,7 +2188,25 @@
       { icon: '◉', label: 'Tygodniowy odpoczynek', color: '#00838F' },
       { icon: '⟳', label: 'Rekompensata', color: '#4A148C' }
     ]));
-    container.appendChild(details);
+    var legendDrawer = document.createElement('div');
+    legendDrawer.className = 'offcanvas offcanvas-bottom h-auto';
+    legendDrawer.id = legendDrawerId;
+    legendDrawer.setAttribute('tabindex', '-1');
+    legendDrawer.setAttribute('aria-labelledby', legendDrawerId + '-label');
+
+    var legendDrawerHeader = document.createElement('div');
+    legendDrawerHeader.className = 'offcanvas-header';
+    legendDrawerHeader.innerHTML =
+      '<h5 class="offcanvas-title" id="' + legendDrawerId + '-label">Legenda aktywności</h5>' +
+      '<button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Zamknij"></button>';
+    legendDrawer.appendChild(legendDrawerHeader);
+
+    var legendDrawerBody = document.createElement('div');
+    legendDrawerBody.className = 'offcanvas-body pt-0';
+    details.style.margin = '0';
+    legendDrawerBody.appendChild(details);
+    legendDrawer.appendChild(legendDrawerBody);
+    document.body.appendChild(legendDrawer);
 
     /* Chart header */
     var hdr = document.createElement('div');
