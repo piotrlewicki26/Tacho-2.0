@@ -2133,7 +2133,7 @@
     }
     var legendToggle = document.createElement('button');
     legendToggle.type = 'button';
-    legendToggle.style.cssText = 'margin-left:auto;background:#fff;border:1px solid #DDE1E6;border-radius:4px;padding:2px 9px;font-size:11px;line-height:1.2;cursor:pointer;color:#5A6070;font-family:Inter,sans-serif;font-weight:600;';
+    legendToggle.style.cssText = 'margin-left:auto;background:#fff;border:1px solid #C7D2E0;border-radius:7px;padding:6px 14px;font-size:13px;line-height:1.2;cursor:pointer;color:#344054;font-family:Inter,sans-serif;font-weight:700;flex-shrink:0;position:sticky;top:10px;z-index:12;box-shadow:0 1px 4px rgba(15,23,42,.10);';
     var legendDrawerId = 'tpLegendDrawer-' + String(Math.floor(Math.random() * 1000000));
     legendToggle.setAttribute('data-bs-toggle', 'offcanvas');
     legendToggle.setAttribute('data-bs-target', '#' + legendDrawerId);
