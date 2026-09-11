@@ -946,8 +946,8 @@ $totalM = $profileTotalDrive % 60;
             <form method="GET" action="/drivers.php#pane-weeks" class="row g-2 align-items-end mb-3">
               <input type="hidden" name="action" value="profile">
               <input type="hidden" name="id" value="<?= (int)$driverId ?>">
-              <div class="col-12">
-                <div class="d-flex flex-wrap gap-1">
+              <div class="col-12 col-xl-auto">
+                <div class="d-flex flex-wrap flex-xl-nowrap gap-1">
                   <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last28#pane-activity"
                      class="btn btn-sm <?= $activityPreset === 'last28' ? 'btn-primary' : 'btn-outline-primary' ?>">Ostatnie 28 dni</a>
                   <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=month#pane-activity"
@@ -957,16 +957,16 @@ $totalM = $profileTotalDrive % 60;
                 </div>
               </div>
               <input type="hidden" name="act_preset" value="custom">
-              <div class="col-md-4">
+              <div class="col-6 col-md-4 col-xl-auto">
                 <label class="form-label small text-muted mb-1">Od</label>
                 <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
               </div>
-              <div class="col-md-4">
+              <div class="col-6 col-md-4 col-xl-auto">
                 <label class="form-label small text-muted mb-1">Do</label>
                 <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
               </div>
-              <div class="col-md-4">
-                <button type="submit" class="btn btn-sm btn-primary w-100">
+              <div class="col-12 col-md-4 col-xl-auto d-grid">
+                <button type="submit" class="btn btn-sm btn-primary">
                   <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
                 </button>
               </div>
@@ -1229,8 +1229,8 @@ $totalM = $profileTotalDrive % 60;
             <form method="GET" class="row g-2 align-items-end mb-3">
               <input type="hidden" name="action" value="profile">
               <input type="hidden" name="id" value="<?= (int)$driverId ?>">
-              <div class="col-12">
-                <div class="d-flex flex-wrap gap-1">
+              <div class="col-12 col-xl-auto">
+                <div class="d-flex flex-wrap flex-xl-nowrap gap-1">
                   <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=last28#pane-weeks"
                      class="btn btn-sm <?= $activityPreset === 'last28' ? 'btn-primary' : 'btn-outline-primary' ?>">Ostatnie 28 dni</a>
                   <a href="/drivers.php?action=profile&id=<?= (int)$driverId ?>&act_preset=month#pane-weeks"
@@ -1240,16 +1240,16 @@ $totalM = $profileTotalDrive % 60;
                 </div>
               </div>
               <input type="hidden" name="act_preset" value="custom">
-              <div class="col-md-4">
+              <div class="col-6 col-md-4 col-xl-auto">
                 <label class="form-label small text-muted mb-1">Od</label>
                 <input type="date" name="act_from" class="form-control form-control-sm" value="<?= e($activityFrom ?? '') ?>">
               </div>
-              <div class="col-md-4">
+              <div class="col-6 col-md-4 col-xl-auto">
                 <label class="form-label small text-muted mb-1">Do</label>
                 <input type="date" name="act_to" class="form-control form-control-sm" value="<?= e($activityTo ?? '') ?>">
               </div>
-              <div class="col-md-4">
-                <button type="submit" class="btn btn-sm btn-primary w-100">
+              <div class="col-12 col-md-4 col-xl-auto d-grid">
+                <button type="submit" class="btn btn-sm btn-primary">
                   <i class="bi bi-funnel me-1"></i>Zastosuj własny zakres
                 </button>
               </div>
