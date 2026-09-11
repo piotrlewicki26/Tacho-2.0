@@ -1,0 +1,42 @@
+# TachoPro 2.0 – Apache configuration
+
+# Disable directory listing
+Options -Indexes
+
+# Force HTTPS (uncomment on production)
+# RewriteEngine On
+# RewriteCond %{HTTPS} off
+# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Protect sensitive directories
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Block direct access to includes/
+  RewriteRule ^includes/ - [F,L]
+
+  # Block direct access to uploads/
+  RewriteRule ^uploads/ - [F,L]
+
+  # Block direct access to sql/
+  RewriteRule ^sql/ - [F,L]
+
+  # Block access to config.php
+  RewriteRule ^config\.php$ - [F,L]
+</IfModule>
+
+# PHP security settings
+<IfModule mod_php.c>
+  php_flag expose_php Off
+  php_flag display_errors Off
+  php_value session.cookie_httponly 1
+  php_value session.cookie_samesite Strict
+</IfModule>
+
+# Security headers
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set X-XSS-Protection "1; mode=block"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
